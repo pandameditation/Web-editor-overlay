@@ -48,9 +48,12 @@
         walk(root);
         return found;
       };
-      const dock = () => deepAll('heo-dock')[0];
-      const tabButton = (label) => Array.from(dock().shadowRoot.querySelectorAll('.tab'))
-        .find((b) => b.textContent.trim().toLowerCase() === label);
+      // Two panels now: the selection panel (Styles, Props, Media, Code) and the page panel.
+      const dock = (side = 'selection') => deepAll(`heo-dock[side="${side}"]`)[0];
+      const pageDock = () => dock('page');
+      // By aria-label: the tab's text now includes its tooltip.
+      const tabButton = (label, side = 'selection') => Array.from(dock(side)?.shadowRoot.querySelectorAll('.tab') ?? [])
+        .find((b) => b.getAttribute('aria-label').toLowerCase() === label);
       const deepActive = () => {
         let n = document.activeElement;
         while (n?.shadowRoot?.activeElement) n = n.shadowRoot.activeElement;
@@ -58,6 +61,7 @@
       };
       const reset = async (tab) => {
         api.select(document.getElementById('first'));
+        api.closePanel();
         api.openPanel(tab);
         await frames();
       };
@@ -76,13 +80,13 @@
       // The reported bug: S opens Styles and focuses its tab, then B did nothing.
       press(stylesTab, 'b');
       await frames();
-      const libraryOpened = state().dockOpen && state().dockTab === 'library';
-      // The toggle must survive the hoist: the same letter on the now-active tab closes the dock.
-      const libraryTab = tabButton('library');
+      const libraryOpened = state().pageOpen && state().pageTab === 'library';
+      // The toggle must survive the hoist: the same letter on the now-active tab closes its panel.
+      const libraryTab = tabButton('blocks', 'page');
       libraryTab.focus();
       press(libraryTab, 'b');
       await frames();
-      const closed = state().dockOpen === false;
+      const closed = state().pageOpen === false && state().dockOpen === true;
       // The focused tab is removed with the dock; focus must land somewhere live, not a detached node.
       const after = deepActive();
       const focusNotDetached = !after || after === document.body || after.isConnected;
@@ -94,7 +98,7 @@
       header?.focus();
       press(header, 't');
       await frames();
-      const headerSwitched = Boolean(header) && state().dockTab === 'tokens';
+      const headerSwitched = Boolean(header) && state().pageOpen && state().pageTab === 'tokens';
 
       // Shift is refused for overlay-origin keys, so an upper case letter on a button stays put.
       await reset('styles');
@@ -102,7 +106,7 @@
       tab2.focus();
       press(tab2, 'B', { shiftKey: true });
       await frames();
-      const shiftStayed = state().dockTab === 'styles' && state().dockOpen;
+      const shiftStayed = state().dockTab === 'styles' && state().dockOpen && !state().pageOpen;
 
       // The reason the overlay guard exists: arrows on a panel button never move the page selection.
       await reset('styles');
@@ -129,11 +133,11 @@
        * ---------------------------------------------------------------- */
       progress.textContent = 'fields';
       await reset('library');
-      const search = deepAll('input', dock().shadowRoot)[0];
+      const search = deepAll('input', pageDock().shadowRoot)[0];
       search?.focus();
       const searchEvent = search ? press(search, 's') : null;
       await frames();
-      const searchKept = Boolean(search) && state().dockTab === 'library' && !searchEvent.defaultPrevented;
+      const searchKept = Boolean(search) && state().pageTab === 'library' && !state().dockOpen && !searchEvent.defaultPrevented;
 
       await reset('code');
       await frames();
@@ -184,7 +188,7 @@
       const sOpens = state().dockOpen && state().dockTab === 'styles';
       press(document.body, 'b');
       await frames();
-      const bSwitches = state().dockOpen && state().dockTab === 'library';
+      const bSwitches = state().pageOpen && state().pageTab === 'library';
       engine.setDock(false);
       await frames();
       press(document.body, 'S', { shiftKey: true });
@@ -193,8 +197,73 @@
       results.page = {
         thePageShortcutPathIsUnchanged: sOpens && bSwitches && shiftSOpens,
         pageSOpensStyles: sOpens,
-        pageBThenSwitchesToLibrary: bSwitches,
+        pageBThenOpensBlocks: bSwitches,
         pageShiftSStillOpensStyles: shiftSOpens,
+      };
+
+      /* ---------------------------------------------------------------- *
+       * Two panels. The letters open the side that owns their tab, and the same letter again
+       * closes that side only: with one dock, B replaced Styles, and the user lost the panel
+       * they were working in to look something up in the other.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'two panels';
+      api.select(document.getElementById('first'));
+      engine.setDock(false);
+      await frames();
+      press(document.body, 'e');
+      await frames();
+      const eLeft = state().pageOpen && state().pageTab === 'tree' && !state().dockOpen &&
+        Boolean(pageDock()) && !dock('selection');
+      press(document.body, 's');
+      await frames();
+      const sRight = state().dockOpen && state().dockTab === 'styles' &&
+        state().pageOpen && state().pageTab === 'tree';
+      press(document.body, 'b');
+      await frames();
+      const bSwitchedLeft = state().pageTab === 'library' && state().dockTab === 'styles';
+      press(document.body, 'b');
+      await frames();
+      const bClosedLeft = !state().pageOpen && state().dockOpen && state().dockTab === 'styles';
+
+      /*
+       * D toggles the layout, under the same guard as the letters: a D typed in a field is a D,
+       * and Mod+D still duplicates the selection rather than toggling anything.
+       */
+      const layoutBefore = state().layout;
+      press(document.body, 'd');
+      await frames();
+      const dDocked = layoutBefore === 'float' && state().layout === 'dock';
+      press(document.body, 'd');
+      await frames();
+      const dFloated = state().layout === 'float';
+
+      await reset('library');
+      const field = deepAll('input', pageDock().shadowRoot)[0];
+      field?.focus();
+      const dEvent = field ? press(field, 'd') : null;
+      await frames();
+      const dInField = Boolean(field) && state().layout === 'float' && !dEvent.defaultPrevented;
+
+      engine.setDock(false);
+      api.select(document.getElementById('second'));
+      await frames();
+      document.activeElement?.blur?.();
+      const before = document.querySelectorAll('#page p').length;
+      const modD = press(document.body, 'd', { metaKey: true, ctrlKey: true });
+      await frames();
+      const duplicated = document.querySelectorAll('#page p').length === before + 1;
+      const modDKeptLayout = state().layout === 'float' && modD.defaultPrevented;
+      engine.undo();
+      await frames();
+
+      results.twoPanels = {
+        eOpensLayersOnTheLeft: eLeft,
+        sOpensStylesOnTheRightWithoutClosingTheLeft: sRight,
+        bThenSwitchesTheLeftToBlocks: bSwitchedLeft,
+        bAgainClosesOnlyTheLeft: bClosedLeft,
+        dTogglesTheLayout: dDocked && dFloated,
+        dInAFieldTypesD: dInField,
+        modDStillDuplicatesAndLeavesTheLayout: duplicated && modDKeptLayout,
       };
 
       const failed = Object.entries(results)

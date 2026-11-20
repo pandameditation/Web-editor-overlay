@@ -460,7 +460,7 @@ export class HeoPropsPanel extends HeoElement {
       </div>
       <p class="hint" style="margin:0 0 9px">
         ${drifted
-        ? html`The block has changed in the library. Updating brings its latest markup and styles
+        ? html`The block has changed in Blocks. Updating brings its latest markup and styles
             across while keeping the text written here.`
         : 'Changing a value re-renders the block from its template, replacing this element.'}
       </p>

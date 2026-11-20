@@ -251,3 +251,10 @@ export const SEED_SCRIPT_TYPE = 'application/heo-seed';
  * write side and the read side end up describing different tags.
  */
 export const SEED_SCRIPT_SELECTOR = `script[type="${SEED_SCRIPT_TYPE}"]`;
+/**
+ * Height of the toolbar when it is pinned across the top of the window.
+ *
+ * Shared because the docked panels start below it and the docked page is pushed down by it; two
+ * copies of the number would leave a gap or an overlap the moment one of them changed.
+ */
+export const DOCKED_BAR_HEIGHT = 44;

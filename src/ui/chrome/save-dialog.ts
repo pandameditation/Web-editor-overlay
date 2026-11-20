@@ -1194,7 +1194,7 @@ export class HeoSaveDialog extends HeoElement {
     return html`<div class="card">
       <div class="cardhead">
         <span class="text">
-          <span class="name" id="heo-blocks">Block library</span>
+          <span class="name" id="heo-blocks">Blocks</span>
           <span class="detail">
             ${count
         ? html`${count} block${count === 1 ? '' : 's'} · as a
@@ -1220,14 +1220,14 @@ export class HeoSaveDialog extends HeoElement {
             this.editor.setSaveBlockLibrary((event.target as HTMLInputElement).checked)}
           />
           <span class="text">
-            <span class="name">Write the library into the page</span>
+            <span class="name">Write the blocks into the page</span>
             <span class="detail">
               ${count} block${count === 1 ? '' : 's'} · a
               <code class="mono">&lt;script type="application/heo-seed"&gt;</code> in the head
             </span>
             <span class="why">
-              Persists the library in
-              the page so the blocks can be reused later and implemented blocks can sync to the library
+              Persists Blocks in
+              the page so the blocks can be reused later and implemented blocks can sync to Blocks
             </span>
           </span>
         </label>
@@ -1252,7 +1252,7 @@ export class HeoSaveDialog extends HeoElement {
       return html`<button
         class="btn sm"
         type="button"
-        title="Keep the library in the page after all"
+        title="Keep Blocks in the page after all"
         @click=${() => this.editor.undo()}
       >
         ${icon('undo', 11)} Keep it
@@ -1264,11 +1264,11 @@ export class HeoSaveDialog extends HeoElement {
       title="Take the seed script and every instance link out of this page on the next save"
       @click=${() =>
         this.editor.askToConfirm({
-          title: 'Remove the block library from this page?',
+          title: 'Remove Blocks from this page?',
           message:
             'The seed script goes, and so does every data-heo-block attribute tying an element to a template.',
           detail:
-            'The elements themselves are untouched — they keep their markup and stop being components. The library stays in this session, so you can write it back by ticking the box again.',
+            'The elements themselves are untouched — they keep their markup and stop being components. Blocks stay in this session, so you can write them back by ticking the box again.',
           confirmLabel: 'Remove it',
           tone: 'danger',
           reversible: true,
@@ -1277,7 +1277,7 @@ export class HeoSaveDialog extends HeoElement {
           },
         })}
     >
-      ${icon('trash', 11)} Remove block library
+      ${icon('trash', 11)} Remove Blocks
     </button>`;
   }
 

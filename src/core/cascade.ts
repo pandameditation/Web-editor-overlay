@@ -656,7 +656,7 @@ export function targetFor(rule: CSSStyleRule): WriteTarget {
       kind: 'readonly',
       reason:
         owner.id === BLOCK_STYLE_ID
-          ? 'Block CSS: edit it in the Library.'
+          ? 'Block CSS: edit it in Blocks.'
           : owner.id === TOKEN_STYLE_ID
             ? 'The editor generates this from Tokens.'
             : 'The editor generates this sheet. Edit it in Tokens.',

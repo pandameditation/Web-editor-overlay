@@ -88,7 +88,19 @@
       // Shared shadow-DOM accessors.
       const overlayRoot = () => document.querySelector('html-editor-overlay > heo-overlay');
       const dockEl = () => overlayRoot().shadowRoot.querySelector('heo-dock');
-      const dockPanel = (name) => dockEl().shadowRoot.querySelector('heo-' + name + '-panel');
+      /*
+       * The page panel stays open while Styles is used now, so its panels keep their state (a
+       * search typed, a class expanded) between the steps below. Steps written for one dock,
+       * which rebuilt the panel on every switch, close it first.
+       */
+      const freshPagePanel = async () => {
+        engine.setPanelOpen('page', false);
+        await frame();
+      };
+      // Either side panel: Tree, Library, Tokens and SEO open in the page panel, the second heo-dock.
+      const dockPanel = (name) => Array.from(overlayRoot().shadowRoot.querySelectorAll('heo-dock'))
+        .map((dock) => dock.shadowRoot.querySelector('heo-' + name + '-panel'))
+        .find(Boolean) ?? null;
       /**
        * The Styles panel's two views: Cards (by category, closed until opened) and Applied
        * (everything set on the element at once, grouped by card), which is where Effective
@@ -2005,6 +2017,8 @@
         if (!trash || !field) return 'missing';
         return Math.abs(trash.getBoundingClientRect().top - field.getBoundingClientRect().top) < 12;
       });
+      // Fresh, without the class search typed into it further up.
+      await freshPagePanel();
       api.openPanel('tokens');
       await frame();
       const tokensHeader = Array.from(dockPanel('tokens').shadowRoot.querySelectorAll('.cls > header'))
@@ -2377,6 +2391,7 @@
        * Emptying a field is how you retype it; taking the property name away with
        * the value made backspace a destructive act.
        * ------------------------------------------------------------------ */
+      await freshPagePanel();
       api.openPanel('tokens');
       api.select(document.getElementById('para'));
       await frame();
@@ -2860,6 +2875,7 @@
       check('svgIsSelectable', () => engine.selected === glyph);
       api.select(document.getElementById('glyph-path'));
       check('svgShapeIsSelectable', () => engine.selected.id);
+      await freshPagePanel();
       api.openPanel('tree');
       await frame();
       // Selecting expands the path to the selection, so the svg and its shapes are
@@ -3618,6 +3634,7 @@
       delete window.__docApplyProbe;
       engine.history.clear();
 
+      await freshPagePanel();
       api.openPanel('seo');
       await frame();
       await wait(160);

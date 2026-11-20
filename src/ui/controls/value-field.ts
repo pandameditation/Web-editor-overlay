@@ -1280,26 +1280,26 @@ export class HeoValueField extends LitElement {
         .value=${this.#painted ? this.#fontBase : this.value || this.computed}
         .selfToken=${this.selfToken}
         @font-preview=${(event: CustomEvent<{ value: string | null }>) => {
-          event.stopPropagation();
-          if (event.detail.value) {
-            if (!this.#painted) this.#fontCommitted = this.value || this.computed;
-            this.draft = event.detail.value;
-            this.#emit('value-input');
-            return;
-          }
-          this.#fontCommitted = null;
-          this.draft = this.value;
-          if (this.#painted) {
-            this.#painted = false;
-            this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
-          }
-        }}
-        @font-change=${(event: CustomEvent<{ value: string }>) => {
-          event.stopPropagation();
-          this.#fontCommitted = null;
+        event.stopPropagation();
+        if (event.detail.value) {
+          if (!this.#painted) this.#fontCommitted = this.value || this.computed;
           this.draft = event.detail.value;
-          this.#commit();
-        }}
+          this.#emit('value-input');
+          return;
+        }
+        this.#fontCommitted = null;
+        this.draft = this.value;
+        if (this.#painted) {
+          this.#painted = false;
+          this.dispatchEvent(new CustomEvent('value-revert', { bubbles: true, composed: true }));
+        }
+      }}
+        @font-change=${(event: CustomEvent<{ value: string }>) => {
+        event.stopPropagation();
+        this.#fontCommitted = null;
+        this.draft = event.detail.value;
+        this.#commit();
+      }}
       ></heo-font-picker>
     </div>`;
   }
@@ -1328,19 +1328,19 @@ export class HeoValueField extends LitElement {
         .property=${property}
         .tokens=${this.shadowTokens}
         @filter-input=${(event: CustomEvent<{ value: string }>) => {
-          event.stopPropagation();
-          this.draft = event.detail.value;
-          this.#emit('value-input');
-        }}
+        event.stopPropagation();
+        this.draft = event.detail.value;
+        this.#emit('value-input');
+      }}
         @filter-change=${(event: CustomEvent<{ value: string }>) => {
-          event.stopPropagation();
-          this.draft = event.detail.value;
-          this.#commit();
-        }}
+        event.stopPropagation();
+        this.draft = event.detail.value;
+        this.#commit();
+      }}
         @filter-select=${(event: CustomEvent<{ fn: string }>) => {
-          event.stopPropagation();
-          this.#selectText(event.detail.fn);
-        }}
+        event.stopPropagation();
+        this.#selectText(event.detail.fn);
+      }}
       ></heo-filter-editor>
     </div>`;
   }
@@ -1367,16 +1367,16 @@ export class HeoValueField extends LitElement {
         .mode=${mode}
         .tokens=${this.shadowTokens}
         @shadow-input=${(event: CustomEvent<{ value: string }>) => {
-          event.stopPropagation();
-          this.draft = event.detail.value;
-          this.#emit('value-input');
-        }}
+        event.stopPropagation();
+        this.draft = event.detail.value;
+        this.#emit('value-input');
+      }}
         @shadow-change=${(event: CustomEvent<{ value: string }>) => {
-          event.stopPropagation();
-          this.draft = event.detail.value;
-          this.#commit();
-          // A shadow added or removed changes the height: #onDialogResize grows it about its middle.
-        }}
+        event.stopPropagation();
+        this.draft = event.detail.value;
+        this.#commit();
+        // A shadow added or removed changes the height: #onDialogResize grows it about its middle.
+      }}
       ></heo-shadow-editor>
     </div>`;
   }
@@ -2261,19 +2261,19 @@ export class HeoValueField extends LitElement {
                 role="option"
                 aria-selected=${current === this.highlight}
                 title=${item.info
-                ? `${item.label} — what ${item.hint} currently resolves to. Selecting this keeps the expression.`
-                : (item.hint ?? item.value)}
+              ? `${item.label} — what ${item.hint} currently resolves to. Selecting this keeps the expression.`
+              : (item.hint ?? item.value)}
                 @pointerdown=${(event: Event) => event.preventDefault()}
                 @pointerenter=${() => {
-                if (item.info) return;
-                if (this.#highlightMoved) return;
-                this.highlight = current;
-              }}
+              if (item.info) return;
+              if (this.#highlightMoved) return;
+              this.highlight = current;
+            }}
                 @click=${() => this.#choose(item)}
               >
                 ${item.swatch
-                ? html`<span class="swatch" style=${swatchStyle(item.swatch)}></span>`
-                : nothing}
+              ? html`<span class="swatch" style=${swatchStyle(item.swatch)}></span>`
+              : nothing}
                 ${item.icon ? html`<span class="ico">${icon(item.icon, 12)}</span>` : nothing}
                 <span class="name">${item.label ?? item.value}</span>
                 ${item.token ? html`<span class="tokenmark">${icon('droplet', 11)}</span>` : nothing}
@@ -2775,9 +2775,13 @@ export class HeoValueField extends LitElement {
       const first = this.renderRoot.querySelector<HeoValueField>('.cm-row heo-value-field');
       first?.focusInput({ select: true });
       // Re-placed once the parts have laid out, since their height is what decides whether the
-      // composer flips above the field.
+      // composer flips above the field. Measured afresh: the cached height was read before the
+      // parts had drawn, so it was too short, and a composer opened low in the window stayed
+      // below its field with Apply cut off under the cap instead of flipping.
       requestAnimationFrame(() => {
-        if (this.composer) this.#positionPopup();
+        if (!this.composer) return;
+        this.#placer.invalidate();
+        this.#positionPopup();
       });
     });
   }

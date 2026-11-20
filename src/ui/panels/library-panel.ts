@@ -706,7 +706,7 @@ export class HeoLibraryPanel extends HeoElement {
     this.editor.askToConfirm({
       title: `Delete the ${block.name} block?`,
       message:
-        'It goes out of the library, so it cannot be inserted again or used to update anything.',
+        'It goes out of Blocks, so it cannot be inserted again or used to update anything.',
       detail: placed
         ? `The ${placed === 1 ? 'copy' : `${placed} copies`} already in the page ${placed === 1 ? 'stays' : 'stay'} exactly as ${placed === 1 ? 'it is' : 'they are'} — ${placed === 1 ? 'it' : 'they'} just ${placed === 1 ? 'stops' : 'stop'} being linked to a template.`
         : undefined,

@@ -492,7 +492,7 @@ export class HeoInsertMenu extends HeoElement {
           .value=${this.scope}
           .options=${[
         { value: 'all', label: 'All', title: 'Blocks first, then the HTML primitives' },
-        { value: 'blocks', label: 'Blocks', title: 'Assembled patterns from the Library' },
+        { value: 'blocks', label: 'Blocks', title: 'Assembled patterns from Blocks' },
         { value: 'html', label: 'HTML', title: 'Plain elements: paragraphs, lists, tables' },
       ]}
           @segment-change=${(event: CustomEvent<{ value: string }>) => {
@@ -505,7 +505,7 @@ export class HeoInsertMenu extends HeoElement {
       <div class="list" role="listbox">
         ${entries.length === 0
         ? html`<div class="empty">
-              Nothing matches “${this.query}”. Try a tag name, or create a block in the Library
+              Nothing matches “${this.query}”. Try a tag name, or create a block in Blocks
               panel.
             </div>`
         : repeat(

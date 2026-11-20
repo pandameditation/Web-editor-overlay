@@ -1,5 +1,6 @@
 import { DIRTY_ATTR, HOST_TAG } from './constants.js';
 import type { EditorEngine } from './editor.js';
+import { PANEL_TABS } from './panels.js';
 import type { PanelId } from './types.js';
 
 /**
@@ -96,6 +97,9 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
    * failure it exists to prevent.
    */
   if (state.confirm) return;
+  // The shortcuts dialog is modal too: a letter pressed while reading it must not open a panel
+  // behind it, or toggle the layout it is describing.
+  if (state.shortcutsOpen) return;
 
   /*
    * A handle drag owns Escape, which abandons it.
@@ -272,9 +276,16 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
     const tab = PANEL_KEYS[key.toLowerCase()];
     if (tab) {
       event.preventDefault();
-      // Pressing the same key again closes the dock, so a key is a toggle.
-      if (state.dockOpen && state.dockTab === tab) engine.setDock(false);
-      else engine.setDockTab(tab);
+      // Pressing the same key again closes its side only, so a key is a toggle and the other
+      // panel stays where it was.
+      engine.togglePanelTab(tab);
+      return;
+    }
+    // D pins the chrome to the edges or floats it again. Under the same guard as the letters, so
+    // a D typed into a field is a D, and Mod+D (decided above) still duplicates.
+    if (key.toLowerCase() === 'd') {
+      event.preventDefault();
+      engine.toggleLayout();
       return;
     }
   }
@@ -392,17 +403,10 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
 
 }
 
-/** Single-key panel shortcuts, in dock tab order. */
-const PANEL_KEYS: Record<string, PanelId> = {
-  s: 'styles',
-  t: 'tokens',
-  e: 'tree',
-  b: 'library',
-  p: 'props',
-  m: 'media',
-  c: 'code',
-  o: 'seo',
-};
+/** Single-key panel shortcuts, from the one tab table so a key and its tooltip cannot disagree. */
+const PANEL_KEYS: Record<string, PanelId> = Object.fromEntries(
+  PANEL_TABS.map((tab) => [tab.key.toLowerCase(), tab.id]),
+);
 
 /**
  * The release of Escape ends a text edit its press could not reach.
@@ -455,7 +459,11 @@ export const SHORTCUTS: Array<{ keys: string; action: string }> = [
   { keys: 'Delete', action: 'Delete (every selected element)' },
   { keys: 'Mod+Z / Shift+Mod+Z', action: 'Undo / redo' },
   { keys: 'Mod+S', action: 'Review and save changes' },
-  { keys: 'S T E B P M C O', action: 'Styles, Tokens, Tree, Library, Props, Media, Code, SEO' },
+  {
+    keys: PANEL_TABS.map((tab) => tab.key).join(' '),
+    action: PANEL_TABS.map((tab) => tab.label).join(', '),
+  },
+  { keys: 'D', action: 'Pin the toolbar and panels to the edges, or float them again' },
   { keys: 'Escape', action: 'Close the topmost thing, then clear the selection, then leave edit mode' },
   { keys: 'Escape (editing text)', action: 'Finish the edit and keep it; Mod+Z takes it back' },
 ];

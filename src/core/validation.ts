@@ -42,7 +42,7 @@ export function classExtractionIssues(pending: ClassExtraction): FieldIssue[] {
 export function blockSourceIssues(pending: BlockExtraction): FieldIssue[] {
   const issues: FieldIssue[] = [];
   if (!pending.name.trim()) {
-    issues.push({ field: 'block-name', message: 'Type a name for this block. It is how you will find it in the Library.' });
+    issues.push({ field: 'block-name', message: 'Type a name for this block. It is how you will find it in Blocks.' });
   }
   if (!pending.html.trim()) {
     issues.push({ field: 'block-html', message: 'Write the markup the block inserts.' });

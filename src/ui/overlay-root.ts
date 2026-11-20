@@ -65,6 +65,10 @@ export class HeoOverlay extends HeoElement {
       [
         s.editing,
         s.dockOpen,
+        s.pageOpen,
+        s.layout,
+        s.shortcutsOpen,
+        s.previewLabel,
         s.quickMenuOpen,
         s.insertAnchor,
         /*
@@ -122,7 +126,12 @@ export class HeoOverlay extends HeoElement {
         : nothing}
       ${state.editing ? html`<heo-selection-layer></heo-selection-layer>` : nothing}
       <heo-toolbar></heo-toolbar>
-      ${state.editing && state.dockOpen ? html`<heo-dock></heo-dock>` : nothing}
+      <!--
+        The selection panel first: fixtures written when there was one dock find it as the first
+        heo-dock, and it is still the panel most of them mean.
+      -->
+      ${state.editing && state.dockOpen ? html`<heo-dock side="selection"></heo-dock>` : nothing}
+      ${state.editing && state.pageOpen ? html`<heo-dock side="page"></heo-dock>` : nothing}
       ${state.editing && state.quickMenuOpen ? html`<heo-quick-menu></heo-quick-menu>` : nothing}
       ${state.editing && state.aiMenuOpen ? html`<heo-ai-menu></heo-ai-menu>` : nothing}
       ${state.editing && state.insertAnchor ? html`<heo-insert-menu></heo-insert-menu>` : nothing}

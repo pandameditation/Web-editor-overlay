@@ -29,6 +29,7 @@ import {
   TOKEN_STYLE_ID,
   VERSION,
 } from './constants.js';
+import { sideOf, type PanelSide } from './panels.js';
 import {
   appliedRules,
   attributeBeforePreview,
@@ -811,6 +812,10 @@ export interface EditorState {
   quickMenuAnchor: HTMLElement | null;
   hovered: HTMLElement | null;
   textEditing: HTMLElement | null;
+  /*
+   * The selection panel (right): Styles, Props, Media, Code. The names predate the second panel
+   * and are kept, because fixtures, the viewport preview and the public snapshot all read them.
+   */
   dockOpen: boolean;
   dockTab: PanelId;
   toolbar: { x: number; y: number };
@@ -823,6 +828,21 @@ export interface EditorState {
    * so it can be parked anywhere, including over a wide layout's empty gutter.
    */
   dockFloat: { x: number; y: number; height: number } | null;
+  /** The page panel (left): Layers, Blocks, Tokens, SEO. The selection panel's fields, mirrored. */
+  pageOpen: boolean;
+  pageTab: PanelId;
+  pageWidth: number;
+  /** As `dockFloat`: null keeps the page panel anchored to the left edge. */
+  pageFloat: { x: number; y: number; height: number } | null;
+  /** Floating over the page, or pinned to the window edges with the page laid out between. */
+  layout: 'float' | 'dock';
+  /**
+   * Whether the "Previewing…" label shows. Set by a viewport change and by docking, cleared by
+   * the label's own close button, which leaves the width alone.
+   */
+  previewLabel: boolean;
+  /** The read-only keyboard shortcuts dialog. */
+  shortcutsOpen: boolean;
   drag: DragState | null;
   quickMenuOpen: boolean;
   /**
@@ -1408,6 +1428,13 @@ export class EditorEngine {
       toolbar: { ...DEFAULT_TOOLBAR },
       dockWidth: 340,
       dockFloat: null,
+      pageOpen: false,
+      pageTab: 'tree',
+      pageWidth: 264,
+      pageFloat: null,
+      layout: 'float',
+      previewLabel: false,
+      shortcutsOpen: false,
       drag: null,
       quickMenuOpen: false,
       clipboardSize: 0,
@@ -1836,7 +1863,9 @@ export class EditorEngine {
       quickMenuOpen: false,
       quickMenuAnchor: null,
       insertAnchor: null,
-      dockOpen: editing ? this.store.value.dockOpen : false,
+      // The panels are left as they are. Clearing dockOpen here meant Edit off and on again lost
+      // the open panel, although the user expects the layout, tabs and sizes to come back as left;
+      // the overlay root already hides every panel while not editing.
     });
     if (editing) void this.#sweepOnLoad();
   }
@@ -1845,33 +1874,102 @@ export class EditorEngine {
     this.setEditing(!this.store.value.editing);
   }
 
+  /**
+   * Open or close the panels.
+   *
+   * With a tab, it acts on the side that owns the tab: opening selects it there, closing closes
+   * that side only. Without one, closing closes both panels and opening opens the selection
+   * panel, which is what "the dock" meant before there were two.
+   */
   setDock(open: boolean, tab?: PanelId): void {
-    this.store.patch({ dockOpen: open, ...(tab ? { dockTab: tab } : {}) });
+    if (tab) {
+      if (open) this.setDockTab(tab);
+      else this.setPanelOpen(sideOf(tab), false);
+      return;
+    }
+    if (open) this.store.patch({ dockOpen: true });
+    else this.store.patch({ dockOpen: false, pageOpen: false });
   }
 
+  /** Open the side that owns `tab` on it. The other side is left as it is. */
   setDockTab(tab: PanelId): void {
-    this.store.patch({ dockTab: tab, dockOpen: true });
+    if (sideOf(tab) === 'page') this.store.patch({ pageTab: tab, pageOpen: true });
+    else this.store.patch({ dockTab: tab, dockOpen: true });
+  }
+
+  /** A tab's key: opens it, or closes its side when it is already the one showing. */
+  togglePanelTab(tab: PanelId): void {
+    const state = this.store.value;
+    const page = sideOf(tab) === 'page';
+    const showing = page ? state.pageOpen && state.pageTab === tab : state.dockOpen && state.dockTab === tab;
+    if (showing) this.setPanelOpen(page ? 'page' : 'selection', false);
+    else this.setDockTab(tab);
+  }
+
+  setPanelOpen(side: PanelSide, open: boolean): void {
+    this.store.patch(side === 'page' ? { pageOpen: open } : { dockOpen: open });
+  }
+
+  /** Clamped per side: the page panel's lists stay usable narrower than the Styles panel does. */
+  setPanelWidth(side: PanelSide, width: number): void {
+    const w = Math.round(width);
+    if (side === 'page') this.store.patch({ pageWidth: Math.max(220, Math.min(560, w)) });
+    else this.store.patch({ dockWidth: Math.max(300, Math.min(560, w)) });
+  }
+
+  /** Park a panel at an explicit position. Clamped so it stays reachable. */
+  setPanelFloat(side: PanelSide, x: number, y: number, height: number): void {
+    const state = this.store.value;
+    const width = side === 'page' ? state.pageWidth : state.dockWidth;
+    const box = {
+      x: Math.min(Math.max(8, Math.round(x)), Math.max(8, innerWidth - width - 8)),
+      y: Math.min(Math.max(8, Math.round(y)), Math.max(8, innerHeight - 80)),
+      height: Math.max(240, Math.min(Math.round(height), innerHeight - 16)),
+    };
+    this.store.patch(side === 'page' ? { pageFloat: box } : { dockFloat: box });
+  }
+
+  /** Send a panel back to its edge. */
+  resetPanelPosition(side: PanelSide): void {
+    this.store.patch(side === 'page' ? { pageFloat: null } : { dockFloat: null });
   }
 
   setDockWidth(width: number): void {
-    this.store.patch({ dockWidth: Math.max(300, Math.min(560, Math.round(width))) });
+    this.setPanelWidth('selection', width);
   }
 
-  /** Park the dock at an explicit position. Clamped so it stays reachable. */
+  /** The selection panel's `setPanelFloat`. */
   setDockFloat(x: number, y: number, height: number): void {
-    const width = this.store.value.dockWidth;
-    this.store.patch({
-      dockFloat: {
-        x: Math.min(Math.max(8, Math.round(x)), Math.max(8, innerWidth - width - 8)),
-        y: Math.min(Math.max(8, Math.round(y)), Math.max(8, innerHeight - 80)),
-        height: Math.max(240, Math.min(Math.round(height), innerHeight - 16)),
-      },
-    });
+    this.setPanelFloat('selection', x, y, height);
   }
 
-  /** Send the dock back to the right edge. */
+  /** Send the selection panel back to the right edge. */
   resetDockPosition(): void {
-    this.store.patch({ dockFloat: null });
+    this.resetPanelPosition('selection');
+  }
+
+  /**
+   * Float the chrome over the page, or pin it to the window edges.
+   *
+   * Docking shows the preview label again: the page is now laid out at a width the user did not
+   * pick, and the label is what says which.
+   */
+  setLayout(layout: 'float' | 'dock'): void {
+    if (this.store.value.layout === layout) return;
+    this.store.patch(layout === 'dock' ? { layout, previewLabel: true } : { layout });
+  }
+
+  toggleLayout(): void {
+    this.setLayout(this.store.value.layout === 'dock' ? 'float' : 'dock');
+  }
+
+  /** Show or hide the "Previewing…" label. The previewed width is not touched. */
+  setPreviewLabel(shown: boolean): void {
+    this.store.patch({ previewLabel: shown });
+  }
+
+  setShortcuts(open: boolean): void {
+    this.store.patch({ shortcutsOpen: open });
   }
 
   setToolbarPosition(x: number, y: number): void {
@@ -3312,11 +3410,11 @@ export class EditorEngine {
   blockReachText(id: string): string {
     const { name, inLibrary, instances } = this.#blockReach(id);
     if (inLibrary) {
-      return `Edits the ${name} block: its library entry and ${instances} ${instances === 1 ? 'copy' : 'copies'} on this page.`;
+      return `Edits the ${name} block: its entry in Blocks and ${instances} ${instances === 1 ? 'copy' : 'copies'} on this page.`;
     }
     return instances > 1
-      ? `Edits all ${instances} pasted copies of ${name}. It is not in the library.`
-      : `Edits only this pasted ${name}. It is not in the library.`;
+      ? `Edits all ${instances} pasted copies of ${name}. It is not in Blocks.`
+      : `Edits only this pasted ${name}. It is not in Blocks.`;
   }
 
   #restoreBlockPreview(): void {
@@ -5206,12 +5304,12 @@ export class EditorEngine {
           void this.insertBlock(block, this.library.defaultProps(block), pending.insertAt);
         } else {
           this.notify(
-            `Saved ${block.name} to the library. The element it was going next to is no longer in the page, so it was not inserted.`,
+            `Saved ${block.name} to Blocks. The element it was going next to is no longer in the page, so it was not inserted.`,
             'info',
           );
         }
       } else if (!pending.id) {
-        this.notify(`Saved ${block.name} to the library.`, 'success');
+        this.notify(`Saved ${block.name} to Blocks.`, 'success');
       } else if (!placed) {
         this.notify(`Updated ${block.name}.`, 'success');
       } else if (pending.applyToInstances) {
@@ -5364,8 +5462,8 @@ export class EditorEngine {
         id: nextChangeId(),
         kind: 'block',
         summary: previous
-          ? `Update the ${next.name} block in the library`
-          : `Add a reusable ${next.name} block to the library`,
+          ? `Update the ${next.name} block in Blocks`
+          : `Add a reusable ${next.name} block to Blocks`,
         target: next.name,
         before: previous?.html,
         after: next.html,
@@ -5432,7 +5530,7 @@ export class EditorEngine {
       record: {
         id: nextChangeId(),
         kind: 'block',
-        summary: `Remove the ${snapshot.name} block from the library`,
+        summary: `Remove the ${snapshot.name} block from Blocks`,
         target: snapshot.name,
         before: snapshot.html,
         detail: { block: snapshot.name },
@@ -5446,7 +5544,7 @@ export class EditorEngine {
       },
     });
     this.#bumpRevision();
-    this.notify(`Removed ${snapshot.name} from the library.`, 'info', {
+    this.notify(`Removed ${snapshot.name} from Blocks.`, 'info', {
       label: 'Undo',
       run: () => this.undo(),
     });
@@ -5578,7 +5676,7 @@ export class EditorEngine {
     );
     const seeds = Array.from(document.querySelectorAll(SEED_SCRIPT_SELECTOR));
     if (!links.length && !parts.length && !seeds.length) {
-      this.notify('This page is not carrying a block library.', 'info');
+      this.notify('This page is not carrying Blocks.', 'info');
       return 0;
     }
 
@@ -5597,12 +5695,12 @@ export class EditorEngine {
     const parents = seeds.map((tag) => ({ tag, parent: tag.parentNode, next: tag.nextSibling }));
 
     this.history.commit({
-      label: 'Remove the block library from the page',
+      label: 'Remove Blocks from the page',
       record: {
         id: nextChangeId(),
         kind: 'block',
-        summary: `Remove the block library from the page${links.length ? ` and its ${links.length} instance link${links.length === 1 ? '' : 's'}` : ''}`,
-        target: 'block library',
+        summary: `Remove Blocks from the page${links.length ? ` and its ${links.length} instance link${links.length === 1 ? '' : 's'}` : ''}`,
+        target: 'Blocks',
         detail: { block: 'library' },
         at: Date.now(),
       },
@@ -5622,7 +5720,7 @@ export class EditorEngine {
     this.#bumpRevision();
     this.#replanSave();
     this.notify(
-      `The block library will be removed from the page on the next save.`,
+      `Blocks will be removed from the page on the next save.`,
       'info',
       { label: 'Undo', run: () => this.undo() },
     );
@@ -6407,8 +6505,12 @@ export class EditorEngine {
     if (width !== null && (!Number.isInteger(width) || width < MIN_VIEWPORT || width > MAX_VIEWPORT)) {
       return false;
     }
+    const before = this.store.value.previewWidth;
     if (!this.viewport.set(width)) return false;
-    this.store.patch({ previewWidth: this.viewport.width });
+    const now = this.viewport.width;
+    // A new width brings the label back even after it was closed: it is the only thing on screen
+    // saying the page is not shown at the window's own width.
+    this.store.patch(now !== before ? { previewWidth: now, previewLabel: true } : { previewWidth: now });
     return true;
   }
 
@@ -7324,7 +7426,7 @@ export class EditorEngine {
       this.notify(
         one
           ? `${labelFor(one)} already matches ${block.name}.`
-          : `Every ${block.name} in the page already matches the library.`,
+          : `Every ${block.name} in the page already matches Blocks.`,
         'info',
       );
       return 0;
@@ -7461,7 +7563,7 @@ export class EditorEngine {
   /** What a sync did, for its toast. */
   #syncToast(block: LibraryBlock, count: number): string {
     const what = count === 1 ? `1 ${block.name}` : `${count} × ${block.name}`;
-    return `Updated ${what} from the library.`;
+    return `Updated ${what} from Blocks.`;
   }
 
   /**
@@ -7705,7 +7807,7 @@ export class EditorEngine {
     }
     this.store.patch({ capturePaste: null });
     if (saved && !inserted) {
-      this.notify(`Saved ${saved.name} to the library.`, 'success', { label: 'Undo', run: () => this.undo() });
+      this.notify(`Saved ${saved.name} to Blocks.`, 'success', { label: 'Undo', run: () => this.undo() });
     }
     return { inserted, saved };
   }
@@ -11808,6 +11910,9 @@ export class EditorEngine {
       changes: this.history.netSize,
       dockOpen: state.dockOpen,
       dockTab: state.dockTab,
+      pageOpen: state.pageOpen,
+      pageTab: state.pageTab,
+      layout: state.layout,
     };
   }
 

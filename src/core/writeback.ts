@@ -683,7 +683,7 @@ export async function buildWritePlan(
           unwritable.push({
             record,
             reason:
-              'The library is written into the markup, and this save is not writing the markup.',
+              'Blocks are written into the markup, and this save is not writing the markup.',
           });
         }
         continue;
@@ -693,8 +693,8 @@ export async function buildWritePlan(
       unwritable.push({
         record,
         reason:
-          'The block library is not being written into the page, so this has nowhere to go. ' +
-          'Tick “Write the library into the page” above to persist it.',
+          'Blocks are not being written into the page, so this has nowhere to go. ' +
+          'Tick “Write the blocks into the page” above to persist it.',
       });
       continue;
     }
@@ -704,7 +704,7 @@ export async function buildWritePlan(
         unwritable.push({
           record,
           reason:
-            'This authored block CSS is carried by the block-library seed, and this save is not writing the markup.',
+            'This authored block CSS is carried by the Blocks seed, and this save is not writing the markup.',
         });
       }
       continue;

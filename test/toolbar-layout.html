@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Toolbar and side panels layout</title>
+  <style>
+    body { margin: 0; padding: 24px; font-family: system-ui, sans-serif; }
+    pre { margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <!--
+    The toolbar rework: two side panels (the page panel on the left, the selection panel on the
+    right), each resizable from its inner edge and movable by its header row; the layout pin;
+    the toolbar order, handle and anchoring; the viewport dropdown; and the preview label.
+    Groups are added here as each part lands.
+  -->
+  <main id="page">
+    <h1 id="title">Layout probe</h1>
+    <p id="first">First paragraph.</p>
+    <p id="second">Second paragraph.</p>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const errors = [];
+      window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+      window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+      const results = {};
+      const diagnostics = { innerWidth, innerHeight };
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+      const safe = (fn) => { try { return fn(); } catch (err) { errors.push(String(err && err.stack || err)); return false; } };
+      const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      await frames();
+      const state = () => engine.store.value;
+
+      // Walks every open shadow root, so a test never depends on how deep a control is nested.
+      const deepAll = (selector, root = document) => {
+        const found = [];
+        const walk = (node) => {
+          found.push(...node.querySelectorAll(selector));
+          for (const el of node.querySelectorAll('*')) if (el.shadowRoot) walk(el.shadowRoot);
+        };
+        walk(root);
+        return found;
+      };
+      // Re-queried every time: the panels re-render on every store change.
+      const dock = (side) => deepAll(`heo-dock[side="${side}"]`)[0] ?? null;
+      const inDock = (side, selector) => dock(side)?.shadowRoot.querySelector(selector) ?? null;
+      const tabs = (side) => Array.from(dock(side)?.shadowRoot.querySelectorAll('.tab') ?? []);
+      const rect = (el) => el?.getBoundingClientRect() ?? null;
+      // Every text node and every labelling attribute a user can see or hear, through shadow roots.
+      const visibleWords = (root) => {
+        const words = [];
+        const walk = (node) => {
+          for (const el of node.querySelectorAll('*')) {
+            for (const name of ['title', 'aria-label', 'placeholder', 'action']) {
+              if (el.hasAttribute(name)) words.push(el.getAttribute(name));
+            }
+            if (el.shadowRoot) walk(el.shadowRoot);
+          }
+          const texts = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+          for (let t = texts.nextNode(); t; t = texts.nextNode()) {
+            if (!['STYLE', 'SCRIPT'].includes(t.parentNode?.nodeName)) words.push(t.data);
+          }
+        };
+        if (root?.shadowRoot) walk(root.shadowRoot);
+        return words.join(' ');
+      };
+      // Real input: synthetic pointer events do not grant pointer capture, so a drag would not move.
+      let inputSeq = 0;
+      const inputWaiters = new Map();
+      window.__heoKeysDone = (id) => { inputWaiters.get(id)?.(); inputWaiters.delete(id); };
+      const trusted = (request) => new Promise((resolve) => {
+        const id = ++inputSeq;
+        inputWaiters.set(id, resolve);
+        window.__heoPressKeys(JSON.stringify({ id, ...request }));
+      }).then(frames);
+      const drag = (from, to) => trusted({
+        mouse: [
+          { type: 'hover', x: from.x, y: from.y },
+          { type: 'down', x: from.x, y: from.y },
+          { type: 'move', x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 },
+          { type: 'move', x: to.x, y: to.y },
+          { type: 'up', x: to.x, y: to.y },
+        ],
+      });
+      const grabPoint = (side) => {
+        const box = rect(inDock(side, '.grab'));
+        return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+      };
+      const headerPoint = (side) => {
+        const box = rect(inDock(side, 'header .title'));
+        return { x: Math.round(box.left + 20), y: Math.round(box.top + box.height / 2) };
+      };
+      const reset = async () => {
+        engine.setLayout('float');
+        engine.resetPanelPosition('page');
+        engine.resetPanelPosition('selection');
+        engine.setPanelWidth('page', 264);
+        engine.setPanelWidth('selection', 340);
+        api.select(document.getElementById('first'));
+        engine.setDockTab('tree');
+        engine.setDockTab('styles');
+        await frames();
+      };
+
+      /* ---------------------------------------------------------------- *
+       * Panels. The page's tabs on the left, the selection's on the right, from one table.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'panels';
+      await reset();
+      const KEYS = { Layers: 'E', Blocks: 'B', Tokens: 'T', SEO: 'O', Styles: 'S', Props: 'P', Media: 'M', Code: 'C' };
+      const labels = (side) => tabs(side).map((t) => t.getAttribute('aria-label'));
+      const pageBox = rect(dock('page'));
+      const selectionBox = rect(dock('selection'));
+      // Each tab names its tip, the tip carries the tab's key: the tooltip is the only place the
+      // panel letters are written down next to the thing they open.
+      const tipsCarryKeys = ['page', 'selection'].every((side) => tabs(side).every((tab) => {
+        const id = tab.getAttribute('aria-describedby');
+        const tipEl = id ? dock(side).shadowRoot.getElementById(id) : null;
+        return tipEl?.getAttribute('role') === 'tooltip' && tipEl.contains(tab) === false && tab.contains(tipEl) &&
+          tipEl.querySelector('kbd')?.textContent.trim() === KEYS[tab.getAttribute('aria-label')];
+      }));
+      // Keyboard focus shows a tip, which a title attribute never did.
+      const layersTab = tabs('page')[0];
+      layersTab.focus();
+      await trusted({ keys: ['Tab'] });
+      await settle(200);
+      const focusedTab = (() => {
+        let a = document.activeElement;
+        while (a?.shadowRoot?.activeElement) a = a.shadowRoot.activeElement;
+        return a;
+      })();
+      const focusedTip = focusedTab?.querySelector('.tip');
+      const tipOnFocus = focusedTab?.getAttribute('aria-label') === 'Blocks' && Boolean(focusedTip) &&
+        getComputedStyle(focusedTip).visibility === 'visible';
+      // And not before: a tip on every tab at once is noise.
+      const otherTip = tabs('page')[2]?.querySelector('.tip');
+      const othersHidden = Boolean(otherTip) && getComputedStyle(otherTip).visibility === 'hidden';
+      // The tip sits inside the panel: the panel clips its content, and a clipped tip is no tip.
+      const tipBox = rect(focusedTip);
+      const tipInside = Boolean(tipBox) && tipBox.left >= pageBox.left - 1 && tipBox.right <= pageBox.right + 1;
+      focusedTab?.blur();
+
+      const blocksTab = inDock('page', '.tab[data-tab="library"]');
+      engine.setDockTab('library');
+      await frames();
+      await settle(150);
+      const blocksWords = visibleWords(deepAll('heo-library-panel')[0]) + ' ' + visibleWords(dock('page'));
+      engine.setDockTab('tree');
+      await frames();
+
+      results.panels = {
+        layersBlocksTokensSeoAreOnTheLeft: safe(() =>
+          labels('page').join() === 'Layers,Blocks,Tokens,SEO' && Math.round(pageBox.left) === 14),
+        stylesPropsMediaCodeAreOnTheRight: safe(() =>
+          labels('selection').join() === 'Styles,Props,Media,Code' && Math.round(innerWidth - selectionBox.right) === 14),
+        bothPanelsAreOpenTogether: state().pageOpen && state().dockOpen && Boolean(dock('page')) && Boolean(dock('selection')),
+        eachTabTipShowsItsKey: tipsCarryKeys,
+        aTabTipShowsOnKeyboardFocus: tipOnFocus,
+        otherTipsStayHidden: othersHidden,
+        theTipStaysInsideThePanel: tipInside,
+        blocksTabIsNamedBlocks: safe(() =>
+          blocksTab.getAttribute('aria-label') === 'Blocks' && blocksTab.querySelector('.label').textContent.trim() === 'Blocks'),
+        noUserVisibleLibraryInTheBlocksPanel: blocksWords.length > 40 && !/librar/i.test(blocksWords),
+        thePageHeaderNamesThePage: safe(() =>
+          inDock('page', '.title .name').textContent.trim() === 'Page' &&
+          inDock('page', '.title .target').textContent.trim() === document.title),
+        theSelectionHeaderNamesTheTabAndTheElement: safe(() =>
+          inDock('selection', '.title .name').textContent.trim() === 'Styles' &&
+          /first/i.test(inDock('selection', '.title .target').textContent)),
+        closingOneLeavesTheOther: await (async () => {
+          inDock('page', 'header button[aria-label="Close panel"]').click();
+          await frames();
+          const ok = !state().pageOpen && !dock('page') && state().dockOpen && Boolean(dock('selection'));
+          engine.setDockTab('tree');
+          await frames();
+          return ok;
+        })(),
+      };
+
+      /* ---------------------------------------------------------------- *
+       * Resize from the inner edge, move by the header row, and back to the edge.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'resize';
+      await reset();
+      // Out of the way of the page panel's header, which the bar's old default corner covers.
+      engine.setToolbarPosition(Math.round(innerWidth / 2) - 60, innerHeight - 60);
+      await frames();
+      const grabs = ['page', 'selection'].map((side) => inDock(side, '.grab'));
+      const separators = grabs.every((g) => g?.getAttribute('role') === 'separator' &&
+        g.getAttribute('aria-orientation') === 'vertical' && Boolean(g.getAttribute('aria-label')));
+      // The page panel's grab is on its right edge, the selection panel's on its left.
+      const pageGrabOnRight = Math.abs(rect(grabs[0]).left + rect(grabs[0]).width / 2 - rect(dock('page')).right) <= 4;
+      const selGrabOnLeft = Math.abs(rect(grabs[1]).left + rect(grabs[1]).width / 2 - rect(dock('selection')).left) <= 4;
+
+      let from = grabPoint('page');
+      await drag(from, { x: from.x + 60, y: from.y });
+      const pageGrew = state().pageWidth === 324 && Math.round(rect(dock('page')).width) === 324 &&
+        Math.round(rect(dock('page')).left) === 14;
+
+      from = grabPoint('selection');
+      await drag(from, { x: from.x - 40, y: from.y });
+      const selGrew = state().dockWidth === 380 && Math.round(rect(dock('selection')).width) === 380 &&
+        Math.round(innerWidth - rect(dock('selection')).right) === 14;
+
+      from = grabPoint('page');
+      await drag(from, { x: from.x - 400, y: from.y });
+      const pageMin = state().pageWidth;
+      engine.setPanelWidth('page', 2000);
+      const pageMax = state().pageWidth;
+      engine.setPanelWidth('selection', 10);
+      const selMin = state().dockWidth;
+      engine.setPanelWidth('selection', 2000);
+      const selMax = state().dockWidth;
+      await reset();
+
+      // Moving a floating panel by its header row.
+      const backBefore = inDock('page', 'button[aria-label="Back to the left edge"]');
+      from = headerPoint('page');
+      await drag(from, { x: from.x + 100, y: from.y + 50 });
+      const moved = state().pageFloat;
+      const movedBox = rect(dock('page'));
+      const headerMoved = Boolean(moved) && Math.round(movedBox.left) === 114 && Math.round(movedBox.top) === 64 &&
+        dock('page').hasAttribute('data-floating');
+      const back = inDock('page', 'button[aria-label="Back to the left edge"]');
+      const offersBack = !backBefore && Boolean(back);
+      back?.click();
+      await frames();
+      const wentBack = state().pageFloat === null && Math.round(rect(dock('page')).left) === 14 &&
+        !dock('page').hasAttribute('data-floating');
+      engine.setDockFloat(200, 60, 400);
+      await frames();
+      const selBack = inDock('selection', 'button[aria-label="Back to the right edge"]');
+      selBack?.click();
+      await frames();
+      const selWentBack = Boolean(selBack) && state().dockFloat === null &&
+        Math.round(innerWidth - rect(dock('selection')).right) === 14;
+
+      // Pinned: flush to the edges under the bar, no move, no back button, still resizable.
+      engine.setPanelFloat('page', 200, 80, 400);
+      engine.setLayout('dock');
+      await frames();
+      const BAR = 44;
+      const pinnedPage = rect(dock('page'));
+      const pinnedSel = rect(dock('selection'));
+      const flush = Math.round(pinnedPage.left) === 0 && Math.round(pinnedPage.top) === BAR &&
+        Math.round(pinnedPage.bottom) === innerHeight && Math.round(pinnedSel.right) === innerWidth &&
+        Math.round(pinnedSel.top) === BAR && Math.round(pinnedSel.bottom) === innerHeight;
+      const noMoveChrome = !inDock('page', '.grip-dots') && !inDock('page', 'button[aria-label^="Back to"]') &&
+        !dock('page').hasAttribute('data-floating');
+      from = headerPoint('page');
+      await drag(from, { x: from.x + 80, y: from.y + 40 });
+      const headerStill = Math.round(rect(dock('page')).left) === 0 &&
+        state().pageFloat?.x === 200 && state().pageFloat?.y === 80;
+      from = grabPoint('page');
+      await drag(from, { x: from.x + 30, y: from.y });
+      const pinnedResized = state().pageWidth === 294 && Math.round(rect(dock('page')).width) === 294;
+      engine.setLayout('float');
+      await frames();
+      // The parked box was kept for when the panels float again.
+      const parkedKept = Math.round(rect(dock('page')).left) === 200 && dock('page').hasAttribute('data-floating');
+
+      results.resize = {
+        theGrabsAreVerticalSeparators: separators,
+        pageGrabIsOnItsRightEdge: pageGrabOnRight,
+        selectionGrabIsOnItsLeftEdge: selGrabOnLeft,
+        pageResizesFromItsRightEdge: pageGrew,
+        selectionResizesFromItsLeftEdge: selGrew,
+        widthIsClamped: pageMin === 220 && pageMax === 560 && selMin === 300 && selMax === 560,
+        headerDragMovesAFloatingPanel: headerMoved,
+        aMovedPanelOffersBackToItsEdge: offersBack && wentBack && selWentBack,
+        pinnedPanelsAreFlushUnderTheBar: flush,
+        pinnedPanelsHaveNoGripAndNoBackButton: noMoveChrome,
+        pinnedHeaderDragDoesNotMoveThePanel: headerStill,
+        pinnedPanelsStillResize: pinnedResized,
+        floatingAgainReturnsToTheParkedBox: parkedKept,
+      };
+
+      /* ---------------------------------------------------------------- *
+       * Edit off and on keeps the panels as they were. Edit off used to close the dock.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'kept';
+      await reset();
+      engine.setDockTab('tokens');
+      engine.setDockTab('props');
+      engine.setPanelWidth('page', 300);
+      engine.setPanelWidth('selection', 400);
+      engine.setPanelFloat('page', 150, 70, 420);
+      engine.setLayout('dock');
+      await frames();
+      const keep = (s) => JSON.stringify([s.pageOpen, s.pageTab, s.pageWidth, s.pageFloat, s.dockOpen, s.dockTab, s.dockWidth, s.dockFloat, s.layout]);
+      const before = keep(state());
+      const boxesBefore = ['page', 'selection'].map((side) => JSON.stringify(rect(dock(side)).toJSON()));
+      api.setEditing(false);
+      await frames();
+      const hiddenWhileOff = !dock('page') && !dock('selection');
+      const keptWhileOff = keep(state()) === before;
+      api.setEditing(true);
+      await frames();
+      await settle(300);
+      const boxesAfter = ['page', 'selection'].map((side) => JSON.stringify(rect(dock(side))?.toJSON() ?? null));
+      results.kept = {
+        panelsAreHiddenWhileEditIsOff: hiddenWhileOff,
+        theStoreKeepsThemWhileEditIsOff: keptWhileOff,
+        editOffAndOnKeepsPanelsTabsSizesAndPositions: keep(state()) === before &&
+          boxesAfter.join() === boxesBefore.join() &&
+          tabs('page').find((t) => t.getAttribute('aria-selected') === 'true')?.getAttribute('aria-label') === 'Tokens' &&
+          tabs('selection').find((t) => t.getAttribute('aria-selected') === 'true')?.getAttribute('aria-label') === 'Props',
+      };
+      await reset();
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value !== true))
+        .map(([name]) => name);
+      progress.textContent = 'done';
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: failed.length === 0 && errors.length === 0, failed, errors, results, diagnostics }, null, 2) + ':END';
+    })().catch((err) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: false, failed: ['THREW'], errors: [String(err && err.stack || err)] }) + ':END';
+    });
+  </script>
+</body>
+</html>

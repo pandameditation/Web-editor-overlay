@@ -346,7 +346,7 @@
         // It used to vanish: no write, no unwritable entry, and a plan claiming everything
         // was already in the files.
         accountedFor: blockReasons.length > 0,
-        actionable: blockReasons.some((reason) => reason.includes('Write the library into the page')),
+        actionable: blockReasons.some((reason) => reason.includes('Write the blocks into the page')),
       };
       results.explained.ok = results.explained.accountedFor && results.explained.actionable;
 

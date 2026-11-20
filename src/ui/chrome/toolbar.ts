@@ -4,18 +4,7 @@ import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
-import type { PanelId } from '../../core/types.js';
-
-const TABS: Array<{ id: PanelId; label: string; glyph: string; key: string }> = [
-  { id: 'styles', label: 'Styles', glyph: 'styles', key: 'S' },
-  { id: 'tokens', label: 'Tokens', glyph: 'droplet', key: 'T' },
-  { id: 'tree', label: 'Tree', glyph: 'tree', key: 'E' },
-  { id: 'library', label: 'Library', glyph: 'blocks', key: 'B' },
-  { id: 'props', label: 'Props', glyph: 'sliders', key: 'P' },
-  { id: 'media', label: 'Media', glyph: 'image', key: 'M' },
-  { id: 'code', label: 'Code', glyph: 'code', key: 'C' },
-  { id: 'seo', label: 'SEO', glyph: 'search', key: 'O' },
-];
+import { PANEL_TABS } from '../../core/panels.js';
 
 /**
  * The floating toolbar.
@@ -176,6 +165,8 @@ export class HeoToolbar extends HeoElement {
         s.selected,
         s.dockOpen,
         s.dockTab,
+        s.pageOpen,
+        s.pageTab,
         s.canUndo,
         s.canRedo,
         s.changeCount,
@@ -261,17 +252,16 @@ export class HeoToolbar extends HeoElement {
       <span class="sep"></span>
 
       <div class="tabs">
-        ${TABS.map(
+        ${PANEL_TABS.map(
           (tab) => html`<button
             class="btn icon ghost"
             type="button"
-            aria-pressed=${state.dockOpen && state.dockTab === tab.id}
+            aria-pressed=${tab.side === 'page'
+              ? state.pageOpen && state.pageTab === tab.id
+              : state.dockOpen && state.dockTab === tab.id}
             title=${`${tab.label} (${tab.key})`}
             aria-label=${tab.label}
-            @click=${() =>
-              state.dockOpen && state.dockTab === tab.id
-                ? this.editor.setDock(false)
-                : this.editor.setDockTab(tab.id)}
+            @click=${() => this.editor.togglePanelTab(tab.id)}
           >
             ${icon(tab.glyph, 14)}
           </button>`,

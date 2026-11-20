@@ -1,9 +1,12 @@
 import { css, html, nothing, type TemplateResult } from 'lit';
-import { customElement } from 'lit/decorators.js';
+import { customElement, property } from 'lit/decorators.js';
+import { DOCKED_BAR_HEIGHT } from '../../core/constants.js';
 import { labelFor } from '../../core/dom.js';
+import { tabFor, tabsOf, type PanelSide } from '../../core/panels.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { PanelId } from '../../core/types.js';
 import { HeoElement } from '../context.js';
+import { tip, tipId, tipStyles } from '../controls/tip.js';
 import { icon } from '../icons.js';
 import { baseStyles, surfaceStyles } from '../theme.js';
 
@@ -16,34 +19,35 @@ import '../panels/media-panel.js';
 import '../panels/code-tabs.js';
 import '../panels/seo-panel.js';
 
-const TABS: Array<{ id: PanelId; label: string; glyph: string }> = [
-  { id: 'styles', label: 'Styles', glyph: 'styles' },
-  { id: 'tokens', label: 'Tokens', glyph: 'droplet' },
-  { id: 'tree', label: 'Tree', glyph: 'tree' },
-  { id: 'library', label: 'Library', glyph: 'blocks' },
-  { id: 'props', label: 'Props', glyph: 'sliders' },
-  { id: 'media', label: 'Media', glyph: 'image' },
-  { id: 'code', label: 'Code', glyph: 'code' },
-  { id: 'seo', label: 'SEO', glyph: 'search' },
-];
+/** One side's fields in the store, read the same way for both panels. */
+interface SideState {
+  open: boolean;
+  tab: PanelId;
+  width: number;
+  float: { x: number; y: number; height: number } | null;
+}
 
 /**
- * The docked side panel.
+ * A side panel: the page panel on the left, or the selection panel on the right.
  *
- * One dock with switchable tabs rather than several floating windows: at this
- * information density, overlapping panels spend more time being moved than used.
- * The width is draggable and clamped, and the whole dock is inert to the page
- * beneath it so clicking inside never changes the selection.
+ * Two docks, each with its own tabs, rather than one dock with all eight: what describes the
+ * page (layers, blocks, tokens, SEO) and what describes the selected element (styles, props,
+ * media, code) are used side by side, and one dock made the user give up one to see the other.
+ * Each is resizable from its inner edge, can be moved by its header row while floating, and is
+ * inert to the page beneath it so clicking inside never changes the selection.
+ *
+ * Pinned (layout dock), a panel sits flush to its window edge under the toolbar and cannot be
+ * moved; it can still be resized.
  */
 @customElement('heo-dock')
 export class HeoDock extends HeoElement {
   static override styles = [
     baseStyles,
     surfaceStyles,
+    tipStyles,
     css`
       :host {
         position: fixed;
-        right: 14px;
         top: 14px;
         bottom: 14px;
         z-index: 10;
@@ -64,6 +68,24 @@ export class HeoDock extends HeoElement {
           opacity: 0;
           transform: translateX(14px);
         }
+      }
+      :host([data-side='page']) .dock {
+        animation-name: slide-page;
+      }
+      @keyframes slide-page {
+        from {
+          opacity: 0;
+          transform: translateX(-14px);
+        }
+      }
+      /* Pinned: flush to the window edge, square, and drawn as part of the frame. */
+      :host([data-layout='dock']) .dock {
+        border-width: 0 0 0 1px;
+        border-radius: 0;
+        animation: none;
+      }
+      :host([data-layout='dock'][data-side='page']) .dock {
+        border-width: 0 1px 0 0;
       }
 
       .grab {
@@ -92,6 +114,11 @@ export class HeoDock extends HeoElement {
       .grab:hover::after {
         opacity: 1;
       }
+      /* The page panel is anchored on the left, so its inner edge is the right one. */
+      :host([data-side='page']) .grab {
+        left: auto;
+        right: -3px;
+      }
 
       header {
         display: flex;
@@ -105,9 +132,19 @@ export class HeoDock extends HeoElement {
       header:active {
         cursor: grabbing;
       }
+      :host([data-layout='dock']) header {
+        cursor: default;
+      }
       /* Controls inside the header must not start a drag. */
       header .btn {
+        position: relative;
         cursor: pointer;
+      }
+      /* Right-aligned to its button, which sits at the panel's edge: centred, it was clipped. */
+      header .tip {
+        left: auto;
+        right: 0;
+        transform: none;
       }
       .grip-dots {
         display: grid;
@@ -139,11 +176,24 @@ export class HeoDock extends HeoElement {
       /* Wraps rather than scrolls: a horizontally scrolled tab strip hides tabs
          with no affordance, and at 340px seven of them never fit on one line. */
       .tabs {
+        position: relative;
         display: flex;
         flex-wrap: wrap;
         gap: 2px;
         padding: 0 8px 8px;
         border-bottom: 1px solid var(--heo-line);
+      }
+      /*
+       * Tab tips hang under the whole strip rather than under their tab: the panel clips its
+       * content, and a tip centred under the last tab ran out past the panel's edge.
+       */
+      .tabs .tip {
+        top: calc(100% + 4px);
+        left: 8px;
+        right: 8px;
+        width: auto;
+        max-width: none;
+        transform: none;
       }
       .tab {
         display: inline-flex;
@@ -179,82 +229,130 @@ export class HeoDock extends HeoElement {
         overscroll-behavior: contain;
       }
 
-      @media (max-width: 760px) {
-        :host:not([data-floating]) {
-          left: 8px;
-          right: 8px;
-          top: auto;
-          bottom: 8px;
-          height: 62vh;
-        }
-        .grab {
-          display: none;
-        }
-      }
+      /*
+       * No narrow-window bottom sheet. The old rule under 760px set left and height in this sheet
+       * while the geometry wrote right, top and bottom inline, so the inline box won half the
+       * fight: the dock landed at left 8px, 62vh tall, with its resize grab hidden. With two
+       * panels it drew the selection panel over the page panel and hid both grabs.
+       */
     `,
   ];
 
+  /** Which panel this is. Reflected as data-side for the styles. */
+  @property() side: PanelSide = 'selection';
+
+  /*
+   * Both sides' fields, rather than a selector that reads this.side: the controller runs its
+   * selector before the side attribute is applied, and a slice taken for the wrong side would
+   * then never notice its own panel changing.
+   */
   protected state = new StoreController(
     this,
     this.editor.store,
-    (s) => [s.dockOpen, s.dockTab, s.selected, s.dockWidth, s.dockFloat] as const,
+    (s) =>
+      [
+        s.dockOpen,
+        s.dockTab,
+        s.dockWidth,
+        s.dockFloat,
+        s.pageOpen,
+        s.pageTab,
+        s.pageWidth,
+        s.pageFloat,
+        s.selected,
+        s.layout,
+      ] as const,
     shallowArrayEquals,
   );
 
-  override render(): TemplateResult | typeof nothing {
-    const state = this.state.value;
-    if (!state.dockOpen) return nothing;
+  #side(): SideState {
+    const s = this.editor.store.value;
+    return this.side === 'page'
+      ? { open: s.pageOpen, tab: s.pageTab, width: s.pageWidth, float: s.pageFloat }
+      : { open: s.dockOpen, tab: s.dockTab, width: s.dockWidth, float: s.dockFloat };
+  }
 
-    this.#applyGeometry(state.dockWidth, state.dockFloat);
-    const tab = TABS.find((entry) => entry.id === state.dockTab) ?? TABS[0];
+  override render(): TemplateResult | typeof nothing {
+    const page = this.side === 'page';
+    const side = this.#side();
+    const docked = this.editor.store.value.layout === 'dock';
+    const selected = this.editor.store.value.selected;
+    this.dataset.side = this.side;
+    this.dataset.layout = docked ? 'dock' : 'float';
+    if (!side.open) return nothing;
+
+    // A box parked while floating means nothing once pinned to the edge, so it is ignored there
+    // (and kept, for when the panels float again).
+    const float = docked ? null : side.float;
+    this.#applyGeometry(side.width, float, docked);
+    const tabs = tabsOf(this.side);
+    const current = tabs.find((entry) => entry.id === side.tab) ?? tabs[0]!;
+    const title = page ? 'Page' : tabFor(current.id).label;
+    const target = page
+      ? document.title || 'Untitled page'
+      : selected
+        ? labelFor(selected)
+        : 'Nothing selected';
+    const back = page ? 'Back to the left edge' : 'Back to the right edge';
+    const close = page ? 'Close the page panel' : 'Close the selection panel';
 
     return html`<div class="dock surface">
-      <div class="grab" title="Drag to resize" @pointerdown=${this.#onResize}></div>
+      <div
+        class="grab"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label=${page ? 'Resize the page panel' : 'Resize the selection panel'}
+        @pointerdown=${this.#onResize}
+      ></div>
 
-      <header @pointerdown=${this.#onDragStart}>
-        <span class="grip-dots" title="Drag to move the panel">${icon('grip', 12)}</span>
+      <header @pointerdown=${docked ? null : this.#onDragStart}>
+        ${docked
+        ? nothing
+        : html`<span class="grip-dots" aria-hidden="true">${icon('grip', 12)}</span>`}
         <div class="title">
-          <div class="name">${tab.label}</div>
-          <span class="target">
-            ${state.selected ? labelFor(state.selected) : 'Nothing selected'}
-          </span>
+          <div class="name">${title}</div>
+          <span class="target">${target}</span>
         </div>
-        ${state.dockFloat
+        ${float
         ? html`<button
               class="btn icon ghost"
               type="button"
-              aria-label="Dock to the right edge"
-              title="Dock to the right edge"
-              @click=${() => this.editor.resetDockPosition()}
+              aria-label=${back}
+              aria-describedby=${tipId(back)}
+              @click=${() => this.editor.resetPanelPosition(this.side)}
             >
-              ${icon('panel', 14)}
+              ${icon(page ? 'snapLeft' : 'snapRight', 14)} ${tip(back)}
             </button>`
         : nothing}
         <button
           class="btn icon ghost"
           type="button"
           aria-label="Close panel"
-          title="Close panel"
-          @click=${() => this.editor.setDock(false)}
+          aria-describedby=${tipId(close)}
+          @click=${() => this.editor.setPanelOpen(this.side, false)}
         >
-          ${icon('close', 14)}
+          ${icon('close', 14)} ${tip(close)}
         </button>
       </header>
 
       <div class="tabs" role="tablist">
-        ${TABS.map(
+        ${tabs.map(
           (entry) => html`<button
             class="tab"
             role="tab"
-            aria-selected=${entry.id === state.dockTab}
+            data-tab=${entry.id}
+            aria-label=${entry.label}
+            aria-selected=${entry.id === side.tab}
+            aria-describedby=${tipId(entry.label)}
             @click=${() => this.editor.setDockTab(entry.id)}
           >
-            ${icon(entry.glyph, 13)} ${entry.label}
+            ${icon(entry.glyph, 13)} <span class="label">${entry.label}</span>
+            ${tip(entry.label, entry.key, entry.hint)}
           </button>`,
         )}
       </div>
 
-      <div class="body" role="tabpanel">${this.#renderPanel(state.dockTab)}</div>
+      <div class="body" role="tabpanel">${this.#renderPanel(current.id)}</div>
     </div>`;
   }
 
@@ -282,21 +380,29 @@ export class HeoDock extends HeoElement {
   }
 
   /**
-   * Switch between edge-anchored and free-floating layout.
+   * Switch between edge-anchored, free-floating and pinned layout.
    *
    * Anchored is the default and stays responsive to window height. Once dragged,
-   * the dock keeps an explicit box, which is what lets it be parked over a wide
-   * page's empty space instead of covering the content being edited.
+   * the panel keeps an explicit box, which is what lets it be parked over a wide
+   * page's empty space instead of covering the content being edited. Pinned, it is
+   * flush to its edge from under the toolbar to the bottom of the window.
    */
-  #applyGeometry(width: number, float: { x: number; y: number; height: number } | null): void {
+  #applyGeometry(
+    width: number,
+    float: { x: number; y: number; height: number } | null,
+    docked: boolean,
+  ): void {
+    const edge = this.side === 'page' ? 'left' : 'right';
+    const other = this.side === 'page' ? 'right' : 'left';
     this.style.width = `${width}px`;
     this.toggleAttribute('data-floating', Boolean(float));
     if (!float) {
-      this.style.removeProperty('left');
+      const inset = docked ? 0 : 14;
+      this.style.removeProperty(other);
       this.style.removeProperty('height');
-      this.style.right = '14px';
-      this.style.top = '14px';
-      this.style.bottom = '14px';
+      this.style.setProperty(edge, `${inset}px`);
+      this.style.top = `${docked ? DOCKED_BAR_HEIGHT : inset}px`;
+      this.style.bottom = `${inset}px`;
       return;
     }
     this.style.removeProperty('right');
@@ -320,7 +426,7 @@ export class HeoDock extends HeoElement {
     header.setPointerCapture(event.pointerId);
 
     const move = (moveEvent: PointerEvent): void => {
-      this.editor.setDockFloat(moveEvent.clientX - offset.x, moveEvent.clientY - offset.y, height);
+      this.editor.setPanelFloat(this.side, moveEvent.clientX - offset.x, moveEvent.clientY - offset.y, height);
     };
     const up = (): void => {
       header.removeEventListener('pointermove', move);
@@ -336,12 +442,14 @@ export class HeoDock extends HeoElement {
     event.preventDefault();
     const handle = event.currentTarget as HTMLElement;
     const startX = event.clientX;
-    const startWidth = this.state.value.dockWidth;
+    const startWidth = this.#side().width;
+    // The grab is on the inner edge: the selection panel's left, the page panel's right. So
+    // dragging towards the middle of the window grows either one.
+    const grows = this.side === 'page' ? 1 : -1;
     handle.setPointerCapture(event.pointerId);
 
     const move = (moveEvent: PointerEvent): void => {
-      // The dock is right-anchored, so dragging left grows it.
-      this.editor.setDockWidth(startWidth - (moveEvent.clientX - startX));
+      this.editor.setPanelWidth(this.side, startWidth + grows * (moveEvent.clientX - startX));
     };
     const up = (): void => {
       handle.removeEventListener('pointermove', move);

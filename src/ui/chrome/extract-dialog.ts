@@ -1285,11 +1285,11 @@ export class HeoExtractDialog extends HeoElement {
             ${group.length > 1
         ? html`Captures ${group.length} elements
                 (${group.map((el, index) => html`${index ? ', ' : ''}<code class="mono">${labelFor(el)}</code>`)})
-                and the classes they use, so they can be inserted again from the Library as one block.`
+                and the classes they use, so they can be inserted again from Blocks as one block.`
         : captured
         ? html`Captures <code class="mono">${labelFor(captured)}</code> and the classes it uses, so
-                it can be inserted again from the Library.`
-        : html`Markup and styles, saved to the Library for reuse.`}
+                it can be inserted again from Blocks.`
+        : html`Markup and styles, saved to Blocks for reuse.`}
           </p>
         </div>
         ${this.#closeButton()}
@@ -1394,7 +1394,7 @@ export class HeoExtractDialog extends HeoElement {
             .value=${pending.category}
             aria-label="Category"
             placeholder=${pending.kind === 'container' ? 'Layout' : 'Components'}
-            title="Which group this block appears under in the Library"
+            title="Which group this block appears under in Blocks"
             @input=${(event: Event) =>
         this.editor.updateExtraction({ category: (event.target as HTMLInputElement).value })}
           />

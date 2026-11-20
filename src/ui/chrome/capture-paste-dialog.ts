@@ -332,7 +332,7 @@ export class HeoCapturePasteDialog extends HeoElement {
     const scale = Math.min(1, this.#available / width);
     const frameHeight = Math.min(PREVIEW_MAX_HEIGHT, Math.max(PREVIEW_MIN_HEIGHT, this.#contentHeight || PREVIEW_MAX_HEIGHT));
     const widths = [native, ...PREVIEW_WIDTHS.filter((value) => Math.abs(value - native) > 40)];
-    const verb = open.insert && open.save ? 'Insert and save' : open.save ? 'Save to library' : 'Insert';
+    const verb = open.insert && open.save ? 'Insert and save' : open.save ? 'Save to Blocks' : 'Insert';
 
     return html`<div
       class="dialog surface"
@@ -437,7 +437,7 @@ export class HeoCapturePasteDialog extends HeoElement {
               @change=${(event: Event) =>
         this.editor.updateCapturePaste({ save: (event.target as HTMLInputElement).checked, error: '' })}
             />
-            Save to library
+            Save to Blocks
           </label>
         </div>
 

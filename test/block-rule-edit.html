@@ -126,7 +126,7 @@
 
       results.insertOnly = {
         aBlockRuleIsAWritableTarget: Boolean(titleEntry) && titleEntry.target.kind === 'block' &&
-          !engine.elementModel(title).entries.some((entry) => entry.target.kind === 'readonly' && /Library/.test(entry.target.reason ?? '')),
+          !engine.elementModel(title).entries.some((entry) => entry.target.kind === 'readonly' && /Blocks/.test(entry.target.reason ?? '')),
         settingAValueEditsTheBlocksOwnCss: recolored === 'rgb(9, 9, 9)' && /\.title \{[^}]*color: rgb\(9, 9, 9\)/.test(sourceAfterSet),
         removingAValueTakesItOut: sizeAfterRemove !== '20px' && !/font-size/.test(sourceAfterRemove),
         aRuleUnderAMediaQueryIsEditedThere: mediaColor === 'rgb(7, 7, 7)' && /@media \(max-width: 99999px\) \{[^@]*\.body \{ color: rgb\(7, 7, 7\)/.test(sourceAfterMedia),
@@ -134,7 +134,7 @@
         undoPutsItBack: paddingUndone === '5px' && allUndone,
         previewsShowAndCancelBothWays: familyPreviewed && familyCancelled && colorPreviewed && colorCancelled,
         // An insert-only paste: the notice says only this copy changes.
-        theNoticeSaysOnlyThisPaste: /only this pasted Card\b/.test(insertOnlyNotice) && /not in the library/i.test(insertOnlyNotice),
+        theNoticeSaysOnlyThisPaste: /only this pasted Card\b/.test(insertOnlyNotice) && /not in Blocks/.test(insertOnlyNotice),
         itStaysOutOfTheLibrary: !engine.library.get(id),
       };
 
@@ -155,7 +155,7 @@
         aLibraryBlockEditReachesEveryCopy: style(firstTitle).color === 'rgb(0, 128, 0)' &&
           style(second.querySelector('.title')).color === 'rgb(0, 128, 0)',
         theLibraryEntryIsUpdated: /color: rgb\(0, 128, 0\)/.test(engine.library.get(libraryId)?.css ?? ''),
-        theNoticeSaysItReachesTheLibraryAndAllCopies: /library entry and 2 copies/.test(libraryNotice),
+        theNoticeSaysItReachesTheLibraryAndAllCopies: /entry in Blocks and 2 copies/.test(libraryNotice),
         theOtherBlockIsUntouched: style(title).color === 'rgb(1, 2, 3)',
       };
 

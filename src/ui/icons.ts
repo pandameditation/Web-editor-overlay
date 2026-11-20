@@ -117,6 +117,18 @@ const PATHS: Record<string, string> = {
   /* A rule interrupted by a diamond: the plain divider's sibling, told apart at a glance. */
   ornament: 'M2.6 8h2.6M10.8 8h2.6M8 5.6 10.4 8 8 10.4 5.6 8Z',
   panel: 'M2.6 3.4h10.8v9.2H2.6zM10 3.4v9.2',
+  /* The same window with its divider on the left: the page panel, beside the selection one. */
+  panelLeft: 'M2.6 3.4h10.8v9.2H2.6zM6 3.4v9.2',
+  /* A push pin: the chrome fixed to the window edges rather than floating over the page. */
+  pin: 'M6 2.6h4M6.6 2.6v4L4.4 9h7.2L9.4 6.6v-4M8 9v4.4',
+  /* An arrow meeting an edge: send a moved panel back to that edge. */
+  snapLeft: 'M2.6 2.8v10.4M13.4 8H5.4M8.4 5l-3 3 3 3',
+  snapRight: 'M13.4 2.8v10.4M2.6 8h8M7.6 5l3 3-3 3',
+  keyboard: 'M1.8 4.2h12.4v7.6H1.8zM4.2 6.6h.01M6.6 6.6h.01M9.4 6.6h.01M11.8 6.6h.01M5 9.4h6',
+  /* A door with an arrow leaving it: leave edit mode. */
+  exit: 'M9.4 2.8H3.2v10.4h6.2M7 8h7M11.6 5.4L14.2 8l-2.6 2.6',
+  /* Two arrows pushed in between two walls: fit a wide preview to the window. */
+  fit: 'M2.4 3v10M13.6 3v10M4.6 8h6.8M6.6 6l-2 2 2 2M9.4 6l2 2-2 2',
 
   // Viewports and where styles come from, copied from the Styles panel prototype (variant I).
   /* The window as it is, with no width imposed: the preview bar's "Actual". */

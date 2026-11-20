@@ -564,6 +564,11 @@ export interface EditorSnapshotState {
   canUndo: boolean;
   canRedo: boolean;
   changes: number;
+  /** The selection panel (right): Styles, Props, Media, Code. */
   dockOpen: boolean;
   dockTab: PanelId;
+  /** The page panel (left): Layers, Blocks, Tokens, SEO. */
+  pageOpen: boolean;
+  pageTab: PanelId;
+  layout: 'float' | 'dock';
 }
