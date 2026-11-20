@@ -415,6 +415,7 @@
         action?.click();
         await settle(400);
         const bar = picker().querySelector('.tokenbar[data-token-edit="display-face"]');
+        const tokenListClosed = !picker().querySelector('.list');
         const tokensHidden = !picker().querySelector('.frow[data-row="--brand-face"]');
         const fieldBefore = field().value;
         const recordsBefore = engine.history.records.length;
@@ -435,6 +436,7 @@
         return {
           aTokenRowOffersEditFont: offered,
           itSaysWhatIsBeingChosen: Boolean(bar) && /--display-face/.test(flat(bar)),
+          withoutOpeningItsList: tokenListClosed,
           theOtherTokensAreNotAChoice: tokensHidden,
           pickingSetsTheToken: /^"?House Serif"?/.test(token),
           everyElementUsingItFollows: /House Serif/.test(renders),
@@ -501,6 +503,10 @@
         brand.openShadowEditor();
         await settle(700);
         const tp = brand.shadowRoot.querySelector('heo-font-picker')?.shadowRoot;
+        // As in Styles: the token's stack first, its list closed until asked for.
+        const closedAtFirst = Boolean(tp) && !tp.querySelector('.list');
+        tp.querySelector('.slot[aria-current="true"] [data-chevron]').click();
+        await settle(300);
         const notItself = Boolean(tp) && !tp.querySelector('.frow[data-row="--brand-face"]') && Boolean(tp.querySelector('.frow[data-row="--display-face"]'));
         // A font of this machine, so it is there in any browser the suite runs in.
         const other = tp.querySelector('.frow[data-row="Georgia"] [data-font], .frow[data-row="Arial"] [data-font], .frow[data-row="system-ui"] [data-font]');
@@ -516,6 +522,7 @@
         await settle(500);
         return {
           aFontTokenHasTheFontField: isFont,
+          itsListIsClosedAtFirst: closedAtFirst,
           itsButtonOpensThePicker: Boolean(tp),
           withoutOfferingTheTokenItself: notItself,
           // The picked family first, the token's other fallbacks kept after it.

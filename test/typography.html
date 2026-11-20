@@ -233,6 +233,10 @@
         await settle(700);
         const picker = f.shadowRoot.querySelector('heo-font-picker');
         const proot = picker?.shadowRoot;
+        // The stack first: the list is the second step, its chevron or a click on a slot.
+        const listClosedAtFirst = !proot?.querySelector('.list');
+        proot.querySelector('.slot[aria-current="true"] [data-chevron]').click();
+        await settle(300);
         const fonts = Array.from(proot?.querySelectorAll('[data-font]') ?? []).map((one) => one.dataset.font);
         const ownFace = proot?.querySelector('[data-font="Georgia"] .nm')?.getAttribute('style') ?? '';
         const target = proot.querySelector('[data-font="Courier New"], [data-font="Menlo"], [data-font="Arial"]');
@@ -267,6 +271,7 @@
         const fallbacks = proot.querySelectorAll('.slot').length >= 2;
         return {
           opensThePicker: Boolean(picker),
+          withTheListClosed: listClosedAtFirst,
           listsSystemFonts: fonts.includes('Georgia'),
           eachInItsOwnFace: /Georgia/.test(ownFace),
           everyRowOneHeight: heights.size === 1,
@@ -400,6 +405,8 @@
         f().openShadowEditor();
         await settle(800);
         const proot = f().shadowRoot.querySelector('heo-font-picker').shadowRoot;
+        proot.querySelector('.slot[aria-current="true"] [data-chevron]').click();
+        await settle(300);
         const press = (mouse) => new Promise((resolve) => {
           const id = Math.random().toString(36).slice(2);
           window.__heoKeysDone = (done) => { if (done === id) resolve(); };

@@ -712,8 +712,12 @@ export class HeoFontPicker extends LitElement {
   @state() private sel = 0;
   /** Where an empty slot from `+ Font` sits, until it is filled or left. */
   @state() private pending: number | null = null;
-  /** Whether the selected slot's list is open (its chevron). */
-  @state() private listOpen = true;
+  /**
+   * Whether the selected slot's list is open (its chevron). Closed to start with, wherever the
+   * picker opens (Styles, Tokens) and when a token's font is edited: the stack is shown first,
+   * and choosing from the list is the second step.
+   */
+  @state() private listOpen = false;
   /** Sections folded away, by name. */
   @state() private collapsed = new Set<string>();
 
@@ -872,7 +876,7 @@ export class HeoFontPicker extends LitElement {
     this.query = '';
     this.sel = 0;
     this.pending = null;
-    this.listOpen = true;
+    this.listOpen = false;
     void this.updateComplete.then(() => {
       const target = name
         ? this.renderRoot.querySelector<HTMLElement>('.tokenbar button')
