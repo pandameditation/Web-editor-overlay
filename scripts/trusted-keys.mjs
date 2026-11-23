@@ -21,6 +21,10 @@ const KEYS = {
   ' ': { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' },
   Backspace: { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 },
   Delete: { key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 },
+  ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 },
+  ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
+  ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 },
+  ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
 };
 
 /**

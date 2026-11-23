@@ -173,6 +173,39 @@
       await keys('R');
       // Both surfaces call the same engine walk, so mixing them keeps one trail.
       tree.theTreePanelArrowsShareTheTrail = keyThenButton === 'p' && at() === 'p';
+      {
+        /*
+         * Real arrow keys with focus on a row of the panel. The page's keymap leaves keys typed in
+         * the overlay to its controls, so with a row focused (a click on it puts focus there) the
+         * arrows did nothing and the selection stayed put.
+         */
+        let seq = 0;
+        const waiting = new Map();
+        window.__heoKeysDone = (id) => { waiting.get(id)?.(); waiting.delete(id); };
+        const real = (...names) => new Promise((resolve) => {
+          const id = ++seq;
+          waiting.set(id, resolve);
+          window.__heoPressKeys(JSON.stringify({ id, keys: names }));
+        }).then(frames);
+        const panelRoot = () => document.querySelector('html-editor-overlay > heo-overlay').shadowRoot
+          .querySelector('heo-dock').shadowRoot.querySelector('heo-tree-panel').shadowRoot;
+        const selectedRow = () => panelRoot().querySelector('.row[aria-selected="true"]');
+        await from('p');
+        await frames();
+        selectedRow()?.focus();
+        await real('ArrowLeft');
+        const left = at();
+        const focusFollows = panelRoot().activeElement === selectedRow() && /article/.test(selectedRow()?.textContent ?? '');
+        await real('ArrowRight');
+        const right = at();
+        await real('ArrowUp');
+        const up = at();
+        await real('ArrowDown');
+        const down = at();
+        tree.realArrowsOnARowMoveTheSelection = left === 'a' && right === 'p' && up === 'afirst' && down === 'p';
+        tree.focusFollowsToTheNewRow = focusFollows && panelRoot().activeElement === selectedRow();
+        tree.diagnostic = tree.realArrowsOnARowMoveTheSelection ? undefined : JSON.stringify({ left, right, up, down });
+      }
       results.tree = tree;
 
       const failed = Object.entries(results)

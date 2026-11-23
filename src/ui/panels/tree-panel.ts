@@ -35,8 +35,11 @@ const expanded = new Set<HTMLElement>();
  * a filter turns it into a flat search result when you know what you are looking
  * for but not where it is.
  *
- * Navigation keys work anywhere in the overlay; the pad at the bottom exists to
- * make them discoverable.
+ * The arrow keys walk the selection here as they do on the page, the pad at the bottom says
+ * which does what. The page's keymap leaves every key typed in the overlay to the overlay's own
+ * controls, so with focus on a row (a click on one puts it there) the arrows did nothing at all
+ * and the pad's promise held only once focus went back to the page. This panel handles them
+ * itself, and focus follows the selection to its row so the next press carries on from there.
  */
 @customElement('heo-tree-panel')
 export class HeoTreePanel extends HeoElement {
@@ -255,8 +258,80 @@ export class HeoTreePanel extends HeoElement {
   @state() private query = '';
   @state() private version = 0;
 
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.addEventListener('keydown', this.#onKeydown);
+  }
+
+  override disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.removeEventListener('keydown', this.#onKeydown);
+  }
+
   override updated(): void {
     this.#scrollSelectionIntoView();
+  }
+
+  /**
+   * The arrows, from anywhere in the panel but its filter field (where they move the caret):
+   * the same moves as on the page. Up and down go to the previous and next element, left to the
+   * parent and right back down the way it came; Alt with up or down walks to the parent or the
+   * first child; Shift moves the element itself. While filtering, up and down step through the
+   * results instead, the one list there is.
+   */
+  #onKeydown = (event: KeyboardEvent): void => {
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    if (event.metaKey || event.ctrlKey || event.defaultPrevented) return;
+    const from = event.composedPath()[0];
+    if (from instanceof HTMLInputElement || from instanceof HTMLTextAreaElement) return;
+    const engine = this.editor;
+    if (!engine.selected && !this.query.trim()) return;
+    const vertical = event.key === 'ArrowUp' || event.key === 'ArrowDown';
+    if (this.query.trim()) {
+      if (!vertical || event.shiftKey || event.altKey) return;
+      const results = this.#searchRows().map((row) => row.el);
+      if (!results.length) return;
+      const at = engine.selected ? results.indexOf(engine.selected) : -1;
+      const next = event.key === 'ArrowDown'
+        ? results[Math.min(results.length - 1, at + 1)]
+        : results[Math.max(0, at === -1 ? 0 : at - 1)];
+      event.preventDefault();
+      event.stopPropagation();
+      if (next) engine.select(next);
+      this.#focusSelectedRow();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    engine.collapseSelection();
+    switch (event.key) {
+      case 'ArrowUp':
+        if (event.shiftKey) engine.move('up');
+        else if (event.altKey) engine.navigate('parent');
+        else engine.navigate('previous');
+        break;
+      case 'ArrowDown':
+        if (event.shiftKey) engine.move('down');
+        else if (event.altKey) engine.navigate('child');
+        else engine.navigate('next');
+        break;
+      case 'ArrowLeft':
+        if (event.shiftKey) engine.move('out');
+        else engine.navigate('parent', { trail: true });
+        break;
+      case 'ArrowRight':
+        if (event.shiftKey) engine.move('in');
+        else engine.navigate('child', { trail: true });
+        break;
+    }
+    // Focus was on a row: it moves to the newly selected one. A pad button keeps it.
+    if (from instanceof HTMLElement && from.classList.contains('row')) this.#focusSelectedRow();
+  };
+
+  /** Once the new selection is drawn, focus its row, so the next arrow starts from there. */
+  #focusSelectedRow(): void {
+    void this.updateComplete.then(() =>
+      this.renderRoot.querySelector<HTMLElement>('.row[aria-selected="true"]')?.focus({ preventScroll: true }));
   }
 
   override render(): TemplateResult {
