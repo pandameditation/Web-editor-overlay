@@ -83,6 +83,11 @@ export class HeoDock extends HeoElement {
         border-width: 0 0 0 1px;
         border-radius: 0;
         animation: none;
+        /* Opaque, like the pinned bar (see toolbar.ts): a frame around the page, not glass on it. */
+        background: var(--heo-bg);
+        box-shadow: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
       }
       :host([data-layout='dock'][data-side='page']) .dock {
         border-width: 0 1px 0 0;

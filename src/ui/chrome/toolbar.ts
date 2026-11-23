@@ -90,6 +90,14 @@ export class HeoToolbar extends HeoElement {
         border-width: 0 0 1px;
         border-radius: 0;
         box-shadow: none;
+        /*
+         * Opaque, as the prototype's pinned bar was: pinned, the chrome is the frame around the
+         * page, not glass over it. The glass let the page's own colour through under the panels,
+         * which lowered the contrast of everything on them (lighter on a light page).
+         */
+        background: var(--heo-bg);
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
       }
       :host([data-layout='dock']) .grp {
         display: flex;
