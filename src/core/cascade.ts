@@ -743,6 +743,7 @@ export const compareContributions = (a: Contribution, b: Contribution): number =
 const BOX_SIDES: Record<string, readonly string[]> = {
   margin: ['margin-top', 'margin-right', 'margin-bottom', 'margin-left'],
   padding: ['padding-top', 'padding-right', 'padding-bottom', 'padding-left'],
+  inset: ['top', 'right', 'bottom', 'left'],
   'border-radius': [
     'border-top-left-radius',
     'border-top-right-radius',

@@ -37,6 +37,10 @@
   <p id="g" style="padding: 10px; padding-left: 1px; padding-right: 2px">An inline family, promoted</p>
   <p id="e" style="padding: 10px; padding-left: 1px; padding-right: 2px; padding-bottom: 3px; padding-top: 4px">Every
     side, then one emptied</p>
+  <p id="bg" style="background: #eeeeee; background-image: linear-gradient(red, blue)">A background family</p>
+  <p id="ft" style="font: 14px serif; font-weight: 700">A font family</p>
+  <p id="tr" style="transition: opacity 1s; transition-duration: 2s">A transition family</p>
+  <div id="gp" style="display: flex; gap: 4px; row-gap: 8px">A gap family</div>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -337,6 +341,47 @@
               promoted === `padding=${name === 'inline' ? '10px' : '8px'},padding-left=1px,padding-right=2px` && shorthandWins;
             results.promotedShorthand[`${name}SidesComeBackWhenPromoted`] =
               getComputedStyle(one).paddingLeft === '1px' && getComputedStyle(one).paddingRight === '2px';
+          }
+        }
+
+        progress.textContent = 'everyFamily';
+        /*
+         * Not only the box shorthands: any shorthand and a part its block declares are one family
+         * with the order control. background, font, transition and gap were drawn as unrelated rows,
+         * and nothing said or changed which of the two was in charge.
+         */
+        {
+          results.everyFamily = {};
+          for (const [id, card, list, shorthand, part, wins] of [
+            ['bg', 'surface', 'surface', 'background', 'background-image', (one) => /gradient/.test(getComputedStyle(one).backgroundImage)],
+            ['ft', 'typography', 'typography', 'font', 'font-weight', (one) => getComputedStyle(one).fontWeight === '700'],
+            ['tr', 'motion', 'transition', 'transition', 'transition-duration', (one) => getComputedStyle(one).transitionDuration === '2s'],
+            ['gp', 'flex', 'flex', 'gap', 'row-gap', (one) => getComputedStyle(one).rowGap === '8px'],
+          ]) {
+            const one = document.getElementById(id);
+            api.select(one);
+            await settle(400);
+            const section = () => sroot().querySelector(`heo-section[data-card="${card}"]`);
+            if (!section()?.open) section()?.shadowRoot?.querySelector('.tile')?.click();
+            await settle(300);
+            const rows = () => sroot().querySelector(`heo-section[data-card="${card}"] [data-declarations="${list}"]`);
+            const family = () => Array.from(rows()?.querySelectorAll('.family') ?? [])
+              .find((box) => box.querySelector(`.row[data-property="${shorthand}"]`));
+            const members = Array.from(family()?.querySelectorAll('.row') ?? []).map((row) => row.dataset.property);
+            const partWins = wins(one);
+            family()?.querySelectorAll(':scope > .side-win')[0]?.click();
+            await settle(400);
+            const shorthandWins = !wins(one) && (one.getAttribute('style') ?? '').trim().replace(/;$/, '').split(';').pop().trim().startsWith(`${shorthand}:`);
+            family()?.querySelectorAll(':scope > .side-win')[1]?.click();
+            await settle(400);
+            results.everyFamily[`${shorthand}IsAFamilyWithItsOrder`] =
+              members.includes(shorthand) && members.includes(part) && family()?.querySelectorAll(':scope > .side-win').length === 2 &&
+              partWins && shorthandWins && wins(one);
+            if (!results.everyFamily[`${shorthand}IsAFamilyWithItsOrder`]) {
+              results.everyFamily[`${shorthand}Diagnostic`] = JSON.stringify({ members, partWins, shorthandWins, style: one.getAttribute('style') });
+            }
+            section()?.shadowRoot?.querySelector('.head')?.click();
+            await settle(200);
           }
         }
       } catch (e) {

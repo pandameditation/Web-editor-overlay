@@ -107,14 +107,17 @@ export function withValue(
  * other, so this is a lattice and not a chain, and code that assumed one answer got `border-left`
  * wrong half the time.
  *
- * Deliberately not a general shorthand table. These are the families where a block commonly holds
- * both a shorthand and one of its parts, and where the order of the two decides the result — the
- * thing the editor has to be able to show and to control. `background` and `font` are left out on
- * purpose: a `background-color` beside a `background` is far more often a considered fallback than
- * an ordering accident, and treating it as a promotion pair would be noise.
+ * Every common shorthand, the box ones and `border` by pattern, the rest by FAMILIES. Wherever a
+ * block holds a shorthand and one of its parts, their order decides the result, and the editor
+ * shows the two together with the control for which comes last. `background` and `font` were once
+ * left out, on the view that a `background-color` beside a `background` is a considered fallback;
+ * but the cascade then could not see that a later `background` resets a `background-image`
+ * written before it, and the panel had no way to say or change which of the two was in charge.
  */
 export function shorthandsFor(property: string): string[] {
   const name = property.trim().toLowerCase();
+  const parents = PARENTS.get(name);
+  if (parents) return [...parents];
   if (/^(?:margin|padding)-(?:top|right|bottom|left)$/.test(name)) return [name.split('-')[0]];
   if (/^border-(?:top|bottom)-(?:left|right)-radius$/.test(name)) return ['border-radius'];
   if (/^border-(?:top|right|bottom|left)-(?:width|style|color)$/.test(name)) {
@@ -125,6 +128,44 @@ export function shorthandsFor(property: string): string[] {
   if (/^border-(?:width|style|color)$/.test(name)) return ['border'];
   if (/^outline-(?:width|style|color)$/.test(name)) return ['outline'];
   return [];
+}
+
+/**
+ * The shorthands found by name rather than by pattern, each with the longhands it resets. A
+ * longhand may have two (grid-row-start: grid-row and grid-area), as border-left-width does.
+ */
+const FAMILIES: Readonly<Record<string, readonly string[]>> = {
+  background: [
+    'background-image', 'background-position', 'background-size', 'background-repeat',
+    'background-attachment', 'background-origin', 'background-clip', 'background-color',
+  ],
+  'background-position': ['background-position-x', 'background-position-y'],
+  font: ['font-style', 'font-variant', 'font-weight', 'font-stretch', 'font-size', 'line-height', 'font-family'],
+  flex: ['flex-grow', 'flex-shrink', 'flex-basis'],
+  'flex-flow': ['flex-direction', 'flex-wrap'],
+  gap: ['row-gap', 'column-gap'],
+  'place-items': ['align-items', 'justify-items'],
+  'place-content': ['align-content', 'justify-content'],
+  'place-self': ['align-self', 'justify-self'],
+  inset: ['top', 'right', 'bottom', 'left'],
+  overflow: ['overflow-x', 'overflow-y'],
+  'grid-template': ['grid-template-rows', 'grid-template-columns', 'grid-template-areas'],
+  'grid-row': ['grid-row-start', 'grid-row-end'],
+  'grid-column': ['grid-column-start', 'grid-column-end'],
+  'grid-area': ['grid-row-start', 'grid-column-start', 'grid-row-end', 'grid-column-end'],
+  'text-decoration': ['text-decoration-line', 'text-decoration-color', 'text-decoration-style', 'text-decoration-thickness'],
+  'list-style': ['list-style-type', 'list-style-position', 'list-style-image'],
+  columns: ['column-width', 'column-count'],
+  transition: ['transition-property', 'transition-duration', 'transition-timing-function', 'transition-delay', 'transition-behavior'],
+  animation: [
+    'animation-name', 'animation-duration', 'animation-timing-function', 'animation-delay',
+    'animation-iteration-count', 'animation-direction', 'animation-fill-mode', 'animation-play-state',
+  ],
+};
+/** FAMILIES inverted: each longhand's shorthands. */
+const PARENTS = new Map<string, string[]>();
+for (const [shorthand, members] of Object.entries(FAMILIES)) {
+  for (const member of members) PARENTS.set(member, [...(PARENTS.get(member) ?? []), shorthand]);
 }
 
 /** Every name `shorthandsFor` knows about, which is the universe `longhandsOf` inverts. */
@@ -138,6 +179,7 @@ const SHORTHAND_FAMILY_MEMBERS: readonly string[] = [
   ...BORDER_PARTS.map((part) => `border-${part}`),
   ...SIDES.flatMap((side) => BORDER_PARTS.map((part) => `border-${side}-${part}`)),
   ...BORDER_PARTS.map((part) => `outline-${part}`),
+  ...PARENTS.keys(),
 ];
 
 /**

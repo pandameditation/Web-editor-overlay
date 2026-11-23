@@ -81,7 +81,6 @@ import {
   rowPlace,
   shownValue,
   targetOf,
-  renderPropertyRow,
   rowCondition,
   scopeContext,
   type RowPlace,
@@ -226,6 +225,9 @@ const ROWS_WHEN_DECLARED = new Set([
   ...SPACING_PROPERTIES.filter((property) => property.includes('-')),
   ...BORDER_PARTS,
   ...BORDER_SIDE_PROPERTIES,
+  // Background and Motion likewise list a longhand as a row only where it is declared.
+  ...BACKGROUND_LONGHANDS,
+  ...[...TRANSITION_PROPERTIES, ...ANIMATION_PROPERTIES].filter((property) => property.includes('-')),
 ]);
 
 /** The Text style card's rows that are not its labelled typography rows: listed by name, as set. */
@@ -2746,8 +2748,14 @@ export class HeoStylesPanel extends HeoElement {
       const spec = specOf(anchor);
       return rowPlace(spec, host, rowIdOf(scope, anchor, el));
     })();
-    const winner = (property: string, onHover: boolean): Contribution | undefined =>
-      model.cascade(property, onHover ? hover : ctx).applying[0];
+    /*
+     * A longhand's own winner only: one the animation shorthand supplies is the shorthand's text,
+     * which readAnimation reads from the shorthand itself (shorthandsFor's FAMILIES).
+     */
+    const winner = (property: string, onHover: boolean): Contribution | undefined => {
+      const one = model.cascade(property, onHover ? hover : ctx).applying[0];
+      return one && !one.via ? one : undefined;
+    };
     const fromHover = (one: Contribution | undefined): boolean =>
       one?.source.kind === 'rule' && one.source.entry.state.includes(':hover');
     const baseName = winner('animation-name', false) ?? winner('animation', false);
@@ -2820,7 +2828,11 @@ export class HeoStylesPanel extends HeoElement {
     const hits = TRANSITION_PROPERTIES.filter((property) => this.#matches(cards, property));
     if (!hits.length) return null;
     const specOf = (property: string): RowSpec => ({ property, scope, element: el, model, listId: 'motion' });
-    const winner = (property: string): Contribution | undefined => cards.cascade(property).applying[0];
+    // A longhand's own winner only, as for Animation: the shorthand's text is read as the shorthand.
+    const winner = (property: string): Contribution | undefined => {
+      const one = cards.cascade(property).applying[0];
+      return one && !one.via ? one : undefined;
+    };
     // Written where the transition already is: the shorthand's row, or a longhand's when only
     // longhands are declared, so a rule's transition is replaced in that rule.
     const anchor = winner('transition') || !winner('transition-property') ? 'transition' : 'transition-property';
@@ -2908,7 +2920,11 @@ export class HeoStylesPanel extends HeoElement {
      * as every section of the panel does. The ladder can still pick the style's class by hand.
      */
     const inline = Boolean(current);
-    const value = (property: string): string => cards.cascade(property).applying[0]?.value ?? '';
+    // Its own value: one supplied by text-decoration is the shorthand's whole text.
+    const value = (property: string): string => {
+      const one = cards.cascade(property).applying[0];
+      return one && !one.via ? one.value : '';
+    };
     const rows = shownTypographyRows(value('text-decoration-line') || cards.computed.textDecorationLine)
       .filter((row) => this.#matches(cards, row.property, row.label));
     // white-space is laid out with the text; the shorthands are listed only where one is set.
@@ -3004,18 +3020,28 @@ export class HeoStylesPanel extends HeoElement {
           : nothing}
       </div>` : nothing}
       <div class="rows" data-declarations="typography">
-        ${rows.map((row) => renderPropertyRow({
-            property: row.property,
-            scope,
-            element: el,
-            model,
-            listId: 'typography',
-            label: row.label,
-            sub: row.sub,
-            segments: row.segments,
-            ...(inline ? { preferInline: true } : {}),
-          }, host))}
-        ${extras.length ? renderPropertyRows(extras, (property) => cards.spec(property, 'typography'), host) : nothing}
+        ${
+        /*
+         * One list, the labelled rows and the extras together, so a font shorthand and the parts
+         * its block declares beside it are one family with its order control, as margin and its
+         * sides are: drawn apart, nothing said which of font and font-size was in charge.
+         */
+        renderPropertyRows([...rows.map((row) => row.property), ...extras], (property) => {
+          const row = rows.find((one) => one.property === property);
+          return row
+            ? {
+              property: row.property,
+              scope,
+              element: el,
+              model,
+              listId: 'typography',
+              label: row.label,
+              sub: row.sub,
+              segments: row.segments,
+              ...(inline ? { preferInline: true } : {}),
+            }
+            : cards.spec(property, 'typography');
+        }, host)}
       </div>
       ${tuneShown
         ? html`<button class="more" type="button" aria-expanded=${this.#typeTune ? 'true' : 'false'} @click=${() => {
@@ -3285,7 +3311,9 @@ function transitionTriggers(model: ElementModel): TransitionTrigger[] {
       if (MOTION_OWN.has(property)) continue;
       const to = model.cascade(property, { width: null, state: group.state }).applying[0];
       if (!to || to.source.kind !== 'rule' || to.source.entry.state !== group.state) continue;
-      const from = model.cascade(property).applying[0]?.value ?? (computed.getPropertyValue(property).trim() || 'initial');
+      // What it is now: its own declaration, else as drawn (a shorthand's text is not this property's).
+      const now = model.cascade(property).applying[0];
+      const from = (now && !now.via ? now.value : '') || computed.getPropertyValue(property).trim() || 'initial';
       if (from.trim() === to.value.trim()) continue;
       changes.push({ property, from, to: to.value });
     }
