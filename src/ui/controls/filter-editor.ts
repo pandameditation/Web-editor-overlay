@@ -36,11 +36,11 @@ const NEUTRAL_NOTE = (spec: FilterSpec): string => `${spec.neutral}${spec.unit} 
  * - the functions set, as chips in the order the filter applies them, with their values as written
  *   (`sepia(0.6)`). A chip is picked by clicking it, moved by dragging it (or Alt and an arrow), and
  *   removed by its ✕. Order is part of a filter: blur then grayscale is not grayscale then blur;
+ * - the picked function's editor, right under its chip: a slider and its number for the amounts
+ *   and the blur, the background editor's angle dial for hue-rotate, the shadow editor for
+ *   drop-shadow(), and a reference to an SVG filter — the page's own offered — for url();
  * - the functions not set yet, as dashed chips: clicking one adds it at its neutral value, which
- *   changes nothing on screen until its control moves, and picks it;
- * - the picked function's editor: a slider and its number for the amounts and the blur, the
- *   background editor's angle dial for hue-rotate, the shadow editor for drop-shadow(), and a
- *   reference to an SVG filter — the page's own offered — for url().
+ *   changes nothing on screen until its control moves, and picks it.
  *
  * An amount is written in the form it was written in: `sepia(0.6)` stays a plain number, a new one
  * is a percentage. A part this cannot model (a `var()`, a function it does not know) is kept as
@@ -391,6 +391,13 @@ export class HeoFilterEditor extends LitElement {
             </div>
           </div>`
         : nothing}
+      ${
+      /*
+       * The picked function's editor right under the chips it edits, then Add. With Add between
+       * them, the editor sat a whole list of buttons away from the chip that opened it, and it
+       * moved down every time a function was added or removed above it.
+       */
+      picked ? this.#renderEditor(picked, this.picked) : nothing}
       ${unset.length
         ? html`<div>
             <div class="group">Add</div>
@@ -405,7 +412,6 @@ export class HeoFilterEditor extends LitElement {
             </div>
           </div>`
         : nothing}
-      ${picked ? this.#renderEditor(picked, this.picked) : nothing}
     `;
   }
 

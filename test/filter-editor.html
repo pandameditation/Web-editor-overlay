@@ -8,8 +8,9 @@
     The filter editor opens from the control at the head of the filter and backdrop-filter fields,
     in the shadow editor's dialog, titled "Filter" or "Backdrop filter". The functions set are chips
     in the order they apply, each with a cross; the ones not set are dashed chips that add them at
-    their neutral value. The picked function's editor sits under them: a slider and a number, the
-    angle dial for hue-rotate, the shadow editor for drop-shadow(), a reference for url().
+    their neutral value, after the picked function's editor, which sits right under the chips: a
+    slider and a number, the angle dial for hue-rotate, the shadow editor for drop-shadow(), a
+    reference for url().
   -->
   <style id="site">
     :root {
@@ -140,6 +141,17 @@
           theFirstIsPicked: chips('filter')[0]?.dataset.picked === 'true',
           // Focus goes in, to the first chip, not the grip or the cross of the head.
           focusIsOnTheFirstChip: Boolean(active?.matches?.('.pick')) && active.closest('.fchip')?.dataset.part === '0',
+          // The picked function's editor right under its chips, then Add: with Add between them the
+          // editor sat a list of buttons away from the chip that opened it.
+          theEditorSitsBetweenTheChipsAndAdd: (() => {
+            const set = root.querySelector('.chips[role="list"]');
+            const editing = root.querySelector('.ed');
+            const add = root.querySelector('.chips[role="group"]');
+            const after = (a, b) => Boolean(a && b && a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+            return after(set, editing) && after(editing, add) &&
+              editing.getBoundingClientRect().top >= set.getBoundingClientRect().bottom &&
+              add.getBoundingClientRect().top >= editing.getBoundingClientRect().bottom;
+          })(),
         };
       });
 
