@@ -1,0 +1,1135 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Typewriter animation settings</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly; ← → or ?variant=A|B|C.
+
+  The question: what does the Typewriter preset's settings look like in the Motion card, given its
+  two decisions (real or drawn texts, one line or a whole block)? The page side plays the effect with
+  a timer, as the shipped one would in CSS or its small script, and shows what would be written.
+  A — Form: a texts list, then timing, delete, caret, and a "How it is written" choice at the end.
+  B — Timeline: one loop drawn as a track of typed, held and deleted segments; the texts are its chips.
+  C — Choose first: two cards (CSS, one line / Script, any block) decide what the settings under them offer.
+-->
+  <style>
+    :root {
+      --bg: oklch(19% 0.014 265);
+      --raised: oklch(23.5% 0.016 265);
+      --sunken: oklch(16% 0.012 265);
+      --hover: oklch(28% 0.018 265);
+      --text: oklch(96% 0.005 265);
+      --dim: oklch(74% 0.012 265);
+      --faint: oklch(66% 0.014 265);
+      --line: oklch(100% 0 0 / 9%);
+      --line2: oklch(100% 0 0 / 16%);
+      --accent: #6366f1;
+      --accent-text: color-mix(in oklab, var(--accent) 55%, white);
+      --accent-soft: color-mix(in oklab, var(--accent) 18%, transparent);
+      --accent-line: color-mix(in oklab, var(--accent) 55%, transparent);
+      --h: 305;
+      --ink: oklch(80% 0.13 var(--h));
+      --chip: oklch(32% 0.07 var(--h));
+      --warn: oklch(80% 0.14 85);
+      --ok: oklch(74% 0.15 155);
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      font-family: var(--font);
+      background: #e9ecf2;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+      color: inherit;
+    }
+
+    :focus-visible {
+      outline: 2px solid color-mix(in oklab, var(--accent) 60%, white);
+      outline-offset: 1px;
+    }
+
+    .stage {
+      overflow: auto;
+      padding: 24px 28px 100px;
+      color: #343a4d;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .stage h1 {
+      margin: 0 0 4px;
+      font-size: 15px;
+    }
+
+    .stage>p {
+      margin: 0 0 12px;
+      max-width: 64ch;
+    }
+
+    .hero {
+      margin: 0 0 16px;
+      padding: 34px 32px;
+      border-radius: 14px;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+
+    .hero h2 {
+      margin: 0;
+      font: 700 34px/1.2 var(--hfont, Inter, system-ui, sans-serif);
+      letter-spacing: -0.01em;
+    }
+
+    .hero h2 .tw {
+      color: #a5b4fc;
+      outline: 2px solid #6366f1;
+      outline-offset: 4px;
+      border-radius: 3px;
+      white-space: pre-wrap;
+    }
+
+    .hero h2 .tw.oneline {
+      white-space: nowrap;
+    }
+
+    .hero .caret {
+      display: inline-block;
+      margin-left: 2px;
+      background: #a5b4fc;
+      vertical-align: -0.1em;
+    }
+
+    .hero .caret.bar {
+      width: 3px;
+      height: 1em;
+    }
+
+    .hero .caret.block {
+      width: 0.55em;
+      height: 1em;
+      opacity: .7;
+    }
+
+    .hero .caret.under {
+      width: 0.55em;
+      height: 3px;
+      vertical-align: -0.05em;
+    }
+
+    .hero .caret.blink {
+      animation: blink 1s steps(1) infinite;
+    }
+
+    @keyframes blink {
+      50% {
+        opacity: 0;
+      }
+    }
+
+    .hero small {
+      display: block;
+      margin-top: 10px;
+      color: #94a3b8;
+      font-size: 12px;
+    }
+
+    .code {
+      margin: 0 0 14px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #fff;
+      border: 1px solid #d9dde7;
+      font: 11.5px/1.55 var(--mono);
+      white-space: pre-wrap;
+      color: #343a4d;
+    }
+
+    .code .c {
+      color: #8a90a2;
+    }
+
+    .notes {
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #fff;
+      border: 1px solid #d9dde7;
+      max-width: 680px;
+    }
+
+    .notes h2 {
+      margin: 0 0 6px;
+      font-size: 12.5px;
+    }
+
+    .notes ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .notes li {
+      margin: 3px 0;
+    }
+
+    .sublab {
+      margin: 0 0 6px;
+      color: #5b6275;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+    }
+  </style>
+  <style>
+    #panel {
+      position: relative;
+      height: 100vh;
+      overflow: auto;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.4;
+      border-left: 1px solid #0006;
+      padding: 12px 12px 90px;
+    }
+
+    .xcard {
+      border-radius: 12px;
+      background: var(--raised);
+      box-shadow: inset 0 0 0 1px oklch(72% 0.12 var(--h) / 45%), 0 16px 36px -24px oklch(60% 0.16 var(--h) / 80%);
+      overflow: hidden;
+    }
+
+    .xh {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 5px 6px;
+      background: linear-gradient(90deg, oklch(32% 0.07 var(--h)), oklch(25.5% 0.03 var(--h)) 70%);
+    }
+
+    .thumb {
+      height: 38px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(120% 120% at 20% 0%, oklch(36% 0.08 var(--h)), oklch(22% 0.04 var(--h)));
+      color: var(--ink);
+      font: 700 13px var(--mono);
+    }
+
+    .tt b {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+    }
+
+    .tt > span {
+      color: var(--dim);
+      font: 10px var(--mono);
+    }
+
+    .count {
+      padding: 0 6px;
+      border-radius: 99px;
+      background: oklch(80% 0.12 var(--h));
+      color: oklch(22% 0.05 var(--h));
+      font-size: 9.5px;
+      font-weight: 650;
+      line-height: 15px;
+    }
+
+    .ic {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 5px;
+      background: var(--chip);
+      color: oklch(86% 0.12 var(--h));
+    }
+
+    .body {
+      display: grid;
+      gap: 12px;
+      padding: 10px;
+    }
+
+    .seg {
+      display: flex;
+      padding: 2px;
+      gap: 2px;
+      border-radius: 7px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .seg button {
+      flex: 1;
+      height: 24px;
+      padding: 0 7px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--dim);
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .seg button[aria-pressed='true'] {
+      background: var(--raised);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .picker {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 30px;
+      padding: 0 8px;
+      border-radius: 7px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .picker b {
+      flex: 1;
+      font-weight: 600;
+    }
+
+    .picker span {
+      color: var(--faint);
+      font-size: 10.5px;
+    }
+
+    .grp {
+      display: grid;
+      gap: 7px;
+    }
+
+    .gl {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--faint);
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .gl::after {
+      content: '';
+      flex: 1;
+      border-top: 1px solid var(--line);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 28px;
+    }
+
+    .row>label,
+    .row>.k {
+      color: var(--dim);
+      font-size: 11px;
+    }
+
+    .row input[type=range] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .row .v {
+      min-width: 58px;
+      text-align: right;
+      font: 11px var(--mono);
+      color: var(--text);
+    }
+
+    .val {
+      min-width: 0;
+      width: 100%;
+      height: 26px;
+      padding: 0 7px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      color: var(--text);
+      font: 11px var(--mono);
+      outline: none;
+    }
+
+    .val:focus {
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+
+    .hint {
+      margin: 0;
+      color: var(--faint);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+
+    .hint b {
+      color: var(--dim);
+      font-weight: 600;
+    }
+
+    .hint.warn {
+      color: var(--warn);
+    }
+
+    /* the texts */
+    .texts {
+      display: grid;
+      gap: 4px;
+    }
+
+    .ti {
+      display: grid;
+      grid-template-columns: 14px 18px minmax(0, 1fr) auto 18px;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 4px 3px 2px;
+      border-radius: 8px;
+    }
+
+    .ti:hover {
+      background: oklch(100% 0 0 / 3%);
+    }
+
+    .ti .grip {
+      color: var(--faint);
+      cursor: grab;
+      font-size: 10px;
+      text-align: center;
+    }
+
+    .ti .n {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 5px;
+      background: var(--chip);
+      color: var(--ink);
+      font: 700 9.5px var(--mono);
+    }
+
+    .ti.now .val {
+      box-shadow: inset 0 0 0 1px var(--ink);
+    }
+
+    .ti .real {
+      padding: 1px 6px;
+      border-radius: 99px;
+      background: color-mix(in oklab, var(--ok) 18%, transparent);
+      color: var(--ok);
+      font-size: 9.5px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .ti .drawn {
+      padding: 1px 6px;
+      border-radius: 99px;
+      background: oklch(100% 0 0 / 7%);
+      color: var(--faint);
+      font-size: 9.5px;
+      white-space: nowrap;
+    }
+
+    .kill {
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--faint);
+      cursor: pointer;
+    }
+
+    .kill:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .addt {
+      justify-self: start;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 24px;
+      padding: 0 7px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--ink);
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .addt:hover {
+      background: oklch(32% 0.06 var(--h) / 60%);
+    }
+
+    .toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      border: 0;
+      background: transparent;
+      color: var(--dim);
+      font-size: 11px;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .toggle i {
+      position: relative;
+      width: 26px;
+      height: 15px;
+      border-radius: 99px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .toggle i::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--dim);
+      transition: transform .2s;
+    }
+
+    .toggle[aria-checked='true'] {
+      color: var(--text);
+    }
+
+    .toggle[aria-checked='true'] i {
+      background: var(--accent-soft);
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+    }
+
+    .toggle[aria-checked='true'] i::after {
+      transform: translateX(11px);
+      background: var(--accent-text);
+    }
+
+    .carets {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 5px;
+    }
+
+    .carets button {
+      display: grid;
+      gap: 4px;
+      justify-items: center;
+      padding: 7px 4px 5px;
+      border: 0;
+      border-radius: 7px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      color: var(--dim);
+      font-size: 10px;
+      cursor: pointer;
+    }
+
+    .carets button[aria-pressed='true'] {
+      background: var(--accent-soft);
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+      color: var(--text);
+    }
+
+    .carets i {
+      display: flex;
+      align-items: flex-end;
+      gap: 1px;
+      height: 16px;
+      font: 700 13px var(--mono);
+      font-style: normal;
+      color: var(--text);
+    }
+
+    .carets i::after {
+      content: '';
+      display: block;
+      background: var(--ink);
+    }
+
+    .carets .bar i::after {
+      width: 2px;
+      height: 15px;
+    }
+
+    .carets .block i::after {
+      width: 8px;
+      height: 15px;
+      opacity: .7;
+    }
+
+    .carets .under i::after {
+      width: 8px;
+      height: 2px;
+    }
+
+    .carets .none i::after {
+      display: none;
+    }
+  </style>
+  <style>
+    /* how it is written: two cards */
+    .ways {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .way {
+      display: grid;
+      align-content: start;
+      gap: 4px;
+      padding: 8px 9px;
+      border: 0;
+      border-radius: 9px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      color: var(--dim);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .way b {
+      color: var(--text);
+      font-size: 11.5px;
+    }
+
+    .way span {
+      font-size: 10.5px;
+      line-height: 1.4;
+    }
+
+    .way ul {
+      margin: 2px 0 0;
+      padding-left: 14px;
+      font-size: 10px;
+      line-height: 1.45;
+    }
+
+    .way .pro {
+      color: var(--ok);
+    }
+
+    .way .con {
+      color: var(--warn);
+    }
+
+    .way[aria-pressed='true'] {
+      background: var(--accent-soft);
+      box-shadow: inset 0 0 0 1.5px var(--accent);
+    }
+
+    .v-C .ways {
+      margin-bottom: 2px;
+    }
+
+    .v-C .way {
+      padding: 10px;
+    }
+
+    /* B: one loop on a track */
+    .track {
+      position: relative;
+      display: flex;
+      height: 30px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .track .s {
+      position: relative;
+      display: grid;
+      place-items: center;
+      min-width: 0;
+      font: 9.5px var(--mono);
+      color: oklch(22% 0.05 var(--h));
+      overflow: hidden;
+      white-space: nowrap;
+      border: 0;
+      padding: 0;
+      cursor: pointer;
+    }
+
+    .track .s.type {
+      background: var(--ink);
+    }
+
+    .track .s.hold {
+      background: repeating-linear-gradient(135deg, oklch(60% 0.1 var(--h) / 45%) 0 4px, oklch(60% 0.1 var(--h) / 25%) 4px 8px);
+      color: var(--text);
+    }
+
+    .track .s.del {
+      background: oklch(64% 0.12 var(--h));
+    }
+
+    .track .s.gap {
+      background: transparent;
+      color: var(--faint);
+    }
+
+    .track .s[aria-pressed='true'] {
+      box-shadow: inset 0 0 0 2px #fff;
+    }
+
+    .track .s+.s {
+      border-left: 1px solid var(--bg);
+    }
+
+    .track .head {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: #fff;
+      box-shadow: 0 0 0 1px #0006;
+      pointer-events: none;
+    }
+
+    .scale {
+      display: flex;
+      justify-content: space-between;
+      color: var(--faint);
+      font: 9px var(--mono);
+    }
+
+    .legend {
+      display: flex;
+      gap: 10px;
+      color: var(--faint);
+      font-size: 10px;
+    }
+
+    .legend i {
+      display: inline-block;
+      width: 10px;
+      height: 8px;
+      margin-right: 4px;
+      border-radius: 2px;
+      vertical-align: 0;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+
+    .tchip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 26px;
+      padding: 0 4px 0 6px;
+      border: 0;
+      border-radius: 7px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line2);
+      color: var(--text);
+      font: 11px var(--mono);
+      cursor: pointer;
+    }
+
+    .tchip .n {
+      display: grid;
+      place-items: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 4px;
+      background: var(--chip);
+      color: var(--ink);
+      font: 700 9px var(--mono);
+    }
+
+    .tchip[aria-pressed='true'] {
+      box-shadow: inset 0 0 0 1.5px var(--ink);
+    }
+
+    .seged {
+      display: grid;
+      gap: 7px;
+      padding: 9px;
+      border-radius: 9px;
+      background: color-mix(in oklab, oklch(32% 0.07 var(--h)) 40%, var(--sunken));
+      box-shadow: inset 0 0 0 1px oklch(72% 0.12 var(--h) / 35%);
+    }
+
+    .switcher {
+      position: fixed;
+      left: calc((100% - 340px) / 2);
+      bottom: 18px;
+      transform: translateX(-50%);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: #fde047;
+      color: #111;
+      border-radius: 999px;
+      padding: 5px;
+      box-shadow: 0 10px 30px -8px rgb(0 0 0 / 50%), 0 0 0 1px rgb(0 0 0 / 20%);
+      font: 600 12.5px/1 system-ui, sans-serif;
+    }
+
+    .switcher button {
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      border: 0;
+      background: #111;
+      color: #fde047;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .switcher .lab {
+      padding: 0 12px;
+      min-width: 380px;
+      text-align: center;
+    }
+
+    .switcher .lab small {
+      display: block;
+      font-weight: 500;
+      font-size: 10.5px;
+      opacity: .7;
+      margin-top: 3px;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <h1>Typewriter: its settings in the Motion card</h1>
+    <p>The selected element is the highlighted words. The page plays the animation as configured; under it is what would
+      be written.</p>
+    <div class="hero">
+      <h2>We help teams <span class="tw" id="tw"></span><span class="caret" id="caret"></span></h2><small
+        id="hlab"></small>
+    </div>
+    <p class="sublab">What gets written</p>
+    <pre class="code" id="code"></pre>
+    <div class="notes" id="notes"></div>
+  </main>
+  <aside id="panel" aria-label="Styles panel, Motion card (prototype)"></aside>
+  <div class="switcher" role="group" aria-label="Prototype variant switcher">
+    <button type="button" id="prev" aria-label="Previous variant">←</button>
+    <div class="lab" id="vlabel" aria-live="polite"></div>
+    <button type="button" id="next" aria-label="Next variant">→</button>
+  </div>
+  <script>
+    const $ = (s, r = document) => r.querySelector(s);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const panel = $('#panel');
+    const VARIANTS = [
+      { k: 'A', label: 'A — Form', note: 'A list of texts, then typing, deleting, the caret, and how it is written' },
+      { k: 'B', label: 'B — Timeline', note: 'One loop drawn as typed, held and deleted segments; click one to edit it' },
+      { k: 'C', label: 'C — Choose first', note: 'CSS (one line) or script (any block) first; the settings follow from it' },
+    ];
+    const NOTES = {
+      A: ['Everything in one column, in the order it plays: <b>Texts</b> (the first one is the element’s own text, the rest are drawn), <b>Typing</b>, <b>Caret</b>, then <b>How it is written</b>.', 'The texts are rows to type into, reorder by the grip, remove by the trash; <b>+ Add a text</b> under them. The one playing on the page is outlined.', '<b>Keep it</b> after typing means one text only: the others dim and say so.'],
+      B: ['One loop as a track: each text is typed (solid), held (striped), deleted (lighter); widths are their real durations, and the white line plays along with the page.', 'Click a segment or a chip to edit that text and its own hold: a long one can stay longer than a short one.', 'The speeds and the caret stay global, under the track.'],
+      C: ['The decision with consequences comes first, as two cards that say what each costs: <b>CSS</b> (one line, cleanest in a monospace font) or a <b>small script</b> (any font, a whole block, line by line).', 'What follows only offers what the choice can do: one-line fields for CSS, multi-line texts and “line by line” for the script.', 'The font warning is live: the highlighted words are in Inter, so CSS typing would cut letters; one click switches them to a monospace stack.'],
+    };
+    const params = new URLSearchParams(location.search);
+    let variant = VARIANTS.some((v) => v.k === params.get('variant')) ? params.get('variant') : 'A';
+    const S = {
+      texts: [{ text: 'design faster.', hold: 1600 }, { text: 'ship sooner.', hold: 1600 }, { text: 'sleep better.', hold: 2400 }],
+      speed: 70, delSpeed: 35, after: 'backspace', loop: 'infinite', caret: 'bar', blink: true,
+      way: params.get('way') || 'css', trigger: 'load', pick: 0, lines: true, mono: false, human: false,
+    };
+    const TRASH = '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>';
+    const texts = () => (S.after === 'keep' ? S.texts.slice(0, 1) : S.texts).filter((one) => one.text.trim());
+    /** One loop, as segments: each text typed, held, deleted, then a short gap. */
+    function segments() {
+      const out = [];
+      texts().forEach((one, i) => {
+        const n = one.text.length;
+        out.push({ kind: 'type', i, ms: n * S.speed, label: one.text });
+        out.push({ kind: 'hold', i, ms: one.hold, label: `${(one.hold / 1000).toFixed(1)}s` });
+        if (S.after === 'backspace') out.push({ kind: 'del', i, ms: n * S.delSpeed, label: '⌫' });
+        if (S.after !== 'keep') out.push({ kind: 'gap', i, ms: 250, label: '' });
+      });
+      return out;
+    }
+    const loopMs = () => segments().reduce((sum, one) => sum + one.ms, 0);
+  </script>
+  <script>
+    const seg = (act, value, options) => `<div class="seg" role="group">${options.map(([v, l]) => `<button type="button" data-act="${act}" data-v="${v}" aria-pressed="${String(value) === String(v)}">${l}</button>`).join('')}</div>`;
+    const slider = (label, act, value, min, max, step, unit) => `<div class="row"><label for="${act}">${label}</label><input id="${act}" type="range" min="${min}" max="${max}" step="${step}" value="${value}" data-edit="${act}"><span class="v">${value}${unit}</span></div>`;
+
+    function head() {
+      return `<div class="xh"><span class="thumb">A|</span><span class="tt"><b><span class="ic">▶</span>Motion<span class="count">1</span></b><span>Typewriter · ${S.trigger === 'load' ? 'on load' : S.trigger === 'in-view' ? 'in view' : 'hover'}</span></span><span style="color:var(--dim)">▴</span></div>`;
+    }
+    function presetRows() {
+      return `${seg('tab', 'animation', [['animation', 'Animation'], ['transition', 'Transition']])}
+    <div class="picker"><b>Typewriter</b><span>Types, holds, deletes, next</span><span>▾</span></div>
+    <div class="row"><span class="k">Starts</span>${seg('trigger', S.trigger, [['load', 'On load'], ['in-view', 'In view'], ['hover', 'Hover']])}<span></span></div>`;
+    }
+    function textRows({ block = false } = {}) {
+      const now = playing.i;
+      return `<div class="texts">${S.texts.map((one, i) => {
+        const off = S.after === 'keep' && i > 0;
+        const badge = i === 0
+          ? `<span class="real" title="The element's own text: selectable, indexed, read by screen readers">real text</span>`
+          : `<span class="drawn" title="${S.way === 'css' ? 'Drawn by CSS: not selectable, hidden from screen readers' : 'Typed by the script into the element; screen readers hear the first text only'}">${off ? 'not played' : S.way === 'css' ? 'drawn' : 'typed'}</span>`;
+        const field = block
+          ? `<textarea class="val" rows="2" data-edit="text" data-i="${i}" style="height:auto;padding:5px 7px;resize:vertical" aria-label="Text ${i + 1}">${esc(one.text)}</textarea>`
+          : `<input class="val" data-edit="text" data-i="${i}" value="${esc(one.text)}" aria-label="Text ${i + 1}">`;
+        return `<div class="ti ${i === now && !off ? 'now' : ''}" style="${off ? 'opacity:.45' : ''}"><span class="grip" title="Drag to reorder">⋮⋮</span><span class="n">${i + 1}</span>${field}${badge}<button type="button" class="kill" data-act="rm" data-i="${i}" aria-label="Remove text ${i + 1}" ${S.texts.length < 2 ? 'disabled' : ''}>${TRASH}</button></div>`;
+      }).join('')}</div><button type="button" class="addt" data-act="add">+ Add a text</button>`;
+    }
+    function typingRows() {
+      return `${slider('Type speed', 'speed', S.speed, 20, 200, 5, 'ms')}
+    ${slider('Hold', 'hold', S.texts[0].hold, 300, 5000, 100, 'ms')}
+    <div class="row"><span class="k">Then</span>${seg('after', S.after, [['backspace', 'Backspace'], ['clear', 'Clear'], ['keep', 'Keep it']])}<span></span></div>
+    ${S.after === 'backspace' ? slider('Delete speed', 'delSpeed', S.delSpeed, 10, 120, 5, 'ms') : ''}
+    <div class="row"><span class="k">Loops</span>${seg('loop', S.loop, [['1', 'Once'], ['3', '3×'], ['infinite', 'Forever']])}<span></span></div>
+    ${S.after === 'keep' && S.texts.length > 1 ? '<p class="hint warn">Keep it types the first text once and stays: the other texts are not played.</p>' : ''}`;
+    }
+    function caretRows() {
+      return `<div class="carets" role="group" aria-label="Caret">${[['bar', 'Bar'], ['block', 'Block'], ['under', 'Underscore'], ['none', 'None']].map(([v, l]) => `<button type="button" class="${v}" data-act="caret" data-v="${v}" aria-pressed="${S.caret === v}"><i>A</i>${l}</button>`).join('')}</div>
+    <button type="button" class="toggle" role="switch" data-act="blink" aria-checked="${S.blink}" ${S.caret === 'none' ? 'disabled' : ''}><i></i>Blinks while it waits</button>`;
+    }
+    function waysCards(big = false) {
+      return `<div class="ways">
+    <button type="button" class="way" data-act="way" data-v="css" aria-pressed="${S.way === 'css'}"><b>CSS only</b><span>One line, typed by stepping its width.</span>
+      ${big ? '<ul><li class="pro">No script, nothing to load</li><li class="pro">Plays in any page, even static</li><li class="con">One line; cleanest in a monospace font</li><li class="con">Texts after the first are drawn: not selectable or indexed</li></ul>' : ''}</button>
+    <button type="button" class="way" data-act="way" data-v="script" aria-pressed="${S.way === 'script'}"><b>Small script</b><span>Any font, a whole block, line by line.</span>
+      ${big ? '<ul><li class="pro">Types real text into the element</li><li class="pro">Wraps and types a paragraph</li><li class="con">One 1.2 kB script added to the page</li><li class="con">Nothing plays without JavaScript (the first text shows)</li></ul>' : ''}</button></div>`;
+    }
+    function fontHint() {
+      if (S.way !== 'css') return '';
+      return S.mono
+        ? '<p class="hint">Typed in <b>ui-monospace</b>: every character the same width, so each step is one letter.</p>'
+        : `<p class="hint warn">These words are in <b>Inter</b>: CSS steps by average width, so a step can cut a letter. <button type="button" class="addt" data-act="mono" style="height:20px;padding:0 4px">Use a monospace font</button></p>`;
+    }
+  </script>
+  <script>
+    const group = (label, body) => `<div class="grp"><div class="gl">${label}</div>${body}</div>`;
+    function bodyA() {
+      return `${presetRows()}
+    ${group('Texts', `${textRows()}<p class="hint">Typed in order, then again from the first. Text 1 is the element’s own.</p>`)}
+    ${group('Typing', typingRows())}
+    ${group('Caret', caretRows())}
+    ${group('How it is written', `${waysCards()}${fontHint()}`)}`;
+    }
+    function track() {
+      const list = segments();
+      const total = loopMs();
+      const at = (playing.t / total) * 100;
+      return `<div class="track" role="group" aria-label="One loop">${list.map((one) => `<button type="button" class="s ${one.kind}" style="flex:${one.ms} 0 0" data-act="pick" data-i="${one.i}" aria-pressed="${one.i === S.pick && one.kind !== 'gap'}" title="${one.kind === 'type' ? `Types “${esc(one.label)}”, ${one.ms}ms` : one.kind === 'hold' ? `Holds ${one.label}` : one.kind === 'del' ? `Deletes, ${one.ms}ms` : 'Pause'}">${one.kind === 'type' ? esc(one.label) : one.kind === 'gap' ? '' : esc(one.label)}</button>`).join('')}
+    <span class="head" style="left:${at}%"></span></div>
+    <div class="scale"><span>0s</span><span>one loop · ${(total / 1000).toFixed(1)}s</span><span>${S.loop === 'infinite' ? 'then again, for ever' : S.loop === '1' ? 'once' : '× 3'}</span></div>
+    <div class="legend"><span><i style="background:var(--ink)"></i>typing</span><span><i style="background:oklch(60% 0.1 var(--h) / 45%)"></i>held</span><span><i style="background:oklch(64% 0.12 var(--h))"></i>deleting</span></div>`;
+    }
+    function bodyB() {
+      const one = S.texts[S.pick] ?? S.texts[0];
+      const chips = S.texts.map((t, i) => `<button type="button" class="tchip" data-act="pick" data-i="${i}" aria-pressed="${i === S.pick}"><span class="n">${i + 1}</span>${esc(t.text || '…')}</button>`).join('');
+      return `${presetRows()}
+    ${group('One loop', `${track()}<div class="chips">${chips}<button type="button" class="addt" data-act="add">+ Text</button></div>
+      <div class="seged"><div class="row" style="grid-template-columns:52px minmax(0,1fr) 18px"><span class="k">Text ${S.pick + 1}</span><input class="val" data-edit="text" data-i="${S.pick}" value="${esc(one.text)}" aria-label="Text ${S.pick + 1}"><button type="button" class="kill" data-act="rm" data-i="${S.pick}" aria-label="Remove text ${S.pick + 1}" ${S.texts.length < 2 ? 'disabled' : ''}>${TRASH}</button></div>
+        ${slider('Holds for', 'holdPick', one.hold, 300, 5000, 100, 'ms')}
+        <p class="hint">${S.pick === 0 ? '<b>Text 1 is the element’s own text</b>: what shows without motion, and what screen readers read.' : `Text ${S.pick + 1} is ${S.way === 'css' ? 'drawn by CSS' : 'typed by the script'} on loop ${S.pick + 1}.`}</p></div>`)}
+    ${group('Speeds', `${slider('Type', 'speed', S.speed, 20, 200, 5, 'ms')}<div class="row"><span class="k">Then</span>${seg('after', S.after, [['backspace', 'Backspace'], ['clear', 'Clear'], ['keep', 'Keep it']])}<span></span></div>${S.after === 'backspace' ? slider('Delete', 'delSpeed', S.delSpeed, 10, 120, 5, 'ms') : ''}<div class="row"><span class="k">Loops</span>${seg('loop', S.loop, [['1', 'Once'], ['3', '3×'], ['infinite', 'Forever']])}<span></span></div>`)}
+    ${group('Caret', `<div class="row"><span class="k">Caret</span>${seg('caret', S.caret, [['bar', '|'], ['block', '█'], ['under', '_'], ['none', 'None']])}<span></span></div><button type="button" class="toggle" role="switch" data-act="blink" aria-checked="${S.blink}"><i></i>Blinks while it waits</button>`)}
+    ${group('Written as', `<div class="row"><span class="k">Written as</span>${seg('way', S.way, [['css', 'CSS, one line'], ['script', 'Script, any block']])}<span></span></div>${fontHint()}`)}`;
+    }
+    function bodyC() {
+      const script = S.way === 'script';
+      return `${presetRows()}
+    ${group('How it types', waysCards(true))}
+    ${group(script ? 'Texts, any length' : 'Texts, one line each', `${textRows({ block: script })}${script
+        ? `<button type="button" class="toggle" role="switch" data-act="lines" aria-checked="${S.lines}"><i></i>Type a block line by line</button><button type="button" class="toggle" role="switch" data-act="human" aria-checked="${S.human}"><i></i>Uneven, like a person typing</button>`
+        : fontHint()}`)}
+    ${group('Typing', typingRows())}
+    ${group('Caret', caretRows())}`;
+    }
+  </script>
+  <script>
+    /* The page: the effect played with a timer, as the shipped CSS or script would play it. */
+    const playing = { i: 0, t: 0, start: performance.now() };
+    function frame(now) {
+      const list = segments();
+      const total = loopMs() || 1;
+      const loops = S.loop === 'infinite' ? Infinity : Number(S.loop);
+      let t = now - playing.start;
+      const done = t >= total * loops;
+      t = done ? total - 1 : t % total;
+      playing.t = t;
+      let text = '';
+      let i = 0;
+      let typing = false;
+      let acc = 0;
+      for (const one of list) {
+        if (t < acc + one.ms) {
+          const full = texts()[one.i]?.text ?? '';
+          const f = (t - acc) / one.ms;
+          i = one.i;
+          if (one.kind === 'type') { text = full.slice(0, Math.max(0, Math.round(f * full.length))); typing = true; }
+          else if (one.kind === 'hold') text = full;
+          else if (one.kind === 'del') { text = full.slice(0, Math.round((1 - f) * full.length)); typing = true; }
+          else text = '';
+          break;
+        }
+        acc += one.ms;
+      }
+      if (done) { text = S.after === 'keep' ? texts()[0]?.text ?? '' : texts()[0]?.text ?? ''; i = 0; typing = false; }
+      const tw = $('#tw');
+      if (tw.textContent !== text) tw.textContent = text;
+      tw.classList.toggle('oneline', S.way === 'css');
+      const caret = $('#caret');
+      caret.className = `caret ${S.caret === 'none' ? '' : S.caret}${S.blink && !typing ? ' blink' : ''}`;
+      caret.style.display = S.caret === 'none' ? 'none' : '';
+      if (playing.i !== i) {
+        playing.i = i;
+        panel.querySelectorAll('.ti').forEach((row, k) => row.classList.toggle('now', k === i));
+      }
+      const head = panel.querySelector('.track .head');
+      if (head) head.style.left = `${(t / total) * 100}%`;
+      requestAnimationFrame(frame);
+    }
+    const restart = () => { playing.start = performance.now(); };
+
+    function code() {
+      const list = texts();
+      const longest = Math.max(...list.map((one) => one.text.length), 1);
+      const secs = (loopMs() / 1000).toFixed(1);
+      if (S.way === 'css') {
+        const drawn = list.slice(1).map((one, k) => `  --heo-t${k + 2}: "${one.text}";`).join('\n');
+        return `<span class="c">/* .hero .tw — the element's own text is text 1; texts after it are drawn on their loop. */</span>
+.hero .tw {
+  animation-name: heo-typewriter;
+  animation-duration: ${secs}s;
+  animation-timing-function: steps(${longest}, end);
+  animation-iteration-count: ${S.loop};
+  --heo-chars: ${longest};
+  --heo-speed: ${S.speed}ms;${S.after !== 'backspace' ? `\n  --heo-after: ${S.after};` : ''}
+${drawn || '  /* one text: nothing drawn */'}
+  --heo-caret: ${S.caret};${S.blink ? '' : '\n  --heo-blink: no;'}${S.mono ? '\n  font-family: ui-monospace, Menlo, monospace;' : ''}
+}
+<span class="c">/* Shared, once per page with the library: the stepping width, the caret, and ::after
+   showing --heo-t2, --heo-t3… in turn, with speak: none so only text 1 is read. */</span>`;
+      }
+      const config = { texts: list.slice(1).map((one) => one.text), speed: S.speed, hold: list.map((one) => one.hold), after: S.after, loop: S.loop, caret: S.caret, lines: S.lines, human: S.human };
+      return `&lt;span class="tw" data-heo-typewriter='${esc(JSON.stringify(config))}'&gt;${esc(list[0]?.text ?? '')}&lt;/span&gt;
+
+<span class="c">&lt;!-- Once per page, with the library: 1.2 kB, defer. Types into the element itself;
+     the first text is what shows without JavaScript and what screen readers read. --&gt;</span>
+&lt;script src="heo-typewriter.js" defer&gt;&lt;/script&gt;`;
+    }
+
+    function render() {
+      panel.className = `v-${variant}`;
+      panel.innerHTML = `<section class="xcard">${head()}<div class="body">${variant === 'B' ? bodyB() : variant === 'C' ? bodyC() : bodyA()}</div></section>`;
+      $('#code').innerHTML = code();
+      $('#hlab').textContent = S.way === 'css' ? 'CSS only · one line' : `Script · ${S.lines ? 'line by line' : 'as one block'}`;
+      document.querySelector('.hero h2').style.setProperty('--hfont', S.mono && S.way === 'css' ? 'ui-monospace, Menlo, monospace' : '');
+      const v = VARIANTS.find((x) => x.k === variant);
+      $('#vlabel').innerHTML = `${esc(v.label)}<small>${esc(v.note)}</small>`;
+      $('#notes').innerHTML = `<h2>${esc(v.label)}</h2><ul>${NOTES[variant].map((x) => `<li>${x}</li>`).join('')}</ul>`;
+    }
+  </script>
+  <script>
+    panel.addEventListener('click', (e) => {
+      const a = e.target.closest('[data-act]');
+      if (!a || a.disabled) return;
+      const v = a.dataset.v;
+      const i = Number(a.dataset.i);
+      switch (a.dataset.act) {
+        case 'trigger': S.trigger = v; break;
+        case 'after': S.after = v; break;
+        case 'loop': S.loop = v; break;
+        case 'caret': S.caret = v; break;
+        case 'way': S.way = v; break;
+        case 'blink': S.blink = !S.blink; break;
+        case 'lines': S.lines = !S.lines; break;
+        case 'human': S.human = !S.human; break;
+        case 'mono': S.mono = true; break;
+        case 'pick': S.pick = i; break;
+        case 'add': S.texts.push({ text: 'one more thing.', hold: 1600 }); S.pick = S.texts.length - 1; break;
+        case 'rm': S.texts.splice(i, 1); S.pick = Math.min(S.pick, S.texts.length - 1); break;
+        default: return;
+      }
+      restart();
+      render();
+    });
+    // Typing and sliding update the state, the page and the code, without redrawing the field in use.
+    panel.addEventListener('input', (e) => {
+      const el = e.target;
+      const ed = el.dataset.edit;
+      if (ed === 'text') S.texts[Number(el.dataset.i)].text = el.value;
+      else if (ed === 'hold') S.texts.forEach((one) => { one.hold = Number(el.value); });
+      else if (ed === 'holdPick') S.texts[S.pick].hold = Number(el.value);
+      else if (ed === 'speed' || ed === 'delSpeed') S[ed] = Number(el.value);
+      else return;
+      const shown = el.closest('.row')?.querySelector('.v');
+      if (shown) shown.textContent = `${el.value}ms`;
+      $('#code').innerHTML = code();
+      restart();
+    });
+    // A slider or a text let go: redraw, so the track and the chips catch up.
+    panel.addEventListener('change', (e) => { if (e.target.dataset.edit) render(); });
+    function setVariant(k) { variant = k; const u = new URL(location.href); u.searchParams.set('variant', k); history.replaceState(null, '', u); render(); }
+    const cycle = (step) => setVariant(VARIANTS[(VARIANTS.findIndex((v) => v.k === variant) + step + VARIANTS.length) % VARIANTS.length].k);
+    document.addEventListener('keydown', (e) => {
+      const t = document.activeElement;
+      if (t && (t.matches('input, textarea, select') || t.isContentEditable)) return;
+      if (e.key === 'ArrowLeft') cycle(-1);
+      if (e.key === 'ArrowRight') cycle(1);
+    });
+    $('#prev').addEventListener('click', () => cycle(-1));
+    $('#next').addEventListener('click', () => cycle(1));
+    render();
+    requestAnimationFrame(frame);
+    if (params.has('shot')) setTimeout(() => { const o = document.createElement('div'); o.id = 'out'; o.hidden = true; o.textContent = 'RESULTS:{}:END'; document.body.append(o); }, 1800);
+  </script>
+</body>
+
+</html>

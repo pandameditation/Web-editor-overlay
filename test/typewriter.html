@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Typewriter animation</title>
+  <!--
+    The Typewriter preset types a line in CSS only: the element keeps its own text (text 1), painted
+    transparent, while its ::after draws the typed text over it; more texts are custom properties,
+    drawn on their loop. Its keyframes are named by its texts and timing, written live and on save.
+  -->
+  <style id="site">
+    body { margin: 0; padding: 24px; font: 20px system-ui; }
+    .hero { color: #1e1b4b; }
+  </style>
+</head>
+<body>
+  <h2 class="hero">We help teams <span id="tw">design faster.</span></h2>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      try {
+        const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        engine.setDockTab('styles');
+        const tw = document.getElementById('tw');
+        api.select(tw);
+        await settle(500);
+        const sroot = () => deep('heo-styles-panel').shadowRoot;
+        const editor = () => sroot().querySelector('heo-animation-editor');
+        const shadow = () => editor()?.shadowRoot;
+        const section = () => sroot().querySelector('heo-section[data-card="motion"]');
+        if (!section()?.open) section()?.shadowRoot?.querySelector('.tile')?.click();
+        await settle(300);
+        // Motion opens on Transition when there is one; this element has none, so Animation.
+        const send = async (target, type, detail) => {
+          target?.dispatchEvent(new CustomEvent(type, { detail, bubbles: true, composed: true }));
+          await settle(400);
+        };
+        const pick = (name) => send(shadow()?.querySelector('heo-value-field[data-property="animation-preset"]'), 'value-change', { value: name });
+        const css = (el, pseudo) => getComputedStyle(el, pseudo ?? null);
+        const named = () => (css(tw).animationName.split(',')[0] ?? '').trim();
+        const cssAnimation = () => tw.getAnimations().find((one) => one instanceof CSSAnimation && one.animationName.startsWith('heo-typewriter-'));
+        /** The ::after at a moment of the loop, the animation paused there. */
+        const at = (ms) => {
+          const one = cssAnimation();
+          one.pause();
+          one.currentTime = ms;
+          const after = css(tw, '::after');
+          return { c: css(tw).getPropertyValue('--heo-c').trim(), content: after.content, clip: after.clipPath };
+        };
+
+        progress.textContent = 'pick';
+        await pick('Typewriter');
+        const entry = engine.elementModel(tw).cascade('content', { width: null, state: '::after' }).applying[0];
+        results.pick = {
+          // Text 1 is the element's own: typed as is, its text still in the page.
+          typesTheElementsOwnText: named() === 'heo-typewriter-b-70-1600-35-14' && css(tw).getPropertyValue('--heo-t1').trim() === '"design faster."' &&
+            tw.textContent === 'design faster.',
+          // Painted transparent and positioned, so the ::after draws over it.
+          itsOwnTextIsPaintedOver: css(tw).webkitTextFillColor === 'rgba(0, 0, 0, 0)' && css(tw).position === 'relative',
+          theAfterDrawsIt: /^var\(--heo-text/.test(entry?.value ?? '') && css(tw, '::after').position === 'absolute',
+          theKeyframesPlayLive: Boolean(cssAnimation()) && Array.from(document.styleSheets).some((sheet) => {
+            try { return Array.from(sheet.cssRules).some((rule) => rule.name === named()); } catch { return false; }
+          }),
+          theEditorShowsTextOneAsReal: shadow()?.querySelector('[data-text="0"] .badge.real') !== null &&
+            shadow()?.querySelector('[data-text="0"] .own')?.textContent.trim() === 'design faster.',
+        };
+
+        progress.textContent = 'types';
+        {
+          // 250ms gap, then 70ms a character: at 250 + 7×70 it shows half; held from 1230ms.
+          const half = at(250 + 7 * 70);
+          const full = at(250 + 14 * 70 + 400);
+          const gone = at(250 + 980 + 1600 + 14 * 35 + 10);
+          cssAnimation().play();
+          results.types = {
+            theCountStepsByCharacters: half.c === '7' && /inset\(.* 50% /.test(half.clip),
+            thenHoldsItWhole: full.c === '14' && full.content === '"design faster."' && /inset\(.* 0% /.test(full.clip),
+            thenDeletesIt: gone.c === '0',
+          };
+        }
+
+        progress.textContent = 'texts';
+        {
+          shadow().querySelector('[data-act="add-text"]').click();
+          await settle(400);
+          await send(shadow().querySelector('[data-text="1"] heo-value-field'), 'value-change', { value: 'ship sooner.' });
+          const switched = at(250 + 980 + 1600 + 490 + 250 + 6 * 70);
+          cssAnimation().play();
+          results.texts = {
+            aSecondTextIsAProperty: css(tw).getPropertyValue('--heo-t2').trim() === '"ship sooner."' && named() === 'heo-typewriter-b-70-1600-35-14-12',
+            itIsDrawnOnItsLoop: switched.content === '"ship sooner."' && switched.c === '6',
+            theElementKeepsOnlyItsOwnText: tw.textContent === 'design faster.',
+          };
+        }
+
+        progress.textContent = 'save';
+        {
+          const parts = engine.designSystemParts('used');
+          results.save = {
+            theSaveCarriesItsKeyframesAndTheCount: (parts.animations ?? '').includes('@keyframes heo-typewriter-b-70-1600-35-14-12') &&
+              (parts.animations ?? '').includes('@property --heo-c') && (parts.animations ?? '').includes('@keyframes heo-caret-blink'),
+          };
+        }
+
+        progress.textContent = 'caret';
+        {
+          shadow().querySelector('.carets [data-caret="block"]').click();
+          await settle(400);
+          const block = css(tw).getPropertyValue('--heo-caret-w').trim();
+          shadow().querySelector('[data-blink]').click();
+          await settle(400);
+          results.caret = {
+            aBlockCaretIsWider: block === '0.6em',
+            noBlinkDropsItsAnimation: !css(tw).animationName.includes('heo-caret-blink'),
+          };
+        }
+
+        progress.textContent = 'remove';
+        {
+          await pick('Fade');
+          const after = engine.elementModel(tw).cascade('content', { width: null, state: '::after' }).applying[0];
+          results.remove = {
+            anotherAnimationClearsIt: named() === 'heo-fade' && css(tw).webkitTextFillColor !== 'rgba(0, 0, 0, 0)' &&
+              !css(tw).getPropertyValue('--heo-t1').trim() && css(tw).position === 'static' && !after,
+          };
+          engine.undo();
+          await settle(400);
+          results.remove.undoBringsItBack = named() === 'heo-typewriter-b-70-1600-35-14-12' && css(tw).position === 'relative';
+        }
+      } catch (e) {
+        results.threw = String((e && e.stack) || e);
+      }
+      results.browserErrors = { ok: errors.length === 0, errors };
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ...results, failed: results.threw ? ['threw', ...failed] : failed }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+</html>

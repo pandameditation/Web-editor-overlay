@@ -1,5 +1,6 @@
 import { ManagedStyleSheet } from './stylesheet.js';
 import { animationLibraryCss } from './animations.js';
+import { isTypewriterName } from './typewriter.js';
 import {
   ClassRegistry,
   normalizeClassName,
@@ -1241,6 +1242,8 @@ export class EditorEngine {
    * plays while editing. A save writes only the ones the page refers to (`designSystemParts`).
    */
   readonly #animationSheet = new ManagedStyleSheet('heo-animation-library', { internal: true });
+  /** Keyframes named per page (a typewriter's), added to the live library as they are written. */
+  readonly #namedAnimations = new Set<string>();
   readonly library: BlockLibrary;
   /**
    * The AI capability: configured providers, what each may change, and the boundary.
@@ -1418,6 +1421,20 @@ export class EditorEngine {
   #dragLeftHomeAt: number | null = null;
   /** The container the pointer is resting inside, for the nest gesture. */
   #dragDwell: { host: HTMLElement; since: number } | null = null;
+
+  /**
+   * Make these library animation names play live: the fixed presets are in the library sheet from
+   * the start, but a typewriter's keyframes depend on its name (its texts and timing), so they are
+   * added here as they are written. Saving needs nothing of this: the design system writes the
+   * keyframes every name a page uses stands for.
+   */
+  useAnimationNames(names: Iterable<string>): void {
+    const before = this.#namedAnimations.size;
+    for (const name of names) if (isTypewriterName(name)) this.#namedAnimations.add(name);
+    if (this.#namedAnimations.size === before) return;
+    const named = animationLibraryCss(this.#namedAnimations);
+    this.#animationSheet.write(`${animationLibraryCss()}\n\n${named}`);
+  }
 
   constructor(options: MountOptions = {}) {
     this.options = options;

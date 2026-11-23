@@ -11,6 +11,13 @@ import {
   type Category,
   type ParamSpec,
 } from '../../core/animations.js';
+import {
+  MAX_TEXTS,
+  typewriterParams,
+  typewriterSettings,
+  type TypewriterCaret,
+  type TypewriterSettings,
+} from '../../core/typewriter.js';
 import { icon } from '../icons.js';
 import { killStyles, renderKill } from '../kill.js';
 import { baseStyles } from '../theme.js';
@@ -20,13 +27,13 @@ import './easing-editor.js';
 import './segmented.js';
 import './value-field.js';
 
-const GROUPS: Record<Category, string> = { reveal: 'Reveal', attention: 'Attention', scroll: 'Scroll-driven' };
-const ICONS: Record<Category, string> = { reveal: 'eye', attention: 'sparkle', scroll: 'arrowDown' };
+const GROUPS: Record<Category, string> = { reveal: 'Reveal', attention: 'Attention', text: 'Text', scroll: 'Scroll-driven' };
+const ICONS: Record<Category, string> = { reveal: 'eye', attention: 'sparkle', text: 'text', scroll: 'arrowDown' };
 
 /** The presets as the list offers them: the 2026 picks first, under Common values, then by kind. */
 const SUGGESTIONS: ValueSuggestion[] = [
   ...PRESETS.filter((one) => one.featured).map((one) => ({ value: one.label, label: one.label, hint: one.description, group: 'Common values', icon: ICONS[one.category] })),
-  ...(['reveal', 'attention', 'scroll'] as Category[]).flatMap((category) =>
+  ...(['reveal', 'attention', 'text', 'scroll'] as Category[]).flatMap((category) =>
     PRESETS.filter((one) => one.category === category).map((one) => ({ value: one.label, label: one.label, hint: one.description, group: GROUPS[category], icon: ICONS[category] }))),
 ];
 
@@ -135,6 +142,135 @@ export class HeoAnimationEditor extends LitElement {
         color: var(--heo-text-faint);
         font-size: 10.5px;
       }
+
+      /* Typewriter: its texts, one a row, the first the element's own. */
+      .texts {
+        display: grid;
+        gap: 4px;
+      }
+      .text {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr) auto 18px;
+        gap: 6px;
+        align-items: center;
+      }
+      .text .n {
+        display: grid;
+        place-items: center;
+        width: 18px;
+        height: 18px;
+        border-radius: 5px;
+        background: var(--heo-hover);
+        color: var(--heo-text-dim);
+        font: 700 9.5px var(--heo-mono);
+      }
+      .text .own {
+        overflow: hidden;
+        min-width: 0;
+        height: 26px;
+        padding: 0 7px;
+        border: 1px dashed var(--heo-line-strong);
+        border-radius: var(--heo-r-sm);
+        color: var(--heo-text);
+        font: 11px/24px var(--heo-mono);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .badge {
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: var(--heo-hover);
+        color: var(--heo-text-dim);
+        font-size: 9.5px;
+        white-space: nowrap;
+      }
+      .badge.real {
+        background: color-mix(in oklab, var(--heo-success) 16%, transparent);
+        color: var(--heo-success-text);
+        font-weight: 600;
+      }
+      .text.off {
+        opacity: 0.5;
+      }
+      .add {
+        justify-self: start;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 24px;
+        padding: 0 7px;
+        border: 0;
+        border-radius: var(--heo-r-sm);
+        background: transparent;
+        color: var(--heo-accent-text);
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .add:hover {
+        background: var(--heo-hover);
+      }
+      .add:disabled {
+        color: var(--heo-text-faint);
+        cursor: default;
+      }
+      .carets {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 5px;
+      }
+      .carets button {
+        display: grid;
+        justify-items: center;
+        gap: 4px;
+        padding: 7px 4px 5px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-sunken);
+        color: var(--heo-text-dim);
+        font-size: 10px;
+        cursor: pointer;
+      }
+      .carets button[aria-pressed='true'] {
+        border-color: var(--heo-accent-line);
+        background: var(--heo-accent-soft);
+        color: var(--heo-text);
+      }
+      .carets i {
+        display: flex;
+        align-items: flex-end;
+        gap: 1px;
+        height: 16px;
+        color: var(--heo-text);
+        font: 700 13px var(--heo-mono);
+        font-style: normal;
+      }
+      .carets i::after {
+        content: '';
+        display: block;
+        background: var(--heo-accent-text);
+      }
+      .carets .bar i::after { width: 2px; height: 15px; }
+      .carets .block i::after { width: 8px; height: 15px; opacity: 0.6; }
+      .carets .under i::after { width: 8px; height: 2px; }
+      .carets .none i::after { display: none; }
+      .check {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--heo-text-dim);
+        font-size: 11px;
+      }
+      .warn {
+        color: var(--heo-warn-text);
+      }
+      .link {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--heo-accent-text);
+        font: inherit;
+        cursor: pointer;
+      }
     `,
   ];
 
@@ -198,10 +334,19 @@ export class HeoAnimationEditor extends LitElement {
     `;
   }
 
+  /** The text the element itself holds: the typewriter's text 1, the one it keeps for real. */
+  get #ownText(): string {
+    return (this.targets[0]?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
   /** A picked preset, keeping the trigger and timing chosen so far where they still apply. */
   #configFor(preset: AnimationPreset): AnimationConfig {
     const now = this.value;
     const next = defaultConfig(preset, now?.trigger);
+    if (preset.id === 'typewriter') {
+      // Text 1 is the element's own text: it types what is already there, and more texts are added.
+      return { ...next, params: typewriterParams({ ...typewriterSettings(next.params), texts: [this.#ownText] }) };
+    }
     if (now && presetById(now.preset)?.category === preset.category) {
       return { ...next, easing: now.easing, duration: now.duration, delay: now.delay };
     }
@@ -209,6 +354,7 @@ export class HeoAnimationEditor extends LitElement {
   }
 
   #renderControls(config: AnimationConfig, preset: AnimationPreset): TemplateResult {
+    if (preset.id === 'typewriter') return this.#renderTypewriter(config, preset);
     const driven = config.trigger === 'in-view' || config.trigger === 'scroll';
     const set = (patch: Partial<AnimationConfig>): void => this.#change({ ...config, ...patch });
     const setParam = (key: string, value: string): void => set({ params: { ...config.params, [key]: value } });
@@ -293,6 +439,114 @@ export class HeoAnimationEditor extends LitElement {
           set({ easing: event.detail.value });
         }}
       ></heo-easing-editor>
+    `;
+  }
+
+  /**
+   * The Typewriter's settings, in the order it plays: its texts, how it types and what comes after,
+   * the caret. One line, drawn over the element's own text (typewriter.ts).
+   */
+  #renderTypewriter(config: AnimationConfig, preset: AnimationPreset): TemplateResult {
+    const settings = typewriterSettings(config.params);
+    const write = (patch: Partial<TypewriterSettings>, iterations = config.iterations): void =>
+      this.#change({ ...config, iterations, params: typewriterParams({ ...settings, ...patch }) });
+    const own = this.#ownText;
+    const texts = [settings.texts[0] ?? own, ...settings.texts.slice(1)];
+    const stale = Boolean(own) && texts[0] !== own;
+    const setText = (index: number, text: string): void => {
+      const next = [...texts];
+      next[index] = text;
+      write({ texts: next });
+    };
+    const triggers: SegmentOption[] = preset.triggers.map((one) => ({ value: one, label: TRIGGER_LABELS[one] }));
+    const ms = (property: string, label: string, value: number, apply: (n: number) => void): TemplateResult =>
+      html`<label class="unit">${this.#number(property, label, String(value), (n) => n > 0 && apply(Math.round(n)))}ms</label>`;
+    const caret = (value: TypewriterCaret, label: string): TemplateResult => html`<button
+      type="button"
+      class=${value}
+      data-caret=${value}
+      aria-pressed=${String(settings.caret === value)}
+      @click=${() => write({ caret: value })}
+    ><i aria-hidden="true">A</i>${label}</button>`;
+    return html`
+      <div class="row">
+        <span class="lbl">trigger</span>
+        <heo-segmented
+          label="Trigger"
+          .options=${triggers}
+          .value=${config.trigger}
+          @segment-change=${(event: CustomEvent<{ value: string }>) => event.detail.value && this.#change({ ...config, trigger: event.detail.value as AnimationConfig['trigger'] })}
+        ></heo-segmented>
+      </div>
+      <div class="group">Texts</div>
+      <div class="texts" data-texts>
+        <div class="text" data-text="0">
+          <span class="n">1</span>
+          <span class="own" title=${`${texts[0]}: the element's own text. Edit it on the page.`}>${texts[0] || '(no text)'}</span>
+          <span class="badge real" title="The element's own text: selectable, indexed, read by screen readers">real text</span>
+          <span></span>
+        </div>
+        ${texts.slice(1).map((text, k) => {
+      const index = k + 1;
+      const off = settings.after === 'keep';
+      return html`<div class=${off ? 'text off' : 'text'} data-text=${index}>
+            <span class="n">${index + 1}</span>
+            <heo-value-field
+              data-property="typewriter-text"
+              field-label=${`Text ${index + 1}`}
+              .value=${text}
+              .suggestions=${[]}
+              placeholder="Text to type next"
+              @value-input=${(event: Event) => event.stopPropagation()}
+              @value-revert=${(event: Event) => event.stopPropagation()}
+              @value-change=${(event: CustomEvent<{ value: string }>) => {
+            event.stopPropagation();
+            setText(index, event.detail.value);
+          }}
+            ></heo-value-field>
+            <span class="badge" title="Drawn by CSS on its loop: not selectable or indexed, and not read by screen readers">${off ? 'not played' : 'drawn'}</span>
+            ${renderKill({ label: `Remove text ${index + 1}`, tight: true, onClick: () => write({ texts: texts.filter((_, at) => at !== index) }) })}
+          </div>`;
+    })}
+      </div>
+      <button type="button" class="add" data-act="add-text" ?disabled=${texts.length >= MAX_TEXTS}
+        @click=${() => write({ texts: [...texts, 'and one more thing.'] })}>${icon('plus', 11)} Add a text</button>
+      ${stale
+        ? html`<p class="note warn" data-stale>Text 1 is no longer the element’s text. <button type="button" class="link" @click=${() => setText(0, own)}>Use “${own}”</button></p>`
+        : html`<p class="note">Typed in order, then again from the first. Text 1 is the element’s own text, the others are drawn over it.</p>`}
+      <div class="group">Typing</div>
+      <div class="row"><span class="lbl">speed</span>${ms('typewriter-speed', 'Milliseconds a character, typing', settings.speed, (speed) => write({ speed }))}</div>
+      <div class="row"><span class="lbl">hold</span>${ms('typewriter-hold', 'Milliseconds a text is held', settings.hold, (hold) => write({ hold }))}</div>
+      <div class="row">
+        <span class="lbl">then</span>
+        <heo-segmented
+          label="After typing"
+          .options=${[{ value: 'backspace', label: 'Backspace' }, { value: 'clear', label: 'Clear' }, { value: 'keep', label: 'Keep it' }]}
+          .value=${settings.after}
+          @segment-change=${(event: CustomEvent<{ value: string }>) => event.detail.value && write({ after: event.detail.value as TypewriterSettings['after'] })}
+        ></heo-segmented>
+      </div>
+      ${settings.after === 'backspace'
+        ? html`<div class="row"><span class="lbl">delete</span>${ms('typewriter-remove', 'Milliseconds a character, deleting', settings.remove, (remove) => write({ remove }))}</div>`
+        : nothing}
+      ${settings.after === 'keep'
+        ? html`<p class="note">Keep it types text 1 once and stays: the other texts are not played.</p>`
+        : html`<div class="row">
+            <span class="lbl">loops</span>
+            <heo-segmented
+              label="Loops"
+              .options=${[{ value: '1', label: 'Once' }, { value: '3', label: '3×' }, { value: 'infinite', label: 'Forever' }]}
+              .value=${config.iterations}
+              @segment-change=${(event: CustomEvent<{ value: string }>) => event.detail.value && write({}, event.detail.value)}
+            ></heo-segmented>
+          </div>`}
+      <div class="group">Caret</div>
+      <div class="carets" role="group" aria-label="Caret">
+        ${caret('bar', 'Bar')}${caret('block', 'Block')}${caret('under', 'Underscore')}${caret('none', 'None')}
+      </div>
+      <label class="check"><input type="checkbox" data-blink .checked=${settings.blink} ?disabled=${settings.caret === 'none'}
+        @change=${(event: Event) => write({ blink: (event.target as HTMLInputElement).checked })}> Blinks</label>
+      <p class="note">One line, in CSS only: each step is one character’s share of the line, so it types most evenly in a monospace font.</p>
     `;
   }
 

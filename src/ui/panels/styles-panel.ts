@@ -135,9 +135,12 @@ import type { TuningValues } from '../controls/type-tuning.js';
 import {
   ANIMATION_PROPERTIES,
   composeAnimation,
+  isTypewriter,
+  presetById,
   readAnimation,
   type AnimationConfig,
 } from '../../core/animations.js';
+import { isTypewriterContent, TYPEWRITER_AFTER } from '../../core/typewriter.js';
 import type { Contribution } from '../../core/cascade.js';
 import type { AddDestination } from '../../core/save-plan.js';
 import '../controls/segmented.js';
@@ -1333,9 +1336,19 @@ export class HeoStylesPanel extends HeoElement {
     const open = this.#cardOpen(card, cards);
     const body = this.#cardBody(card, cards, open);
     if (cards.host.filtering && body === nothing) return null;
+    // A library animation by its name in the list ("Typewriter"), not its keyframes' ("heo-typewriter-b-70-…").
+    const shown = (value: string): string => {
+      if (!value.startsWith('heo-')) return value;
+      const parts = value.slice(4).split('-');
+      for (let k = parts.length; k > 0; k--) {
+        const preset = presetById(parts.slice(0, k).join('-'));
+        if (preset) return preset.label;
+      }
+      return value;
+    };
     const valuesOf = (list: readonly string[]): string => list
       .slice(0, 3)
-      .map((property) => (cards.read(property)?.value ?? '').split(/,(?![^(]*\))/)[0]!.trim())
+      .map((property) => shown((cards.read(property)?.value ?? '').split(/,(?![^(]*\))/)[0]!.trim()))
       .filter(Boolean)
       .join(' · ');
     return html`<heo-section
@@ -2769,6 +2782,15 @@ export class HeoStylesPanel extends HeoElement {
     const home = onHover ? hoverName : baseName;
     const own = (property: string): boolean => cards.cascade(property).applying.some((one) => !one.via);
     const rowsShown = ANIMATION_PROPERTIES.filter((property) => own(property) && hits.includes(property));
+    /*
+     * A typewriter draws through the element's ::after (typewriter.ts): the block that does now,
+     * found by its content, so a change keeps writing there and a removal clears it.
+     */
+    const afterCtx = { width: null, state: '::after' } as const;
+    const drawnBy = model.cascade('content', afterCtx).applying.find((one) => !one.via && isTypewriterContent(one.value));
+    const drawnTarget = drawnBy ? targetOf(drawnBy, el) : null;
+    // Its keyframes are named per page: make the ones in use play in this session.
+    if (isTypewriter(value)) this.editor.useAnimationNames((winner('animation-name', onHover)?.value ?? '').split(',').map((one) => one.trim()));
 
     const commit = (next: AnimationConfig | null): void => {
       const base = choice.picked.dest;
@@ -2792,10 +2814,44 @@ export class HeoStylesPanel extends HeoElement {
         }
       }
       for (const [property, text] of Object.entries(writes)) list.push({ dest, property, value: text });
+      const typing = isTypewriter(next) && Object.keys(writes).length > 0;
+      /*
+       * The element's own text, painted transparent for the ::after to draw over, and positioned
+       * for it to be drawn against: only when it is static, marked so a removal takes back only
+       * what the typewriter put there.
+       */
+      const hoverHere = dest.kind === 'target' && onHover && next?.trigger === 'hover';
+      if (typing && (getComputedStyle(el).position === 'static' || declaredIn('--heo-tw-pos', into, hoverHere))) {
+        list.push({ dest, property: 'position', value: 'relative' }, { dest, property: '--heo-tw-pos', value: 'relative' });
+      }
+      const clearExtras = (target: WriteTarget | null, hoverState: boolean): void => {
+        if (!target) return;
+        const at: AddDestination = { kind: 'target', target };
+        if (declaredIn('-webkit-text-fill-color', target, hoverState)) list.push({ dest: at, property: '-webkit-text-fill-color', value: '', remove: true });
+        if (declaredIn('--heo-tw-pos', target, hoverState)) list.push({ dest: at, property: 'position', value: '', remove: true });
+      };
+      if (!typing && isTypewriter(value)) clearExtras(into, hoverHere);
       // Moved somewhere else (to or from hover, or another block): taken out of where it was.
       if (homeTarget && !(into && sameTarget(homeTarget, into))) {
         for (const property of ANIMATION_PROPERTIES) {
           if (declaredIn(property, homeTarget, onHover)) list.push({ dest: { kind: 'target', target: homeTarget }, property, value: '', remove: true });
+        }
+        if (isTypewriter(value)) clearExtras(homeTarget, onHover);
+      }
+      // The ::after that draws it: the same declarations, where it is drawn now or in the
+      // element's own ::after place (its class, else a new one); taken away with the typewriter.
+      if (typing) {
+        const cond = { media: 'base', state: '::after' };
+        const afterDest: AddDestination | null = drawnTarget && drawnTarget.kind !== 'readonly'
+          ? { kind: 'target', target: drawnTarget }
+          : defaultPlace(model, el, cond, placesFor(model, 'content', cond, el, { ownedClass: (name) => this.editor.classes.get(name) ?? null })).dest;
+        if (afterDest) for (const [property, text] of Object.entries(TYPEWRITER_AFTER)) list.push({ dest: afterDest, property, value: text });
+        this.editor.useAnimationNames((writes['animation-name'] ?? '').split(',').map((one) => one.trim()));
+      } else if (drawnTarget && drawnTarget.kind !== 'readonly') {
+        for (const property of Object.keys(TYPEWRITER_AFTER)) {
+          if (model.cascade(property, afterCtx).applying.some((one) => !one.via && sameTarget(targetOf(one, el), drawnTarget))) {
+            list.push({ dest: { kind: 'target', target: drawnTarget }, property, value: '', remove: true });
+          }
         }
       }
       if (!list.length) return;

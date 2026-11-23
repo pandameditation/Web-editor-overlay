@@ -18,8 +18,19 @@
  * silently turned a scroll-driven animation back into a timed one.
  */
 
+import {
+  DEFAULT_TYPEWRITER,
+  isTypewriterName,
+  readTypewriter,
+  TYPEWRITER_VARS,
+  typewriterDeclarations,
+  typewriterLibraryCss,
+  typewriterParams,
+  typewriterSettings,
+} from './typewriter.js';
+
 export type Trigger = 'load' | 'in-view' | 'scroll' | 'hover';
-export type Category = 'reveal' | 'attention' | 'scroll';
+export type Category = 'reveal' | 'attention' | 'text' | 'scroll';
 
 export interface ParamSpec {
   key: string;
@@ -329,6 +340,17 @@ export const PRESETS: AnimationPreset[] = [
     defaults: { ...LOOP, duration: 1400, easing: 'ease' }, triggers: LOOP_TRIGGERS,
   },
   {
+    // A failing neon tube: steady, then a stutter of quick dips, unevenly spaced so it never reads as a beat.
+    id: 'flicker', label: 'Flicker', category: 'attention', description: 'Stutters like a failing neon light',
+    keyframes: [
+      { at: '0%, 17%, 19.5%, 22%, 24.5%, 53%, 56%, 100%', declarations: { opacity: '1' } },
+      { at: '18%, 23%, 54.5%', declarations: { opacity: 'var(--heo-opacity, 0.2)' } },
+      { at: '21%', declarations: { opacity: 'calc((1 + var(--heo-opacity, 0.2)) / 2)' } },
+    ],
+    ...single('opacity', 'Dimmest', 'number', '--heo-opacity', '0.2'),
+    defaults: { ...LOOP, duration: 3000, easing: 'linear' }, triggers: LOOP_TRIGGERS,
+  },
+  {
     id: 'shake', label: 'Shake', category: 'attention', description: 'Side to side, as a no',
     keyframes: [
       { at: '0%, 100%', declarations: { translate: '0 0' } },
@@ -355,6 +377,24 @@ export const PRESETS: AnimationPreset[] = [
     vars: (p) => lean({ '--heo-turn': p.way === 'ccw' ? '-360deg' : '360deg' }, { '--heo-turn': '360deg' }),
     read: (v) => ({ way: v['--heo-turn']?.trim() === '-360deg' ? 'ccw' : 'cw' }),
     defaults: { ...LOOP, duration: 2000, easing: 'linear' }, triggers: LOOP_TRIGGERS,
+  },
+
+  /* ---- Text ---- */
+  {
+    /*
+     * Its keyframes depend on its texts and timing, so they are not one fixed block: they are
+     * named by those (typewriter.ts) and written for each name a page uses. It is composed and
+     * read through typewriter.ts, and draws through the element's ::after, which its host writes.
+     */
+    id: 'typewriter', label: 'Typewriter', category: 'text', featured: true,
+    description: 'Types a line, holds it, deletes it, types the next',
+    keyframes: [],
+    params: [],
+    vars: () => ({}),
+    read: () => ({}),
+    defaults: { trigger: 'load', duration: 0, delay: 0, easing: 'linear', iterations: 'infinite', direction: 'normal', range: 'relaxed' },
+    // In view is scroll-driven here, which would type as the page scrolls, not when it arrives.
+    triggers: ['load', 'hover'],
   },
 
   /* ---- Scroll-driven ---- */
@@ -424,7 +464,10 @@ export const ANIMATION_LONGHANDS = [
   'animation-timeline',
   'animation-range',
 ] as const;
-export const ANIMATION_VARS = ['--heo-x', '--heo-y', '--heo-opacity', '--heo-scale', '--heo-blur', '--heo-spread', '--heo-color', '--heo-rotate', '--heo-axis', '--heo-turn', '--heo-clip'] as const;
+export const ANIMATION_VARS = ['--heo-x', '--heo-y', '--heo-opacity', '--heo-scale', '--heo-blur', '--heo-spread', '--heo-color', '--heo-rotate', '--heo-axis', '--heo-turn', '--heo-clip', ...TYPEWRITER_VARS] as const;
+
+/** Whether a preset draws its own keyframes per page (the typewriter) rather than one fixed block. */
+export const isTypewriter = (config: Pick<AnimationConfig, 'preset'> | null | undefined): boolean => config?.preset === 'typewriter';
 /** Everything that can describe an element's animation, the shorthand included, for folding. */
 export const ANIMATION_PROPERTIES: readonly string[] = ['animation', ...ANIMATION_LONGHANDS, 'animation-range-start', 'animation-range-end', 'animation-play-state', ...ANIMATION_VARS];
 
@@ -434,7 +477,9 @@ export const ANIMATION_PROPERTIES: readonly string[] = ['animation', ...ANIMATIO
 
 /** A preset with its defaults, ready to write. */
 export function defaultConfig(preset: AnimationPreset, trigger?: Trigger): AnimationConfig {
-  const params = Object.fromEntries(preset.params.map((one) => [one.key, one.default]));
+  const params = preset.id === 'typewriter'
+    ? typewriterParams({ texts: [], ...DEFAULT_TYPEWRITER })
+    : Object.fromEntries(preset.params.map((one) => [one.key, one.default]));
   const chosen = trigger && preset.triggers.includes(trigger) ? trigger : preset.defaults.trigger;
   return { preset: preset.id, params, ...preset.defaults, trigger: chosen };
 }
@@ -448,6 +493,7 @@ const isScrollDriven = (trigger: Trigger): boolean => trigger === 'in-view' || t
 export function composeAnimation(config: AnimationConfig): Record<string, string> {
   const preset = presetById(config.preset);
   if (!preset) return {};
+  if (preset.id === 'typewriter') return typewriterDeclarations(typewriterSettings(config.params), config.iterations);
   const out: Record<string, string> = { ...preset.vars(config.params) };
   const driven = isScrollDriven(config.trigger);
   out['animation-name'] = keyframesName(preset);
@@ -479,6 +525,16 @@ export function composeAnimation(config: AnimationConfig): Record<string, string
  * gives a property's written value, '' when none. `hover` says the values came from `:hover`.
  */
 export function readAnimation(read: (property: string) => string, hover = false): AnimationConfig | null {
+  const typed = readTypewriter(read);
+  if (typed) {
+    const preset = presetById('typewriter')!;
+    return {
+      ...defaultConfig(preset),
+      params: typewriterParams(typed),
+      trigger: hover ? 'hover' : 'load',
+      iterations: read('animation-iteration-count').split(',')[0]?.trim() || 'infinite',
+    };
+  }
   const name = read('animation-name').trim() || (/\bheo-[a-z-]+/.exec(read('animation'))?.[0] ?? '');
   const preset = PRESETS.find((one) => keyframesName(one) === name);
   if (!preset) return null;
@@ -520,14 +576,18 @@ export function keyframesCss(preset: AnimationPreset): string {
 
 /** The library as CSS: every preset, or only those named. */
 export function animationLibraryCss(names?: ReadonlySet<string>): string {
-  return PRESETS.filter((one) => !names || names.has(keyframesName(one))).map(keyframesCss).join('\n\n');
+  const fixed = PRESETS.filter((one) => one.keyframes.length && (!names || names.has(keyframesName(one)))).map(keyframesCss);
+  // A typewriter's keyframes exist per name, so only named ones are written; with no names given,
+  // none (the editor adds the ones it writes, Editor.useAnimationNames).
+  const typed = names ? typewriterLibraryCss(names) : '';
+  return [...fixed, ...(typed ? [typed] : [])].join('\n\n');
 }
 
 /** The library keyframe names that appear in a piece of CSS (a rule, a style attribute). */
 export function animationNamesIn(text: string): string[] {
   const found = new Set<string>();
-  for (const match of text.matchAll(/\bheo-[a-z]+(?:-[a-z]+)*\b/g)) {
-    if (PRESETS.some((one) => keyframesName(one) === match[0])) found.add(match[0]);
+  for (const match of text.matchAll(/\bheo-[a-z0-9]+(?:-[a-z0-9]+)*\b/g)) {
+    if (PRESETS.some((one) => one.keyframes.length && keyframesName(one) === match[0]) || isTypewriterName(match[0])) found.add(match[0]);
   }
   return [...found];
 }
@@ -549,7 +609,8 @@ export interface PreviewFrame {
 /** A preset's keyframes for `element.animate()`, with these parameters put in. */
 export function previewFrames(config: AnimationConfig): { frames: PreviewFrame[]; options: KeyframeAnimationOptions } | null {
   const preset = presetById(config.preset);
-  if (!preset) return null;
+  // The typewriter plays on the page once written: there is no element.animate() of a ::after's text.
+  if (!preset || !preset.keyframes.length) return null;
   const vars = { ...preset.vars(defaultConfig(preset).params), ...preset.vars(config.params) };
   const frames: PreviewFrame[] = [];
   for (const frame of preset.keyframes) {
