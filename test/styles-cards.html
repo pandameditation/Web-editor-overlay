@@ -378,6 +378,32 @@
           engine.setPreviewWidth(null);
           await settle(100);
         }
+        {
+          /*
+           * Previewing a width the window is not (1024 here, the window under 768): the element's
+           * class has no rule at that size yet, so a value typed there used to paint nothing until
+           * it was committed, and the page did not follow the field.
+           */
+          engine.setPreviewWidth(1024);
+          await settle(150);
+          await pickCond(tablet);
+          await openCard('typography');
+          const before = getComputedStyle(target).letterSpacing;
+          fieldIn('typography', 'letter-spacing')?.dispatchEvent(
+            new CustomEvent('value-input', { detail: { value: '0.5em' }, bubbles: true, composed: true }));
+          await settle();
+          const during = getComputedStyle(target).letterSpacing;
+          engine.cancelPreview();
+          await settle();
+          const after = getComputedStyle(target).letterSpacing;
+          results.strip.aValueTypedAtAPreviewedSizeShowsAsItIsTyped =
+            innerWidth < 768 && during === '8px' && after === before && !document.getElementById('heo-new-rule-preview') &&
+            !engine.elementModel(target).entries.some((one) => one.selector.startsWith('.featured') && one.declarations.some((d) => d.property === 'letter-spacing'));
+          await closeCard('typography');
+          await pickCond(tablet);
+          engine.setPreviewWidth(null);
+          await settle(100);
+        }
         progress.textContent = 'strip: ::before';
         {
           await pickCond('state:::before');
@@ -529,6 +555,31 @@
           engine.undo();
           await settle();
           await closeCard('other');
+        }
+        progress.textContent = 'search: a side of a shorthand';
+        {
+          await closeCard('spacing');
+          await typeSearch('margin-top');
+          const offer = suggested('margin-top');
+          optionFor('margin-top')?.click();
+          await settle(60);
+          const onItsValue = searchAdder()?.dataset.step === 'value';
+          await typeIn(searchAdder()?.querySelector('heo-value-field.new-value'), '4px');
+          await enterIn(searchAdder()?.querySelector('heo-value-field.new-value'));
+          await settle(60);
+          /*
+           * margin sets margin-top here, and Spacing draws a side's row only where it is declared:
+           * offered as "go to it", the pick opened Spacing on the margin row and the side could not
+           * be given a value of its own. It is offered to add, saying where its value comes from now,
+           * and once added it is a row of its own under margin.
+           */
+          results.search.aShorthandsSideIsOfferedToAdd =
+            offer?.group === 'Add' && /^add · Spacing · now from margin$/.test(offer?.hint ?? '') && onItsValue &&
+            target.style.getPropertyValue('margin-top') === '4px' && Boolean(card('spacing')?.open) &&
+            Boolean(card('spacing')?.querySelector('.row[data-property="margin-top"]')) && flashed('spacing', 'margin-top');
+          engine.undo();
+          await settle();
+          await closeCard('spacing');
         }
         progress.textContent = 'search: no match';
         {

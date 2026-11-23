@@ -384,6 +384,22 @@ export function composeBackground(background: Background): string {
   return layers.join(', ');
 }
 
+/**
+ * One longhand's value for these layers, as a block that writes its background as longhands
+ * would: `background-image` lists every drawn layer's image, a placement lists each layer's part
+ * (its default where the layer has none), the colour is the colour. '' when it would say nothing
+ * CSS does not do anyway: no colour, or every layer at the placement's default.
+ */
+export function composeLonghand(background: Background, property: string): string {
+  if (property === 'background-color') return background.color.trim();
+  const layers = drawnLayers(background);
+  if (property === 'background-image') return layers.length ? layers.map(imageCss).join(', ') : 'none';
+  if (property === 'background-blend-mode') return composeBlend(background);
+  const key = (Object.keys(LONGHAND_OF) as (keyof Placement)[]).find((one) => LONGHAND_OF[one] === property);
+  if (!key || !layers.length || layers.every((layer) => isDefault(key, layer[key]))) return '';
+  return layers.map((layer) => (isDefault(key, layer[key]) ? DEFAULTS[key][0]! : layer[key].trim())).join(', ');
+}
+
 /** The `background-blend-mode` list, or '' when every layer blends normally. */
 export function composeBlend(background: Background): string {
   const layers = drawnLayers(background);

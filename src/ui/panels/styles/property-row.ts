@@ -13,7 +13,7 @@ import { normalizeClassName } from '../../../core/classes.js';
 import { renderFamilies } from '../class-editor.js';
 import { entryLabel, reachText, shortLabel } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
-import { defaultPlace, placesFor, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
+import { defaultPlace, placeOutcome, placesFor, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
 import { icon } from '../../icons.js';
 import { buildSuggestions, shadowSwatches, valueKindFor } from '../../suggestions.js';
 import { renderUses } from '../class-editor.js';
@@ -402,8 +402,23 @@ export function previewChosen(host: StylesHost, spec: RowSpec, picked: Place, te
     engine.previewStyle(property, strong ? `${typed.value} !important` : text, element);
   } else if (picked.dest.kind === 'target' && picked.dest.target.kind !== 'readonly') {
     engine.previewDeclaration(picked.dest.target, property, text);
+  } else if (picked.target === null && (!picked.media || mediaApplies(picked.media, null))) {
+    /*
+     * A rule or class not made yet, under media that applies at the width the page renders at:
+     * painted as it will be. Previewing a width is when this is the usual case (the element's
+     * class at the previewed size has no rule yet), and the page followed none of the typing.
+     * A rule not made yet is painted for its selector, so every element it will style follows; the
+     * element's new class has no name until it is written, but styles this element alone, so it
+     * is painted on the element, and only where its value would win.
+     */
+    const dest = picked.dest;
+    if (dest.kind === 'new-rule') engine.previewNewRule(dest.selector, property, text);
+    else if (dest.kind === 'auto-class' && !dest.state &&
+      placeOutcome(model, property, rowCondition(spec.scope), picked, splitImportant(text).important === true).applies) {
+      engine.previewStyle(property, text, element);
+    } else engine.cancelPreview();
   } else {
-    // A rule or class not made yet shows once it is written.
+    // Its media does not apply at this width, or the block cannot be written: nothing would show.
     engine.cancelPreview();
   }
 }

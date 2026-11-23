@@ -2436,6 +2436,7 @@ export class EditorEngine {
    */
   previewStyle(property: string, value: string, el = this.store.value.selected): void {
     if (!el) return;
+    this.#endNewRulePreview();
     if (
       this.#preview &&
       (this.#preview.el !== el || this.#preview.property !== property)
@@ -2579,6 +2580,7 @@ export class EditorEngine {
   cancelPreview(): void {
     this.#endPreview();
     this.#endRulePreview();
+    this.#endNewRulePreview();
     this.#restoreBlockPreview();
     const classPreview = this.#classPreview;
     this.#classPreview = null;
@@ -3885,6 +3887,7 @@ export class EditorEngine {
    * on a `.card` rule should recolour every card as it moves.
    */
   previewRuleDeclaration(rule: CSSStyleRule, property: string, value: string): void {
+    this.#endNewRulePreview();
     if (this.#rulePreview && this.#rulePreview.rule !== rule) this.#endRulePreview();
     this.#rulePreview ??= {
       rule,
@@ -4114,6 +4117,42 @@ export class EditorEngine {
       case 'readonly':
         this.notify(target.reason, 'info');
     }
+  }
+
+  /** The stand-in a rule not written yet is previewed in, while a value is being explored. */
+  #newRulePreview: HTMLStyleElement | null = null;
+
+  /**
+   * Paint a value for a rule that does not exist yet, `selector { property: value }`, without
+   * history; `cancelPreview()` takes it away.
+   *
+   * A value typed for a place with no block yet (the element's class under a size picked for the
+   * previewed width, a family's first rule at a state) used to show nothing until it was
+   * committed, so at a previewed width the page did not follow the field at all. It is painted in
+   * an internal sheet, last in the document, which the cascade model, the save and the viewport
+   * rewrite all skip. Its media is the caller's to judge: a rule whose media does not apply now
+   * would show nothing, so it is not painted.
+   */
+  previewNewRule(selector: string, property: string, value: string): void {
+    this.#endPreview();
+    this.#endRulePreview();
+    const { value: text, important } = splitImportant(value);
+    let sheet = this.#newRulePreview;
+    if (!sheet || !sheet.isConnected) {
+      sheet = document.createElement('style');
+      sheet.setAttribute('data-heo-internal', '');
+      sheet.id = 'heo-new-rule-preview';
+      (document.head ?? document.documentElement).append(sheet);
+      this.#newRulePreview = sheet;
+    }
+    const declaration = text && CSS.supports(property, text) ? `${property}: ${text}${important ? ' !important' : ''};` : '';
+    sheet.textContent = declaration ? `${selector} { ${declaration} }` : '';
+  }
+
+  #endNewRulePreview(): void {
+    const sheet = this.#newRulePreview;
+    this.#newRulePreview = null;
+    sheet?.remove();
   }
 
   /** Paint a value into its declaration without history; `cancelPreview()` puts it back. */
@@ -12610,6 +12649,8 @@ export class EditorEngine {
   }
 
   #bumpRevision(): void {
+    // A committed change: the stand-in a rule not written yet was previewed in has done its job.
+    this.#endNewRulePreview();
     this.store.patch({ revision: this.store.value.revision + 1 });
     this.#bumpGeometry();
   }

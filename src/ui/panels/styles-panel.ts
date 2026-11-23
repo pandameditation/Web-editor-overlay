@@ -115,6 +115,7 @@ import {
   BACKGROUND_LONGHANDS,
   composeBackground,
   composeBlend,
+  composeLonghand,
   parseBackground,
   type Background,
 } from '../../core/background.js';
@@ -214,6 +215,18 @@ const BORDER_PARTS = ['border-width', 'border-style', 'border-color', 'outline-w
 /** A side's own family: `border-bottom` and its three longhands. Rows, likewise, only where declared. */
 const BORDER_SIDE_PROPERTIES = SIDES.flatMap((side) => [`border-${side}`, ...LINE_PARTS.map((part) => `border-${side}-${part}`)]);
 const BORDER_PROPERTIES = [...BORDER_SHORTHANDS, 'border-radius', ...BORDER_PARTS, ...BORDER_SIDE_PROPERTIES, 'outline-offset'];
+
+/**
+ * The longhands Spacing and Border draw as rows only where a block declares them on their own
+ * (BORDER_PROPERTIES says why). Supplied by their shorthand there is no row of theirs to go to, so
+ * the search offers to add one instead: "margin-top" taken while margin set it went to the card
+ * and found only the margin row, with no way to give the side its own value.
+ */
+const ROWS_WHEN_DECLARED = new Set([
+  ...SPACING_PROPERTIES.filter((property) => property.includes('-')),
+  ...BORDER_PARTS,
+  ...BORDER_SIDE_PROPERTIES,
+]);
 
 /** The Text style card's rows that are not its labelled typography rows: listed by name, as set. */
 const TEXT_EXTRAS = ['white-space', ...TYPOGRAPHY_SHORTHANDS];
@@ -425,6 +438,17 @@ const EMPTY_UI: StylesUiState = {
   forkDraft: '',
 };
 
+/** The open cascade menu, among the panel's popovers. */
+const CASCADE_POP = '.pop:not(.cardpop):not(.finderpop)';
+
+/** Whether a node is inside a container, through the shadow roots between them. */
+function composedContains(container: Node, node: Node): boolean {
+  for (let at: Node | null = node; at; at = at instanceof ShadowRoot ? at.host : at.parentNode) {
+    if (at === container) return true;
+  }
+  return false;
+}
+
 /** The focused element, through shadow roots. */
 function deepActive(): Element | null {
   let node: Element | null = document.activeElement;
@@ -565,25 +589,6 @@ export class HeoStylesPanel extends HeoElement {
       .viewrow heo-segmented.views {
         flex: 1 1 auto;
         min-width: 0;
-      }
-      .tally {
-        flex: 0 0 auto;
-        display: flex;
-        align-items: center;
-        gap: 5px;
-        color: var(--heo-text-faint);
-        font-size: 10.5px;
-        white-space: nowrap;
-      }
-      .tally i {
-        width: 7px;
-        height: 7px;
-        border-radius: 50%;
-        background: var(--heo-accent-text);
-      }
-      .tally i.none {
-        background: transparent;
-        box-shadow: inset 0 0 0 1.5px var(--heo-text-faint);
       }
       /* The search's adder, right under it, above the cards it adds to. */
       .search-add {
@@ -1124,7 +1129,6 @@ export class HeoStylesPanel extends HeoElement {
         if (view === 'cards' || view === 'applied') this.#patch({ view });
       }}
           ></heo-segmented>
-          ${this.#renderTally(cards)}
         </div>
       </div>
       ${this.ui.adder?.id === SEARCH_ADDER ? this.#renderSearchAdder(cards) : nothing}
@@ -1220,8 +1224,8 @@ export class HeoStylesPanel extends HeoElement {
       const empty = needsGeneratedContent(state) && !cards.read('content');
       return html`<p class="ctxline" data-ctx="pseudo">
         Styling <code>${state}</code>${at}, ${side ? `a box the browser draws ${side} the element’s content` : 'a part of the element the browser draws'}.${empty
-        ? html` It shows nothing until it has <b>content</b>.`
-        : nothing}
+          ? html` It shows nothing until it has <b>content</b>.`
+          : nothing}
       </p>`;
     }
     if (state) {
@@ -1292,15 +1296,6 @@ export class HeoStylesPanel extends HeoElement {
         ...(typeInline && TYPOGRAPHY_PROPERTIES.includes(property) ? { preferInline: true } : {}),
       }),
     };
-  }
-
-  /** How many cards have something set, and how many are empty, beside the view switch. */
-  #renderTally(cards: CardRender): TemplateResult {
-    const set = cards.visible.filter((card) => this.#cardState(card, cards).set.length).length;
-    const empty = cards.visible.length - set;
-    return html`<span class="tally" data-tally title=${`${set} of ${cards.visible.length} cards have something set`}>
-      <i aria-hidden="true"></i>${set} set<i class="none" aria-hidden="true"></i>${empty} empty
-    </span>`;
   }
 
   /** A card's properties that are set under the condition, and those declared by their own name. */
@@ -1588,7 +1583,7 @@ export class HeoStylesPanel extends HeoElement {
     const needle = this.ui.filter.split(':')[0]!.trim().toLowerCase();
     const set = new Set<string>();
     for (const card of cards.visible) {
-      for (const property of cards.lists.get(card.id) ?? []) if (cards.read(property)) set.add(property);
+      for (const property of cards.lists.get(card.id) ?? []) if (this.#hasSetRow(cards, property)) set.add(property);
     }
     const goTo = [...set]
       .filter((property) => property.includes(needle))
@@ -1601,15 +1596,25 @@ export class HeoStylesPanel extends HeoElement {
       .slice(0, SUGGESTION_MAX - goTo.length);
     return [
       ...goTo.map((property) => ({ value: property, hint: 'set · go to it', group: 'Set on this element' })),
-      ...add.map((property) => ({ value: property, hint: `add · ${headingOf(landingOf(cards, property))}`, group: 'Add' })),
+      ...add.map((property) => {
+        // A side its shorthand sets now: added, it gets its own declaration, over the shorthand's.
+        const via = cards.read(property)?.via;
+        return { value: property, hint: `add · ${headingOf(landingOf(cards, property))}${via ? ` · now from ${via}` : ''}`, group: 'Add' };
+      }),
     ];
+  }
+
+  /** Whether a property is set and has a row of its own to go to (ROWS_WHEN_DECLARED). */
+  #hasSetRow(cards: CardRender, property: string): boolean {
+    const shown = cards.read(property);
+    return Boolean(shown) && !(shown!.via && ROWS_WHEN_DECLARED.has(property));
   }
 
   /** A suggestion taken: a set property is gone to in its card; an unset one opens its value step. */
   #pickSuggestion(cards: CardRender, value: string): void {
     const property = normalizeProperty(value);
     if (!property) return;
-    if (cards.read(property)) {
+    if (this.#hasSetRow(cards, property)) {
       this.#clearFilter();
       this.#goToRow(property, landingOf(cards, property));
     } else this.#openAdder(property, true);
@@ -1688,9 +1693,34 @@ export class HeoStylesPanel extends HeoElement {
    * alone: the user moved on.
    */
   #onFocusOut = (event: FocusEvent): void => {
-    if (event.relatedTarget) return;
     const path = event.composedPath();
     const root = this.renderRoot;
+    /*
+     * Tabbing out of the cascade menu closes it, as the value lists and the class finder close:
+     * left open, it sat over the rows the focus had moved on to, pointing at a row no longer
+     * being edited. Read a frame later, once focus has landed: a move between the menu's own
+     * controls, or back to the name that opened it, keeps it. Focus dropped onto nothing is the
+     * other case below, which puts it back on the name.
+     */
+    const popover = this.ui.popover;
+    // Not by relatedTarget: focus moving from one shadow root's field to another's reads as null.
+    if (popover) {
+      // The cascade menu: the class finder and the card popovers are pops too.
+      const layer = root.querySelector(CASCADE_POP);
+      const opener = root.querySelector(`.row[data-row="${CSS.escape(popover.rowId)}"] .dots`);
+      if ((layer && path.includes(layer)) || (opener && path[0] === opener)) {
+        requestAnimationFrame(() => {
+          if (this.ui.popover?.rowId !== popover.rowId) return;
+          const active = deepActive();
+          if (!active || active === document.body) return;
+          const now = root.querySelector(CASCADE_POP);
+          const by = root.querySelector(`.row[data-row="${CSS.escape(popover.rowId)}"] .dots`);
+          if ((now && composedContains(now, active)) || active === by) return;
+          this.#patch({ popover: null });
+        });
+      }
+    }
+    if (event.relatedTarget) return;
     // By the path, not `contains`: a field's input sits in the field's own shadow root.
     const owner = this.#openers().find(({ layer, opener }) => {
       const at = root.querySelector(layer);
@@ -2579,12 +2609,43 @@ export class HeoStylesPanel extends HeoElement {
     const own = (property: string): boolean => cards.cascade(property).applying.some((one) => !one.via);
     const rowsShown = ['background', ...BACKGROUND_LONGHANDS.filter(own)].filter((property) => hits.includes(property));
 
+    /*
+     * A background a block writes as longhands (background-image: a gradient, with its colour and
+     * size beside it) is edited as those longhands, where they are: written as a shorthand at the
+     * background row's place instead, the gradient went inline over the rule, and the longhand
+     * rows went on showing the rule's old values, as though the editor had changed nothing.
+     */
+    const image = cards.cascade('background-image').applying[0];
+    const asLonghands = Boolean(image && !image.via);
+    const changedLonghands = (next: Background): string[] =>
+      BACKGROUND_LONGHANDS.filter((property) => composeLonghand(next, property) !== composeLonghand(value, property));
+    const placeOfLonghand = (property: string) => choiceOf(own(property) ? property : 'background-image');
+
     const preview = (next: Background): void => {
+      if (asLonghands) {
+        const property = changedLonghands(next)[0] ?? 'background-image';
+        const { spec, choice } = placeOfLonghand(property);
+        previewChosen(host, spec.property === property ? spec : { ...spec, property }, choice.picked, composeLonghand(next, property));
+        return;
+      }
       const { spec, choice } = choiceOf('background');
       previewChosen(host, spec, choice.picked, composeBackground(next));
     };
-    const commit = (next: Background): void =>
-      this.#commitBackground(value, next, choiceOf('background').choice, choiceOf('background-color').choice, el, model, ctx);
+    const commit = (next: Background): void => {
+      if (!asLonghands) {
+        this.#commitBackground(value, next, choiceOf('background').choice, choiceOf('background-color').choice, el, model, ctx);
+        return;
+      }
+      const writes = changedLonghands(next).flatMap((property) => {
+        const dest = placeOfLonghand(property).choice.picked.dest;
+        const text = composeLonghand(next, property);
+        // Back to saying nothing: taken away where it is declared, not written as a default.
+        if (!dest || (!text && !own(property))) return [];
+        return [{ dest, property, value: text, remove: !text }];
+      });
+      this.editor.cancelPreview();
+      if (writes.length) this.editor.writeDeclarationsTo(writes, 'Set background', el);
+    };
 
     return html`
       <heo-background-editor
@@ -2914,8 +2975,8 @@ export class HeoStylesPanel extends HeoElement {
             </div>`
           : nothing}
         ${styleHits.map((one) => {
-          const decl = textStyleDeclarations(one.entry);
-          return html`<button
+            const decl = textStyleDeclarations(one.entry);
+            return html`<button
             class="tstyle"
             type="button"
             data-text-style=${one.entry.name}
@@ -2926,48 +2987,48 @@ export class HeoStylesPanel extends HeoElement {
             <span class="p" style=${`${preview(decl)};font-size:min(22px, ${sizeOf(decl) || '16px'})`}>${one.name}</span>
             <span class="m">${[sizeOf(decl), decl['line-height']].filter(Boolean).join('/')}${decl['font-size'] || decl['line-height'] ? ' · ' : ''}${one.used}×</span>
           </button>`;
-        })}
+          })}
         ${!styles.length
           ? html`<p class="hint" style="margin:0">No text styles yet. Style this text below, then save it as one to use it elsewhere.</p>`
           : nothing}
         ${edited || !current
           ? html`<div class="tactions">
               ${edited && current
-                ? html`<button class="btn sm ghost" type="button" @click=${() => engine.applyTextStyle(current.name, el)}>Discard changes</button>`
-                : nothing}
+              ? html`<button class="btn sm ghost" type="button" @click=${() => engine.applyTextStyle(current.name, el)}>Discard changes</button>`
+              : nothing}
               <button class="btn sm primary" type="button" data-save-text-style ?disabled=${!edited && !Object.keys(look()).length} @click=${() => {
-                this.#typeDialog = { mode: 'save', target: null };
-                this.requestUpdate();
-              }}>Save as text style…</button>
+              this.#typeDialog = { mode: 'save', target: null };
+              this.requestUpdate();
+            }}>Save as text style…</button>
             </div>`
           : nothing}
       </div>` : nothing}
       <div class="rows" data-declarations="typography">
         ${rows.map((row) => renderPropertyRow({
-          property: row.property,
-          scope,
-          element: el,
-          model,
-          listId: 'typography',
-          label: row.label,
-          sub: row.sub,
-          segments: row.segments,
-          ...(inline ? { preferInline: true } : {}),
-        }, host))}
+            property: row.property,
+            scope,
+            element: el,
+            model,
+            listId: 'typography',
+            label: row.label,
+            sub: row.sub,
+            segments: row.segments,
+            ...(inline ? { preferInline: true } : {}),
+          }, host))}
         ${extras.length ? renderPropertyRows(extras, (property) => cards.spec(property, 'typography'), host) : nothing}
       </div>
       ${tuneShown
         ? html`<button class="more" type="button" aria-expanded=${this.#typeTune ? 'true' : 'false'} @click=${() => {
-            this.#typeTune = !this.#typeTune;
-            this.requestUpdate();
-          }}>${this.#typeTune ? 'Hide fine-tuning' : 'Fine-tuning: line breaks, numbers & letters'} ${icon(this.#typeTune ? 'chevronUp' : 'chevronDown', 10)}</button>
+          this.#typeTune = !this.#typeTune;
+          this.requestUpdate();
+        }}>${this.#typeTune ? 'Hide fine-tuning' : 'Fine-tuning: line breaks, numbers & letters'} ${icon(this.#typeTune ? 'chevronUp' : 'chevronDown', 10)}</button>
           ${this.#typeTune || host.filtering
             ? html`<heo-type-tuning
                 .values=${Object.fromEntries(tuning.map((property) => [property, value(property)])) as unknown as TuningValues}
                 family=${computedFamily}
                 familyName=${parseFamilies(computedFamily)[0] ?? ''}
                 @tune-change=${(event: CustomEvent<{ property: string; value: string }>) =>
-                  tune(event.detail.property, event.detail.value)}
+                tune(event.detail.property, event.detail.value)}
               ></heo-type-tuning>`
             : nothing}`
         : nothing}
@@ -2982,23 +3043,23 @@ export class HeoStylesPanel extends HeoElement {
         sample=${(el.textContent ?? '').replace(/\s+/g, ' ').trim()}
         proposed=${proposedTextStyleName(fromName || null, styles.map((one) => one.name))}
         @style-cancel=${() => {
-          this.#typeDialog = null;
-          this.requestUpdate();
-        }}
+        this.#typeDialog = null;
+        this.requestUpdate();
+      }}
         @style-discard=${() => {
-          const target = this.#typeDialog?.target ?? null;
-          this.#typeDialog = null;
-          engine.applyTextStyle(target, el);
-          this.requestUpdate();
-        }}
+        const target = this.#typeDialog?.target ?? null;
+        this.#typeDialog = null;
+        engine.applyTextStyle(target, el);
+        this.requestUpdate();
+      }}
         @style-save=${(event: CustomEvent<{ name: string; replace: string | null }>) => {
-          const target = this.#typeDialog?.target ?? null;
-          this.#typeDialog = null;
-          const saved = engine.saveTextStyle(event.detail.name, look(), event.detail.replace, el);
-          if (saved && target && target !== saved) engine.applyTextStyle(target, el);
-          if (saved) engine.notify(`Saved ${event.detail.name} as a text style.`, 'success', { label: 'Undo', run: () => engine.undo() });
-          this.requestUpdate();
-        }}
+        const target = this.#typeDialog?.target ?? null;
+        this.#typeDialog = null;
+        const saved = engine.saveTextStyle(event.detail.name, look(), event.detail.replace, el);
+        if (saved && target && target !== saved) engine.applyTextStyle(target, el);
+        if (saved) engine.notify(`Saved ${event.detail.name} as a text style.`, 'success', { label: 'Undo', run: () => engine.undo() });
+        this.requestUpdate();
+      }}
       ></heo-text-style-dialog>`;
   }
 
@@ -3028,10 +3089,10 @@ export class HeoStylesPanel extends HeoElement {
           .options=${options}
           .value=${tab}
           @segment-change=${(event: CustomEvent<{ value: string }>) => {
-            event.stopPropagation();
-            this.#motionTab = event.detail.value === 'transition' ? 'transition' : 'animation';
-            this.requestUpdate();
-          }}
+        event.stopPropagation();
+        this.#motionTab = event.detail.value === 'transition' ? 'transition' : 'animation';
+        this.requestUpdate();
+      }}
         ></heo-segmented>
       </div>
       <div data-motion=${tab}>${tab === 'transition' ? transition!.body : animation!.body}</div>`;
