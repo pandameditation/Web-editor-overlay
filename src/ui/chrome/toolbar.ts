@@ -636,7 +636,7 @@ export class HeoToolbar extends HeoElement {
         aria-label="Pin the toolbar and panels to the edges"
         aria-pressed=${docked}
         aria-describedby=${tipId(pinTip)}
-        @click=${() => this.editor.toggleLayout()}
+        @click=${() => this.editor.toggleLayout({ animate: true })}
       >
         ${icon('pin', 15)}
         ${tip(pinTip, 'D', docked ? 'D: float over the page' : 'D: pin to the edges, with the page between the panels')}

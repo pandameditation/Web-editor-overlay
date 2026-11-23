@@ -285,7 +285,7 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
     // a D typed into a field is a D, and Mod+D (decided above) still duplicates.
     if (key.toLowerCase() === 'd') {
       event.preventDefault();
-      engine.toggleLayout();
+      engine.toggleLayout({ animate: true });
       return;
     }
   }

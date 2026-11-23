@@ -33,7 +33,12 @@
       const results = {};
       const diagnostics = { innerWidth, innerHeight };
       const progress = document.getElementById('progress');
-      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const twoFrames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // The pin and D animate their switch (layout-morph.ts): geometry is read once it is over.
+      const frames = async () => {
+        await twoFrames();
+        while (api.engine.layoutAnimation) await api.engine.layoutAnimation;
+      };
       const settle = (ms) => new Promise((r) => setTimeout(r, ms));
       const safe = (fn) => { try { return fn(); } catch (err) { errors.push(String(err && err.stack || err)); return false; } };
       const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
@@ -599,6 +604,10 @@
         .map((el) => [Math.round(rect(el).left), Math.round(rect(el).right)]);
       const pageDocked = rect(dock('page'));
       const selDocked = rect(dock('selection'));
+      // Read with the boxes: the headless window loses about 34px of height a few seconds into the
+      // run and keeps it (measured with the switch animated and with it immediate, landing in
+      // different groups), so a later innerHeight is not the one these boxes were laid out in.
+      const viewHDocked = innerHeight;
       const htmlDocked = htmlBox();
       const letterSpacingDocked = getComputedStyle(document.getElementById('second')).letterSpacing;
       const firstParaBox = rect(document.getElementById('first'));
@@ -653,9 +662,9 @@
           Math.round(barBox.top) === 0 && Math.round(barBox.height) === BAR_H,
         dockedBarHasThreeGroups: Boolean(groupsHold) && groupsPlaced,
         dockedPanelsAreFlushUnderTheBar: Math.round(pageDocked.left) === 0 && Math.round(pageDocked.top) === BAR_H &&
-          Math.round(pageDocked.bottom) === innerHeight && Math.round(pageDocked.width) === 220 &&
+          Math.round(pageDocked.bottom) === viewHDocked && Math.round(pageDocked.width) === 220 &&
           Math.round(selDocked.right) === innerWidth && Math.round(selDocked.top) === BAR_H &&
-          Math.round(selDocked.bottom) === innerHeight && Math.round(selDocked.width) === 300,
+          Math.round(selDocked.bottom) === viewHDocked && Math.round(selDocked.width) === 300,
         // The page's root box sits between the panels and below the bar, at Actual.
         pageIsLaidOutBetweenThePanels: state().previewWidth === null &&
           Math.round(htmlDocked.left) === Math.round(pageDocked.right) &&
@@ -673,6 +682,75 @@
         dockedResizeReflowsThePage: reflowed,
         floatingAgainTheBarIsBackInItsPlace: floatsBack && JSON.stringify(state().toolbar) === storedBefore,
         pinTipNamesBothStatesAndD: /^Floating over the page D /.test(floatTipText) && /^Docked to the edges D /.test(dockTipText),
+      };
+
+      /* ---------------------------------------------------------------- *
+       * The morph: pinning turns the pill into the bar and slides the panels to their edges,
+       * as the prototypes' view transition did, instead of jumping.
+       * ---------------------------------------------------------------- */
+      progress.textContent = 'morph';
+      await reset();
+      engine.setPanelOpen('page', true);
+      engine.setPanelOpen('selection', true);
+      await frames();
+      const overlayHost = document.querySelector('html-editor-overlay > heo-overlay');
+      const barShape = () => bar()?.shadowRoot.querySelector('.bar') ?? null;
+      const panelBox = (side) => inDock(side, '.dock');
+      // Web Animations only: the panels' CSS slide-in is not the morph.
+      const morphing = (el) => Boolean(el) && el.getAnimations().some((a) => !(a instanceof CSSAnimation) && a.playState === 'running');
+      const vtSupported = typeof document.startViewTransition === 'function';
+      const pillBefore = rect(barShape());
+      pinButton().click();
+      const animationOnItsWay = engine.layoutAnimation !== null;
+      // The state waits for the transition's first frame, so the old layout is captured first.
+      const stateWaitsForTheFrame = !vtSupported || state().layout === 'float';
+      const namedDuring = overlayHost.style.getPropertyValue('view-transition-name') === 'heo-chrome';
+      const typeActive = !vtSupported || document.documentElement.matches(':active-view-transition-type(heo-layout)');
+      await twoFrames();
+      await settle(60);
+      const midBar = rect(barShape());
+      const barMorphs = morphing(barShape());
+      const panelsMorph = morphing(panelBox('page')) && morphing(panelBox('selection'));
+      // Mid-way the bar is between the pill and the full-width bar, not at either.
+      const barIsBetween = Boolean(midBar && pillBefore) && midBar.width > pillBefore.width + 1 && midBar.width < innerWidth - 1;
+      diagnostics.morph = { pillBefore: pillBefore && Math.round(pillBefore.width), mid: midBar && Math.round(midBar.width) };
+      await frames();
+      const endsDocked = state().layout === 'dock' && Math.round(rect(barShape()).width) === innerWidth &&
+        !morphing(barShape()) && !morphing(panelBox('page')) && Math.round(rect(panelBox('page')).left) === 0;
+      const nameGone = overlayHost.style.getPropertyValue('view-transition-name') === '';
+      const typeGone = !vtSupported || !document.documentElement.matches(':active-view-transition-type(heo-layout)');
+      // Unpinning: the panel's slide-in (which the pinned rule had turned off) is not replayed.
+      pinButton().click();
+      await twoFrames();
+      await settle(30);
+      const noSlideReplay = [panelBox('page'), panelBox('selection')].every((el) =>
+        el && !el.getAnimations().some((a) => a instanceof CSSAnimation && a.playState === 'running'));
+      const unpinMorphs = morphing(barShape()) && morphing(panelBox('selection'));
+      await frames();
+      const endsFloating = state().layout === 'float' && !morphing(barShape()) &&
+        Math.round(rect(panelBox('selection')).right) === innerWidth - 14;
+      // D twice in a row: the second goes back from where the first was going.
+      press(document.body, 'd');
+      press(document.body, 'd');
+      await frames();
+      const doubleDReturns = state().layout === 'float' && !engine.layoutAnimation;
+      // A programmatic switch is immediate: no animation, the state is set at once.
+      engine.setLayout('dock');
+      const programmaticIsImmediate = state().layout === 'dock' && engine.layoutAnimation === null && !morphing(barShape());
+      engine.setLayout('float');
+      await frames();
+      results.morph = {
+        aSwitchFromThePinIsAnimated: animationOnItsWay,
+        theOldLayoutIsCapturedBeforeTheStateChanges: stateWaitsForTheFrame,
+        theOverlayIsTheNamedGroupDuringTheSwitch: !vtSupported || (namedDuring && typeActive),
+        theBarMorphsFromThePillToTheBar: barMorphs && barIsBetween,
+        bothPanelsMorphToTheirEdges: panelsMorph,
+        itEndsAtTheDockedGeometry: endsDocked,
+        andLeavesNoNameOrTypeBehind: nameGone && typeGone,
+        unpinningMorphsBack: unpinMorphs && endsFloating,
+        unpinningDoesNotReplayThePanelSlideIn: noSlideReplay,
+        aSecondDGoesBack: doubleDReturns,
+        programmaticSwitchesAreImmediate: programmaticIsImmediate,
       };
 
       /* ---------------------------------------------------------------- *

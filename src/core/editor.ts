@@ -1989,16 +1989,49 @@ export class EditorEngine {
    * Docking shows the preview label again: the page is now laid out at a width the user did not
    * pick, and the label is what says which.
    */
-  setLayout(layout: 'float' | 'dock'): void {
-    if (this.store.value.layout === layout) return;
-    this.store.patch(layout === 'dock' ? { layout, previewLabel: true } : { layout });
-    // At once: the docked bar and panels draw this frame, and the page has to be between them.
-    this.viewport.relayout();
+  setLayout(layout: 'float' | 'dock', options: { animate?: boolean } = {}): void {
+    const apply = (): void => {
+      if (this.store.value.layout === layout) return;
+      this.store.patch(layout === 'dock' ? { layout, previewLabel: true } : { layout });
+      // At once: the docked bar and panels draw this frame, and the page has to be between them.
+      this.viewport.relayout();
+    };
+    const transition = options.animate ? this.layoutTransition : null;
+    if (!transition) {
+      // Programmatic, or no overlay to draw it: now, and a switch still on its way is dropped.
+      this.#layoutPending = null;
+      apply();
+      return;
+    }
+    if ((this.#layoutPending ?? this.store.value.layout) === layout) return;
+    this.#layoutPending = layout;
+    const run = transition(() => {
+      // Superseded while waiting for its frame (a second D, a programmatic switch): not this one.
+      if (this.#layoutPending === layout) apply();
+    }).finally(() => {
+      if (this.layoutAnimation !== run) return;
+      this.layoutAnimation = null;
+      this.#layoutPending = null;
+    });
+    this.layoutAnimation = run;
   }
 
-  toggleLayout(): void {
-    this.setLayout(this.store.value.layout === 'dock' ? 'float' : 'dock');
+  /** The other layout, from the one on its way if a switch is still being drawn. */
+  toggleLayout(options: { animate?: boolean } = {}): void {
+    const current = this.#layoutPending ?? this.store.value.layout;
+    this.setLayout(current === 'dock' ? 'float' : 'dock', options);
   }
+
+  /**
+   * How a user's switch between layouts is drawn, installed by the overlay (layout-morph.ts).
+   * It is handed the change and resolves once the change is drawn and its animation is over. The
+   * change waits for the animation's first frame, so the old layout can be captured first.
+   */
+  layoutTransition: ((apply: () => void) => Promise<void>) | null = null;
+  /** The switch being animated, for whoever needs the final geometry (the fixtures). */
+  layoutAnimation: Promise<void> | null = null;
+  /** Where an animated switch is going, until it has been applied. */
+  #layoutPending: 'float' | 'dock' | null = null;
 
   /** Show or hide the "Previewing…" label. The previewed width is not touched. */
   setPreviewLabel(shown: boolean): void {

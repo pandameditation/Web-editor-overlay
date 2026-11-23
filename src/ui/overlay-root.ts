@@ -1,6 +1,7 @@
-import { css, html, nothing, type TemplateResult } from 'lit';
+import { css, html, nothing, type LitElement, type TemplateResult } from 'lit';
 import { customElement } from 'lit/decorators.js';
 import { Z_BASE } from '../core/constants.js';
+import { morphLayout } from './chrome/layout-morph.js';
 import { shallowArrayEquals, StoreController } from '../core/store.js';
 import { HeoElement } from './context.js';
 import { baseStyles, themeVariables } from './theme.js';
@@ -181,8 +182,22 @@ export class HeoOverlay extends HeoElement {
     `;
   }
 
+  override connectedCallback(): void {
+    super.connectedCallback();
+    // The pin and D animate their switch; the engine cannot, having no chrome to draw.
+    this.editor.layoutTransition = (apply) => morphLayout(this, apply, () => this.#settled());
+  }
+
+  /** Once the overlay and every piece of chrome that moves have rendered the current state. */
+  async #settled(): Promise<void> {
+    await this.updateComplete;
+    const parts = Array.from(this.renderRoot.querySelectorAll('heo-toolbar, heo-dock, heo-viewport-frame'));
+    await Promise.all(parts.map((part) => (part as LitElement).updateComplete));
+  }
+
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    if (this.editor.layoutTransition) this.editor.layoutTransition = null;
     document.documentElement.removeAttribute('data-heo-edit');
     document.documentElement.style.removeProperty('--heo-drag-accent');
   }

@@ -10,6 +10,7 @@ import { installEventShield, shieldOverlayEvents } from './core/shield.js';
 import { ManagedStyleSheet } from './core/stylesheet.js';
 import { autoMountFromScriptTag } from './integrations/script-tag.js';
 import { setEngine } from './ui/context.js';
+import { CHROME_TRANSITION_NAME, LAYOUT_TRANSITION_TYPE } from './ui/chrome/layout-morph.js';
 import './ui/overlay-root.js';
 
 import type {
@@ -126,6 +127,32 @@ html[data-heo-edit] [${DRAGGING_ATTR}] {
 }
 html[data-heo-edit] [${DRAGGING_ATTR}] * {
   pointer-events: none !important;
+}
+
+/* Pinning and unpinning the chrome (ui/chrome/layout-morph.ts). Scoped to the editor's own
+   transition type, so a page's view transitions keep their own timing. The page cross-fades to
+   its new width at the morph's pace. The chrome's group does not move (the overlay host is the
+   whole window); the boxes inside its live new image are morphed by Web Animations, and the old
+   image only fades out on top. Normal blending, not the default plus-lighter: the two images are
+   mostly the same panels, and adding them flashed white. */
+html:active-view-transition-type(${LAYOUT_TRANSITION_TYPE})::view-transition-old(root),
+html:active-view-transition-type(${LAYOUT_TRANSITION_TYPE})::view-transition-new(root) {
+  animation-duration: 260ms;
+  animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+html:active-view-transition-type(${LAYOUT_TRANSITION_TYPE})::view-transition-group(${CHROME_TRANSITION_NAME}),
+html:active-view-transition-type(${LAYOUT_TRANSITION_TYPE})::view-transition-new(${CHROME_TRANSITION_NAME}) {
+  animation: none;
+}
+html:active-view-transition-type(${LAYOUT_TRANSITION_TYPE})::view-transition-old(${CHROME_TRANSITION_NAME}),
+html:active-view-transition-type(${LAYOUT_TRANSITION_TYPE})::view-transition-new(${CHROME_TRANSITION_NAME}) {
+  mix-blend-mode: normal;
+}
+html:active-view-transition-type(${LAYOUT_TRANSITION_TYPE})::view-transition-old(${CHROME_TRANSITION_NAME}) {
+  animation: heo-chrome-out 140ms ease-out both;
+}
+@keyframes heo-chrome-out {
+  to { opacity: 0; }
 }
 `;
 
