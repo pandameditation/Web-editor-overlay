@@ -340,7 +340,8 @@ export class HeoSearchField extends LitElement {
      * Without this a list that shrank as the user typed kept the placement of the taller one, and one
      * that grew was placed as though it still fitted.
      */
-    if (changed.has('suggestions') || changed.has('value')) this.#placer.invalidate();
+    // The typed text too, as in heo-value-field: whatever narrows the rows changes their height.
+    if (changed.has('suggestions') || changed.has('value') || (changed as Map<PropertyKey, unknown>).has('draft')) this.#placer.invalidate();
     // An external write wins unless the user is mid-edit. `:focus-within` is the question that
     // can be answered from inside a shadow root; `document.activeElement` reports the host.
     if (changed.has('value') && !this.matches(':focus-within')) this.draft = this.value;

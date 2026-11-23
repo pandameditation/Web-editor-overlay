@@ -441,10 +441,11 @@ export class HeoSelectorField extends LitElement {
      *
      * Without this a list that shrank as the user typed kept the placement of the taller one, and one
      * that grew was placed as though it still fitted. This field derives its completions from the
-     * draft rather than being handed them; the draft is private state, so `#openList` and each
-     * committed value are the invalidation points instead.
+     * draft rather than being handed them, so a change to the draft is one too: without it a
+     * list beside its field stayed at the top it had for the longer list as typing shortened it.
      */
     if (
+      (changed as Map<PropertyKey, unknown>).has('draft') ||
       changed.has('value') ||
       changed.has('matchRoot') ||
       changed.has('vocabulary') ||

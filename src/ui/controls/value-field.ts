@@ -968,9 +968,12 @@ export class HeoValueField extends LitElement {
      * The rows are about to change, so the cached height is stale.
      *
      * Without this a list that shrank as the user typed kept the placement of the taller one -- and
-     * one that grew was placed as though it still fitted.
+     * one that grew was placed as though it still fitted. The typed text filters the rows too, so it
+     * counts: beside its field the list is centred on the field's middle by the measured height, and
+     * measured once for the whole list it stayed at that list's top as typing shortened it, riding
+     * up far from the field. The Styles panel hid it by handing new suggestions on every preview.
      */
-    if (changed.has('suggestions') || changed.has('value')) this.#placer.invalidate();
+    if (changed.has('suggestions') || changed.has('value') || (changed as Map<PropertyKey, unknown>).has('draft')) this.#placer.invalidate();
     // Adopt an external value change unless the user is mid-edit. `:focus-within`
     // is the question that can actually be answered here: `document.activeElement`
     // reports the outermost shadow host, so comparing it against this element was

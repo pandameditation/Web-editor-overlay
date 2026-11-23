@@ -149,6 +149,69 @@
         }
 
         /*
+         * Typing narrows the list, and a list placed beside its field (place.ts) is centred on the
+         * field's middle. It used to keep the top it was given for the longer list, so as it shrank
+         * it rode up, far above the field it belonged to. Measured at the field's middle, unless the
+         * viewport's edge is what holds it.
+         */
+        progress.textContent = 'typing';
+        {
+          // Not width: the composer opened on it above is still its popup.
+          const field = fieldFor('height');
+          // Low enough that the list goes beside it, high enough that the window's edge does not
+          // hold it: the dock's scroller moves the field to 150px above the bottom.
+          field.scrollIntoView({ block: 'end' });
+          await frames();
+          const scroller = deep('heo-dock')?.shadowRoot?.querySelector('.body');
+          if (scroller) scroller.scrollTop += field.getBoundingClientRect().bottom - (innerHeight - 150);
+          await frames();
+          await wait(120);
+          const input = field.shadowRoot.querySelector('input');
+          /*
+           * As a host that keeps its own preview does (the animation editor, the adder): nothing
+           * re-renders the field while typing, so only its own draft changes. The Styles panel
+           * re-rendering on every preview handed it new suggestions, which re-measured it and hid
+           * the bug: the previews are stood down for this check.
+           */
+          const engine = api.engine;
+          const kept = Object.fromEntries(['previewStyle', 'previewDeclaration', 'previewNewRule', 'previewRuleDeclaration'].map((name) => [name, engine[name]]));
+          for (const name of Object.keys(kept)) engine[name] = () => {};
+          input.focus();
+          const type = async (text) => {
+            input.value = text;
+            input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+            await field.updateComplete;
+            await frames();
+            await wait(150);
+          };
+          // The whole list first, from the chevron: the tallest it gets, then typing narrows it.
+          input.focus();
+          field.openList();
+          const popup = () => field.shadowRoot.querySelector('.popup');
+          const centred = () => {
+            const p = popup()?.getBoundingClientRect();
+            const f = field.getBoundingClientRect();
+            if (!p) return { beside: false };
+            const beside = p.right <= f.left + 1 || p.left >= f.right - 1;
+            const atEdge = p.top <= 9 || p.bottom >= innerHeight - 9;
+            return { beside, off: Math.round(Math.abs((p.top + p.height / 2) - (f.top + f.height / 2))), atEdge, height: Math.round(p.height) };
+          };
+          // Under the suite's load the list can take a few frames to be placed.
+          for (let tries = 0; tries < 20 && !centred().beside; tries++) await wait(50);
+          await wait(150);
+          const wide = centred();
+          await type('fit-c');
+          const narrow = centred();
+          results.typing = { wide, narrow };
+          results.aListBesideItsFieldStaysCentredWhileTyping =
+            wide.beside && narrow.beside && narrow.height < wide.height && (narrow.off <= 2 || narrow.atEdge);
+          field.closePopup?.();
+          Object.assign(engine, kept);
+          input.blur();
+          await frames();
+        }
+
+        /*
          * Two properties, for every popover opened above.
          *
          * `writes: 0` is the one that matters. Placement runs from `updated()`, so it reads layout
@@ -164,7 +227,8 @@
         // measuring the already-capped box produced.
         results.usesTheRoomAvailable = new Set(rows.map(([, x]) => x.height)).size > 1;
         results.measured = Object.fromEntries(rows);
-        results.ok = results.settles && results.staysOnScreen && results.usesTheRoomAvailable;
+        results.ok = results.settles && results.staysOnScreen && results.usesTheRoomAvailable &&
+          results.aListBesideItsFieldStaysCentredWhileTyping;
         out.textContent = 'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
       } catch (error) {
         out.textContent =
