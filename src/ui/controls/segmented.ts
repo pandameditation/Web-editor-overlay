@@ -98,6 +98,22 @@ export class HeoSegmented extends LitElement {
         background: var(--heo-accent);
         color: var(--heo-accent-ink);
       }
+      /* The larger size, for a switch between views: taller, its icons in the accent when picked. */
+      :host([size='lg']) .bar {
+        padding: 3px;
+        gap: 3px;
+        border-radius: 9px;
+      }
+      :host([size='lg']) button {
+        gap: 7px;
+        height: 28px;
+        border-radius: 6px;
+        color: var(--heo-text-dim);
+        font-size: 11.5px;
+      }
+      :host([size='lg']) button[aria-pressed='true'] svg {
+        color: var(--heo-accent-text);
+      }
       /* Matches the value field's clear button, so every set row ends the same way. */
       button.remove {
         flex: 0 0 22px;
@@ -117,6 +133,8 @@ export class HeoSegmented extends LitElement {
   @property({ type: String }) label = '';
   /** Show a ✕ that clears the value. For a value that is set, rather than inherited or computed. */
   @property({ type: Boolean }) removable = false;
+  /** 'lg' for a switch between views; the default fits a property row. */
+  @property({ type: String, reflect: true }) size = '';
   /** Every segment off, for a choice the page cannot offer right now; the host's title says why. */
   @property({ type: Boolean, reflect: true }) disabled = false;
 

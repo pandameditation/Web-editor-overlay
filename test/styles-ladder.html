@@ -369,10 +369,12 @@
             chipOf('padding') === '4×' && chipOf('font-size') === '';
           // Rows in a closed section have no layout to measure.
           const rows = Array.from(root().querySelectorAll('.row[data-heo-part="row"]')).filter((row) => row.getClientRects().length);
-          // No source hint, no dot, no crescents: name · value · trash.
-          results.menu.rowsHaveNoSourceHint =
+          // Name (its source under it when set) · value · trash: no dot, no crescents.
+          results.menu.rowsNameTheirSourceAndNothingElse =
             rows.length > 10 &&
-            !root().querySelector('.row .from, .row .dot, .row .moon, .row .marks') &&
+            !root().querySelector('.row .dot, .row .moon, .row .marks') &&
+            rows.filter((row) => row.classList.contains('set')).every((row) => row.querySelector('.dots [data-source] .from')) &&
+            rows.filter((row) => !row.classList.contains('set')).every((row) => !row.querySelector('[data-source]')) &&
             rows.every((row) => getComputedStyle(row).gridTemplateColumns.split(' ').length === 3);
         }
 

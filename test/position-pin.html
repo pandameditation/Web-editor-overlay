@@ -291,8 +291,8 @@
       const offsetsSectionShown = () => {
         const panel = deepFind('heo-styles-panel');
         if (!panel?.shadowRoot) return null;
-        // The Position card lists them, with the drag note, only while they move the element.
-        return Boolean(panel.shadowRoot.querySelector('heo-section[data-card="position"] .row[data-property="top"]'));
+        // The Layout card lists them, with the drag note, only while they move the element.
+        return Boolean(panel.shadowRoot.querySelector('heo-section[data-card="layout"] .row[data-property="top"]'));
       };
 
       engine.setDockTab('styles');

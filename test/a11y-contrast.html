@@ -150,7 +150,10 @@
         await raf();
         const animations = [document, ...shadowRoots()]
           .flatMap((root) => (root.getAnimations ? root.getAnimations() : []))
-          .filter((a) => Number.isFinite(a.effect?.getComputedTiming?.().endTime ?? Infinity));
+          .filter((a) => Number.isFinite(a.effect?.getComputedTiming?.().endTime ?? Infinity))
+          // The Styles cards' Motion picture plays for ~5s whenever its tile is drawn; it changes
+          // no colour measured here, and waiting on it made this fixture overrun its time limit.
+          .filter((a) => !(a.animationName ?? '').startsWith('heo-art-'));
         await Promise.race([Promise.all(animations.map((a) => a.finished.catch(() => { }))), wait(2000)]);
         await raf();
       };
@@ -704,6 +707,8 @@
         await measure([
           // The reach chip on a row's name: where an edit would change more than this element.
           { name: 'styles.reachChip', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.row .dots .uses') },
+          // The source under a row's name, in the accent at 9.5px: read without opening the cascade.
+          { name: 'styles.rowSource', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.row .dots .from:not(.inline)') },
           // The card's "N rules • N×" was the faint ink; the reach is what the card is read for.
           { name: 'styles.cardMeta', component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.cls > header .meta') },
         ], 'default');

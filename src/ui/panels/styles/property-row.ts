@@ -613,6 +613,18 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
   const removable = shown && targetOf(shown, element).kind !== 'readonly' ? shown : null;
   const where = `${picked.label}${picked.media ? ` ${mediaLabel(picked.media)}` : ''}`;
   const label = `${property}: ${winner ? `from ${shortLabel(winner)}` : 'not declared for this element'}; edits ${where}, ${picked.reach === 1 ? 'only this element' : reachText(picked.reach)}. Show cascade`;
+  /*
+   * Where the value shown comes from, under the name: the rule's selector in the accent, cut to
+   * fit, with how many elements that rule styles; "inline" for the element's own style. It is
+   * what tells, without opening the cascade menu, that an edit here may reach other elements.
+   */
+  const source = shown
+    ? shown.source.kind === 'rule'
+      ? { label: shortLabel(shown), inline: false, reach: spec.model.reach(shown.source.entry.family) }
+      : { label: 'inline', inline: true, reach: 0 }
+    : null;
+  // The pill beside the name says where an edit goes, when that is not where the value is.
+  const editsElsewhere = !shown || picked !== current;
 
   return html`<div class="prow">
     <div
@@ -635,8 +647,16 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
     }}
       >
         <span class="name" title=${spec.label ? property : ''}>
-          <span class=${spec.label ? `pn label${spec.sub ? ' sub' : ''}` : 'pn'}>${spec.label ?? property}</span>
-          ${picked.reach > 1 ? renderUses(picked.reach) : nothing}
+          <span class="line">
+            <span class=${spec.label ? `pn label${spec.sub ? ' sub' : ''}` : 'pn'}>${spec.label ?? property}</span>
+            ${editsElsewhere && picked.reach > 1 ? renderUses(picked.reach) : nothing}
+          </span>
+          ${source
+      ? html`<span class="src" data-source>
+              <span class=${source.inline ? 'from inline' : 'from'} title=${source.label}>${source.label}</span>
+              ${source.reach ? renderUses(source.reach) : nothing}
+            </span>`
+      : nothing}
         </span>
       </button>
       ${control}
@@ -676,9 +696,7 @@ export const propertyRowStyles: CSSResult = css`
     gap: 6px;
   }
   .row .name {
-    display: flex;
-    align-items: center;
-    gap: 4px;
+    display: grid;
     min-width: 0;
     overflow: hidden;
     color: var(--heo-text-dim);
@@ -688,6 +706,30 @@ export const propertyRowStyles: CSSResult = css`
   }
   .row.set .name {
     color: var(--heo-text);
+  }
+  .row .name .line,
+  .row .name .src {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+  /* The source, on its own line under the name: cut to fit, never pushing the field. */
+  .row .from {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--heo-accent-text);
+    font-size: 9.5px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+  }
+  .row .from.inline {
+    color: var(--heo-text-faint);
+  }
+  .row .src .uses {
+    font-size: 9px;
+    line-height: 13px;
   }
   /* The name takes what the reach chip leaves; the chip is never cut. */
   .row .pn {
@@ -718,9 +760,9 @@ export const propertyRowStyles: CSSResult = css`
     display: flex;
     align-items: center;
     min-width: 0;
-    height: 24px;
+    min-height: 24px;
     margin: 0 -2px;
-    padding: 0 2px;
+    padding: 1px 2px;
     border: 0;
     border-radius: 5px;
     background: transparent;

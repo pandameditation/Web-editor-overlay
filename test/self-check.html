@@ -1823,7 +1823,7 @@
       await wait(120);
       check('emptySectionsStayClosed', () => {
         // The cards with nothing set: closed unless opened by hand earlier in the session.
-        const unset = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.cats[data-cards="unset"] > heo-section'));
+        const unset = Array.from(dockPanel('styles').shadowRoot.querySelectorAll('.cats > heo-section[empty]'));
         return unset.map((card) => `${card.heading}=${card.open}`).join(' ');
       });
       bareEl.remove();

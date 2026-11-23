@@ -54,7 +54,6 @@ import { CREATE_CLASS_TITLE, createClassLabel } from '../create-offer.js';
 import {
   barConditions,
   conditionKey,
-  conditionName,
   conditionParts,
   mediaKeyFor,
   previewToShow,
@@ -69,6 +68,7 @@ import {
 import { menuStyles, placeLayer } from './styles/menu.js';
 import { searchPopoverStyles } from './styles/search-popover.js';
 import { stylesDestination, valueStepDraft, type AdderPlaces } from './styles/property-adder.js';
+import { cardArt, cardArtStyles, SHADOW_FLOOR } from './styles/card-art.js';
 import {
   previewSlot,
   propertyRowStyles,
@@ -84,7 +84,6 @@ import {
   renderPropertyRow,
   rowCondition,
   scopeContext,
-  shorten,
   type RowPlace,
   type RowSpec,
 } from './styles/property-row.js';
@@ -167,6 +166,8 @@ interface CardSpec {
   id: string;
   heading: string;
   glyph: string;
+  /** Its colour, an oklch hue: the tile, its picture and its head are drawn in it (CARD_ART). */
+  hue: number;
   /** Every property it can hold: where the adder says a property shows, and what Other leaves to it. */
   all: readonly string[];
   /** What it lists for this element now, when not all of them: Flex rows only for a flex box. */
@@ -178,7 +179,6 @@ interface CardSpec {
 const FLEX_PROPERTIES = ['flex-direction', 'flex-wrap', 'justify-content', 'align-items', 'gap', 'row-gap', 'column-gap'];
 const GRID_PROPERTIES = ['grid-template-columns', 'grid-template-rows', 'grid-auto-flow', 'grid-auto-rows', 'place-items', 'gap'];
 const OFFSET_PROPERTIES = ['top', 'right', 'bottom', 'left'];
-const unique = (list: readonly string[]): string[] => [...new Set(list)];
 
 /**
  * What the Spacing card covers, named where the search can see it.
@@ -219,7 +219,7 @@ const BORDER_PROPERTIES = [...BORDER_SHORTHANDS, 'border-radius', ...BORDER_PART
 const TEXT_EXTRAS = ['white-space', ...TYPOGRAPHY_SHORTHANDS];
 
 /**
- * The Position card's line above its offset rows: the same four properties the page's own handles
+ * The Layout card's line above its offset rows: the same four properties the page's own handles
  * write.
  *
  * Said here because the two are easy to mistake for alternatives, and they are not: a field is
@@ -230,49 +230,52 @@ const TEXT_EXTRAS = ['white-space', ...TYPOGRAPHY_SHORTHANDS];
 const DRAG_NOTE = 'Or drag the element on the page. Shift keeps it on one axis.';
 
 /**
- * The cards, in their order (the card map in the plan): Content first and only under a
- * pseudo-element, In its parent last before Other and only for an element with an editable parent.
+ * The cards, in their one fixed order, set or not: Layout (with Position), Flex or Grid when the
+ * element is one, Spacing, Size, Text style, Background, Border, Shadow & effects, Motion,
+ * Interaction, In its parent, Other. Content leads, and only under a pseudo-element, where nothing
+ * shows without it. A fixed order is what makes a card findable by where it is; sorting the set
+ * ones first moved every card each time a value was added or removed.
  */
 const CARDS: readonly CardSpec[] = [
-  { id: 'content', heading: 'Content', glyph: 'pseudo', all: ['content', 'quotes'], when: (ctx) => Boolean(ctx.pseudo) },
+  { id: 'content', heading: 'Content', glyph: 'pseudo', hue: 55, all: ['content', 'quotes'], when: (ctx) => Boolean(ctx.pseudo) },
   {
     id: 'layout',
     heading: 'Layout',
     glyph: 'panel',
+    hue: 255,
     // Display stays a row: there is no display control to reuse (decision 13).
-    all: unique(['display', 'overflow', ...FLEX_PROPERTIES, ...GRID_PROPERTIES]),
-    properties: ({ computed }) => unique([
+    all: ['display', 'overflow', 'position', ...OFFSET_PROPERTIES, 'z-index'],
+    // The offsets only while they move the element: the same predicate the page's handles use, so
+    // the rows and the handles are shown or hidden together by construction.
+    properties: ({ computed }) => [
       'display',
       'overflow',
-      ...(computed.display.includes('flex') ? FLEX_PROPERTIES : []),
-      ...(computed.display.includes('grid') ? GRID_PROPERTIES : []),
-    ]),
+      'position',
+      ...(resolvesOffsets(computed) ? OFFSET_PROPERTIES : []),
+      'z-index',
+    ],
   },
-  { id: 'spacing', heading: 'Spacing', glyph: 'wrap', all: SPACING_PROPERTIES },
+  // A flex or grid box's own properties, right after the display that makes it one.
+  { id: 'flex', heading: 'Flex', glyph: 'columns', hue: 228, all: FLEX_PROPERTIES, when: (ctx) => ctx.computed.display.includes('flex') },
+  { id: 'grid', heading: 'Grid', glyph: 'grid', hue: 228, all: GRID_PROPERTIES, when: (ctx) => ctx.computed.display.includes('grid') },
+  { id: 'spacing', heading: 'Spacing', glyph: 'wrap', hue: 160, all: SPACING_PROPERTIES },
   {
     id: 'size',
     heading: 'Size',
     glyph: 'expand',
+    hue: 200,
     all: ['width', 'height', 'min-width', 'min-height', 'max-width', 'max-height', 'aspect-ratio', 'box-sizing'],
   },
-  {
-    id: 'position',
-    heading: 'Position',
-    glyph: 'moveIn',
-    all: ['position', ...OFFSET_PROPERTIES, 'z-index'],
-    // The offsets only while they move the element: the same predicate the page's handles use, so
-    // the rows and the handles are shown or hidden together by construction.
-    properties: ({ computed }) => ['position', ...(resolvesOffsets(computed) ? OFFSET_PROPERTIES : []), 'z-index'],
-  },
   // Drawn by hand (#renderTypography): text styles, then the rows of typography/rows.ts.
-  { id: 'typography', heading: 'Text style', glyph: 'text', all: [...TYPOGRAPHY_PROPERTIES, ...TEXT_EXTRAS] },
+  { id: 'typography', heading: 'Text style', glyph: 'text', hue: 285, all: [...TYPOGRAPHY_PROPERTIES, ...TEXT_EXTRAS] },
   // Drawn by hand, as the background editor and its rows (#renderBackground).
-  { id: 'surface', heading: 'Background', glyph: 'droplet', all: ['background', ...BACKGROUND_LONGHANDS] },
-  { id: 'border', heading: 'Border', glyph: 'frame', all: BORDER_PROPERTIES },
+  { id: 'surface', heading: 'Background', glyph: 'droplet', hue: 330, all: ['background', ...BACKGROUND_LONGHANDS] },
+  { id: 'border', heading: 'Border', glyph: 'frame', hue: 30, all: BORDER_PROPERTIES },
   {
     id: 'effects',
     heading: 'Shadow & effects',
     glyph: 'eye',
+    hue: 70,
     // text-shadow is Text style's, beside the text it shades; cursor is Interaction's.
     all: ['opacity', 'box-shadow', 'filter', 'backdrop-filter', 'transform', 'mix-blend-mode'],
   },
@@ -280,8 +283,8 @@ const CARDS: readonly CardSpec[] = [
    * Drawn by hand (#renderMotion): Animation (keyframes that play on their own) and Transition
    * (how a change of state plays), one at a time, each its editor then its declarations.
    */
-  { id: 'motion', heading: 'Motion', glyph: 'play', all: [...TRANSITION_PROPERTIES, ...ANIMATION_PROPERTIES] },
-  { id: 'interaction', heading: 'Interaction', glyph: 'cursor', all: ['cursor', 'pointer-events', 'user-select'] },
+  { id: 'motion', heading: 'Motion', glyph: 'play', hue: 305, all: [...TRANSITION_PROPERTIES, ...ANIMATION_PROPERTIES] },
+  { id: 'interaction', heading: 'Interaction', glyph: 'cursor', hue: 100, all: ['cursor', 'pointer-events', 'user-select'] },
   /*
    * Drawn by hand (#renderParent): the element's own child properties, then why a size is capped,
    * then the parent's own controls (decision 1). Not under a pseudo-element, which is no child.
@@ -290,6 +293,7 @@ const CARDS: readonly CardSpec[] = [
     id: 'child',
     heading: 'In its parent',
     glyph: 'moveOut',
+    hue: 180,
     all: ['flex', 'align-self', 'order', 'grid-column', 'grid-row'],
     properties: ({ parent }) => [
       'flex',
@@ -300,7 +304,7 @@ const CARDS: readonly CardSpec[] = [
     when: (ctx) => Boolean(ctx.parent) && !ctx.pseudo,
   },
   // Whatever is set that no card lists, then "+ Add property" and "Paste CSS…".
-  { id: 'other', heading: 'Other', glyph: 'code', all: [] },
+  { id: 'other', heading: 'Other', glyph: 'code', hue: 240, all: [] },
 ];
 
 /** The `data-declarations` id of a card's rows; In its parent keeps the list id it always had. */
@@ -321,8 +325,9 @@ const SUGGESTION_SET_MAX = 5;
 
 /** The panel's two views: Cards to edit by category, Applied to check everything set at once. */
 const VIEWS: SegmentOption[] = [
-  { value: 'cards', label: 'Cards', title: 'Edit by category' },
-  { value: 'applied', label: 'Applied', title: 'Everything set on this element, at once' },
+  // Each drawn as what it shows: a grid of cards, a list of rows.
+  { value: 'cards', label: 'Cards', icon: 'grid', title: 'Cards: edit by category' },
+  { value: 'applied', label: 'Applied', icon: 'list', title: 'Applied: everything set on this element, as one list' },
 ];
 
 /** The panel's condition strip: its id, for its menu and the conditions added to it. */
@@ -451,6 +456,7 @@ export class HeoStylesPanel extends HeoElement {
     sizeStripStyles,
     searchPopoverStyles,
     sourcesStyles,
+    cardArtStyles,
     css`
       :host {
         display: block;
@@ -541,20 +547,43 @@ export class HeoStylesPanel extends HeoElement {
         cursor: pointer;
       }
 
+      /* The search, then the view switch on a line of its own, where it reads as the view. */
       .top {
-        display: flex;
-        align-items: center;
-        gap: 6px;
+        display: grid;
+        gap: 8px;
         padding: 10px 12px;
         border-bottom: 1px solid var(--heo-line);
       }
       .top heo-search-field {
+        min-width: 0;
+      }
+      .viewrow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .viewrow heo-segmented.views {
         flex: 1 1 auto;
         min-width: 0;
       }
-
-      .top heo-segmented.views {
+      .tally {
         flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        white-space: nowrap;
+      }
+      .tally i {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--heo-accent-text);
+      }
+      .tally i.none {
+        background: transparent;
+        box-shadow: inset 0 0 0 1.5px var(--heo-text-faint);
       }
       /* The search's adder, right under it, above the cards it adds to. */
       .search-add {
@@ -606,52 +635,8 @@ export class HeoStylesPanel extends HeoElement {
       .cats > heo-section[open] {
         grid-column: 1 / -1;
       }
-      /* Not set yet: no fill, so the set ones read first. */
-      .cats > heo-section.unset:not([open]) {
-        background: transparent;
-      }
       .cats > heo-section.flash {
         animation: heo-row-flash 1.2s ease-out;
-      }
-      /* The tiles' live pictures, drawn from the element's computed values. */
-      .art-text {
-        padding: 4px 10px;
-        border-radius: var(--heo-r-sm);
-        line-height: 1.1;
-      }
-      .art-swatch {
-        width: 56px;
-        height: 34px;
-        border-radius: var(--heo-r-sm);
-        box-shadow: 0 0 0 1px var(--heo-line-strong);
-      }
-      .art-box {
-        width: 50px;
-        height: 32px;
-        background: var(--heo-raised);
-      }
-      .art-box.fx {
-        border-radius: var(--heo-r-sm);
-      }
-      .art-pad {
-        display: block;
-        border: 1px dashed var(--heo-accent-line);
-        border-radius: var(--heo-r-sm);
-      }
-      .art-pad > span {
-        display: block;
-        width: 28px;
-        height: 12px;
-        border-radius: 3px;
-        background: var(--heo-accent-soft);
-      }
-      .art-content {
-        padding: 3px 8px;
-        border: 1px dashed var(--heo-line-strong);
-        border-radius: var(--heo-r-sm);
-        color: var(--heo-text);
-        font-family: var(--heo-mono);
-        font-size: 11px;
       }
       .drag-note {
         margin: 0;
@@ -812,8 +797,6 @@ export class HeoStylesPanel extends HeoElement {
   protected newClassForm = new FormErrors(this, () => classNameIssues(NEW_CLASS_FIELD, this.ui.newClass?.name ?? ''));
   /** "Add a media query…" in a strip's menu. */
   protected mediaForm = new FormErrors(this, () => stripMediaIssues(this.ui.mediaDraft?.text ?? null));
-  /** The group each open card was opened in, for the element it was opened on (#renderCards). */
-  #stayPut: { el: HTMLElement | null; groups: Map<string, boolean> } = { el: null, groups: new Map() };
   /** The element whose size cap has already auto-opened the In its parent card. */
   #capsShownFor: HTMLElement | null = null;
   /** The model of the last render, and what it was built from. */
@@ -1129,16 +1112,20 @@ export class HeoStylesPanel extends HeoElement {
           @search-pick=${(event: CustomEvent<{ value: string }>) => this.#pickSuggestion(cards, event.detail.value)}
           @search-submit=${() => this.#openAdder(this.ui.filter.trim())}
         ></heo-search-field>
-        <heo-segmented
-          class="views"
-          label="View"
-          .options=${VIEWS}
-          .value=${this.ui.view}
-          @segment-change=${(event: CustomEvent<{ value: string }>) => {
+        <div class="viewrow">
+          <heo-segmented
+            class="views"
+            size="lg"
+            label="View"
+            .options=${VIEWS}
+            .value=${this.ui.view}
+            @segment-change=${(event: CustomEvent<{ value: string }>) => {
         const view = event.detail.value;
         if (view === 'cards' || view === 'applied') this.#patch({ view });
       }}
-        ></heo-segmented>
+          ></heo-segmented>
+          ${this.#renderTally(cards)}
+        </div>
       </div>
       ${this.ui.adder?.id === SEARCH_ADDER ? this.#renderSearchAdder(cards) : nothing}
 
@@ -1307,6 +1294,15 @@ export class HeoStylesPanel extends HeoElement {
     };
   }
 
+  /** How many cards have something set, and how many are empty, beside the view switch. */
+  #renderTally(cards: CardRender): TemplateResult {
+    const set = cards.visible.filter((card) => this.#cardState(card, cards).set.length).length;
+    const empty = cards.visible.length - set;
+    return html`<span class="tally" data-tally title=${`${set} of ${cards.visible.length} cards have something set`}>
+      <i aria-hidden="true"></i>${set} set<i class="none" aria-hidden="true"></i>${empty} empty
+    </span>`;
+  }
+
   /** A card's properties that are set under the condition, and those declared by their own name. */
   #cardState(card: CardSpec, cards: CardRender): { set: string[]; own: string[] } {
     const list = cards.lists.get(card.id) ?? [];
@@ -1315,57 +1311,32 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /**
-   * Cards: the set ones first, under "On this element", then the rest under "Not set yet", each a
-   * tile of a two-column grid that opens in place across both columns. While searching, the cards
-   * with something that matches, open, under no caption.
+   * Cards: every card in its one fixed order (CARDS), each a tile of a two-column grid that opens in
+   * place across both columns. A card says by itself whether anything is set in it (its fill, count
+   * and values, or an outline and "Empty"), so there is no "On this element" / "Not set yet" split:
+   * that split reordered the grid whenever a value came or went, and moved a card being edited to
+   * the other group, a new element, losing the editor or list open in it. While searching, the
+   * cards with something that matches, open.
    */
   #renderCards(cards: CardRender): TemplateResult {
     const drawn = cards.visible.map((card) => ({ card, ...this.#cardState(card, cards) }));
-    if (cards.host.filtering) {
-      const shown = drawn.map((one) => this.#renderCard(one, cards)).filter((card): card is TemplateResult => card !== null);
-      return html`<div class="cards-view" data-view="cards">
-        ${shown.length ? html`<div class="cats">${shown}</div>` : nothing}
-      </div>`;
-    }
-    /*
-     * Under a pseudo-element its Content comes first, set or not: nothing shows until it has some.
-     *
-     * An open card stays in the group it was opened in until it is closed. Its first value would
-     * otherwise move it from "Not set yet" to "On this element" mid-edit: a different grid, so a
-     * new card, and the editor dialog or value list open in it went with the old one.
-     */
-    const stay = this.#stayPut.el === cards.el ? this.#stayPut.groups : new Map<string, boolean>();
-    this.#stayPut = { el: cards.el, groups: stay };
-    const isFirst = (one: (typeof drawn)[number]): boolean => {
-      const now = Boolean(one.set.length) || one.card.id === 'content';
-      if (!sectionOpen(one.card.id, false)) {
-        stay.delete(one.card.id);
-        return now;
-      }
-      if (!stay.has(one.card.id)) stay.set(one.card.id, now);
-      return stay.get(one.card.id)!;
-    };
-    const first = drawn.filter(isFirst);
-    const rest = drawn.filter((one) => !first.includes(one));
-    const grid = (list: typeof drawn, group: string): TemplateResult => html`<div class="cats" data-cards=${group}>
-      ${repeat(list, (one) => one.card.id, (one) => this.#renderCard(one, cards) ?? nothing)}
-    </div>`;
-    const on = cards.pseudo
-      ? `On ${cards.pseudo}`
-      : `On this element${cards.scope.kind === 'element' ? '' : ` · ${conditionName(cards.model, conditionKey(cards.cond.media, cards.cond.state))}`}`;
+    const shown = drawn
+      .map((one) => ({ id: one.card.id, card: this.#renderCard(one, cards) }))
+      .filter((one): one is { id: string; card: TemplateResult } => one.card !== null);
     return html`<div class="cards-view" data-view="cards">
-      ${first.length ? html`<p class="glabel" data-group="set">${on}</p>${grid(first, 'set')}` : nothing}
-      ${rest.length ? html`<p class="glabel" data-group="unset">Not set yet</p>${grid(rest, 'unset')}` : nothing}
+      ${shown.length
+        ? html`<div class="cats" data-cards="all">${repeat(shown, (one) => one.id, (one) => one.card)}</div>`
+        : nothing}
     </div>`;
   }
 
-  /** One card: a tile while closed (its live picture, name, count and first values), its body open. */
+  /** One card: a tile while closed (its picture, name, count and first values), its body open. */
   #renderCard(one: { card: CardSpec; set: string[]; own: string[] }, cards: CardRender): TemplateResult | null {
     const { card, set, own } = one;
     const open = this.#cardOpen(card, cards);
     const body = this.#cardBody(card, cards, open);
     if (cards.host.filtering && body === nothing) return null;
-    const summary = own
+    const valuesOf = (list: readonly string[]): string => list
       .slice(0, 3)
       .map((property) => (cards.read(property)?.value ?? '').split(/,(?![^(]*\))/)[0]!.trim())
       .filter(Boolean)
@@ -1373,15 +1344,17 @@ export class HeoStylesPanel extends HeoElement {
     return html`<heo-section
       card
       class=${set.length ? 'set' : 'unset'}
+      style=${styleMap({ '--h': String(card.hue), ...(card.id === 'effects' ? { '--art-bg': SHADOW_FLOOR } : {}) })}
       data-card=${card.id}
       heading=${card.heading}
       glyph=${card.glyph}
       badge=${own.length ? String(own.length) : ''}
-      summary=${summary || (card.id === 'other' ? 'Anything else, by name' : 'Nothing set')}
+      summary=${valuesOf(own) || valuesOf(set)}
+      ?empty=${!set.length}
       ?open=${open}
       @section-toggle=${(event: CustomEvent<{ open: boolean }>) => this.#remember(card.id, event.detail.open)}
     >
-      ${set.length ? this.#art(card.id, cards) : nothing}
+      ${cardArt(card.id)}
       ${body}
     </heo-section>`;
   }
@@ -1434,12 +1407,15 @@ export class HeoStylesPanel extends HeoElement {
       list.length ? renderPropertyRows(list, (property) => cards.spec(property, listId), host) : nothing;
     const offsets = properties.filter((property) => OFFSET_PROPERTIES.includes(property));
     // The drag note is about the element's own offsets on the page: at Element, above those rows.
-    if (card.id === 'position' && offsets.length && cards.scope.kind === 'element') {
+    if (card.id === 'layout' && offsets.length && cards.scope.kind === 'element') {
+      // Layout's own rows up to position, the note, the offsets it explains, then the rest (z-index).
+      const rest = properties.filter((property) => !offsets.includes(property));
+      const lead = rest.slice(0, rest.indexOf('position') + 1);
       return html`<div class="rows" data-declarations=${listId}>
-        ${rows(properties.filter((property) => property === 'position'))}
+        ${rows(lead)}
         <p class="hint drag-note" data-drag-note>${DRAG_NOTE}</p>
         ${rows(offsets)}
-        ${rows(properties.filter((property) => property !== 'position' && !offsets.includes(property)))}
+        ${rows(rest.slice(lead.length))}
       </div>`;
     }
     return html`<div class="rows" data-declarations=${listId}>${rows(properties)}</div>`;
@@ -1474,45 +1450,6 @@ export class HeoStylesPanel extends HeoElement {
               ${icon('clipboard', 12)} Paste CSS…
             </button>
           </div>`}`;
-  }
-
-  /**
-   * A closed card's picture, drawn from the element's own computed values under the condition, so
-   * the tile shows what is set rather than a stock icon: the text in its font and colour, the
-   * background's paint, the border's line, the shadow, the padding. Others keep their glyph.
-   */
-  #art(id: string, cards: CardRender): TemplateResult | typeof nothing {
-    const s = cards.computed;
-    const px = (value: string): number => Number.parseFloat(value) || 0;
-    switch (id) {
-      case 'typography':
-        return html`<span slot="art" class="art-text" style=${styleMap({
-          fontFamily: s.fontFamily,
-          fontWeight: s.fontWeight,
-          fontStyle: s.fontStyle,
-          fontSize: `${Math.min(px(s.fontSize), 24)}px`,
-          color: s.color,
-          backgroundColor: s.backgroundColor,
-          textTransform: s.textTransform,
-        })}>Aa</span>`;
-      case 'surface':
-        return html`<span slot="art" class="art-swatch" style=${styleMap({ backgroundColor: s.backgroundColor, backgroundImage: s.backgroundImage })}></span>`;
-      case 'border':
-        return html`<span slot="art" class="art-box" style=${styleMap({
-          border: `${s.borderTopWidth} ${s.borderTopStyle} ${s.borderTopColor}`,
-          borderRadius: s.borderTopLeftRadius,
-        })}></span>`;
-      case 'effects':
-        return html`<span slot="art" class="art-box fx" style=${styleMap({ boxShadow: s.boxShadow, transform: s.transform, opacity: s.opacity })}></span>`;
-      case 'spacing':
-        return html`<span slot="art" class="art-pad" style=${styleMap({
-          padding: `${Math.min(px(s.paddingTop), 14)}px ${Math.min(px(s.paddingLeft), 18)}px`,
-        })}><span></span></span>`;
-      case 'content':
-        return html`<span slot="art" class="art-content">${shorten(cards.read('content')?.value ?? '', 16)}</span>`;
-      default:
-        return nothing;
-    }
   }
 
   /**

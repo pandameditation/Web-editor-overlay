@@ -338,11 +338,12 @@
           oneRowPerAppliedProperty:
             [...appliedNames].sort().join(',') === fresh.appliedProperties().join(','),
           /*
-           * No source hint on the row any more (the cascade menu says where a value comes from);
-           * the name's label says where an edit goes, and the reach chip shows when it is shared.
+           * The source under the name (where the value comes from, read without opening the
+           * cascade menu); the name's label says where an edit goes, and the reach chip beside the
+           * source shows when it is shared.
            */
           rowNamesWhereItEditsAndItsReach:
-            !padRow?.querySelector('.from') &&
+            Boolean(padRow?.querySelector('.dots [data-source] .from')?.textContent.trim()) &&
             new RegExp(`edits ${sideLabel.replace(/[.]/g, '\\.')}, 4 elements\\. Show cascade$`).test(padRow?.querySelector('.dots')?.getAttribute('aria-label') ?? '') &&
             padRow?.querySelector('.dots .uses')?.textContent.trim() === '4×' &&
             /edits inline, only this element\. Show cascade$/.test(rowIn('effective', 'font-size')?.querySelector('.dots')?.getAttribute('aria-label') ?? '') &&
@@ -400,8 +401,8 @@
               return dot && dot.getAttribute('aria-haspopup') === 'dialog' && /Show cascade$/.test(dot.getAttribute('aria-label'));
             }),
         };
-        const zRow = () => rowIn('position', 'z-index');
-        await openDot('position', 'z-index');
+        const zRow = () => rowIn('layout', 'z-index');
+        await openDot('layout', 'z-index');
         // Not declared: the name says so, in the dim ink of an unset row, and still opens the cascade.
         results.dots.undeclaredSaysSoAndStillOpensTheCascade =
           !zRow().classList.contains('set') && Boolean(pop()) &&
@@ -475,6 +476,11 @@
               (clamped || Math.abs(middle(p) - middle(r)) <= 2);
             return stacked || beside;
           };
+          // Opening every card above moved focus, and the scroll, to the last card's head: the row
+          // is brought back into view first, the popover following it there.
+          padRowNow()?.scrollIntoView({ block: 'start' });
+          await frames();
+          await frames();
           const start = scroller?.scrollTop ?? 0;
           const rowTop = () => padRowNow()?.getBoundingClientRect().top ?? NaN;
           const hugsBefore = hugs();
@@ -855,7 +861,9 @@
         {
           const colourRow = rowIn('effective', 'color');
           const button = colourRow?.querySelector('.dots');
-          const nameInside = Boolean(button?.querySelector('.name .pn')) && !button?.querySelector('.from, .dot, .moon');
+          // The name and its source line under it, and nothing else (no dot, no crescents).
+          const nameInside = Boolean(button?.querySelector('.name .pn')) && Boolean(button?.querySelector('.name [data-source] .from')) &&
+            !button?.querySelector('.dot, .moon');
           const tip = button?.getAttribute('title') ?? '';
           const nameBox = button?.querySelector('.name')?.getBoundingClientRect();
           const noInnerTitles = !colourRow?.querySelector('.name .pn[title]:not([title=""])');

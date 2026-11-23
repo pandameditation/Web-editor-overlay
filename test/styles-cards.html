@@ -129,8 +129,6 @@
           if (ms) await wait(ms);
         };
         const card = (id) => root().querySelector(`.cards-view heo-section[data-card="${id}"]`);
-        const cardIds = (group) =>
-          Array.from(root().querySelectorAll(`.cats[data-cards="${group}"] > heo-section[data-card]`)).map((one) => one.dataset.card);
         const allCardIds = () => Array.from(root().querySelectorAll('.cards-view heo-section[data-card]')).map((one) => one.dataset.card);
         const toggle = async (id) => {
           const one = card(id);
@@ -166,7 +164,7 @@
         results.switch.cardsIsTheDefaultView =
           views()?.value === 'cards' && Boolean(root().querySelector('.cards-view')) && !root().querySelector('.applied');
         {
-          const cats = root().querySelector('.cats[data-cards="set"]');
+          const cats = root().querySelector('.cats[data-cards="all"]');
           const tiles = Array.from(cats?.children ?? []).slice(0, 2).map((one) => one.getBoundingClientRect());
           // Two tiles side by side, each half the row: a column of sections was the panel this replaces.
           results.switch.cardsAreATwoColumnGrid =
@@ -174,28 +172,57 @@
             tiles.length === 2 && Math.abs(tiles[0].top - tiles[1].top) < 1 && tiles[1].left > tiles[0].right;
         }
         {
-          const labels = Array.from(root().querySelectorAll('.cards-view .glabel')).map(text);
-          const set = cardIds('set');
-          // What the element uses is what it is edited for: the set cards first, under their caption.
-          results.switch.setCardsComeFirstUnderOnThisElement =
-            labels[0] === 'On this element' &&
-            ['layout', 'spacing', 'typography', 'surface', 'border', 'effects'].every((id) => set.includes(id)) &&
-            !set.includes('motion');
-          const unset = cardIds('unset');
-          results.switch.unsetCardsComeAfterUnderNotSetYet =
-            labels[1] === 'Not set yet' && ['motion', 'interaction', 'other'].every((id) => unset.includes(id)) &&
-            allCardIds().indexOf(unset[0]) > allCardIds().indexOf(set.at(-1));
+          /*
+           * One order, set or not. Sorting the set cards first under "On this element" moved every
+           * card whenever a value came or went, and a card being edited jumped to the other grid.
+           */
+          results.switch.cardsKeepOneFixedOrder =
+            allCardIds().join(',') === 'layout,spacing,size,typography,surface,border,effects,motion,interaction,child,other' &&
+            root().querySelectorAll('.cards-view .glabel').length === 0 &&
+            root().querySelectorAll('.cards-view .cats').length === 1;
+          const tile = (id) => card(id)?.shadowRoot?.querySelector('.tile');
+          // A card says by itself whether it holds anything: filled with a count and its values, or
+          // an outline reading "Empty" — the same look on every empty card.
+          results.switch.setAndEmptyCardsReadApart =
+            !card('spacing').hasAttribute('empty') && Boolean(tile('spacing')?.querySelector('.count')) &&
+            // Its values, margin then padding; the padding depends on the window's width (≥768px).
+            /^0 0 12px · (12px 16px|20px 28px)$/.test(text(tile('spacing')?.querySelector('.sum .txt'))) &&
+            ['motion', 'interaction', 'size'].every((id) =>
+              card(id).hasAttribute('empty') && text(tile(id)?.querySelector('.sum .txt')) === 'Empty' && !tile(id)?.querySelector('.count')) &&
+            getComputedStyle(card('motion')).borderTopStyle === 'dashed' && getComputedStyle(card('spacing')).borderTopStyle === 'solid';
+          const hues = allCardIds().map((id) => card(id).style.getPropertyValue('--h'));
+          // Each card in its own colour, with its own picture, set or empty (the picture is how a
+          // tile is recognised; its state is said by the card).
+          results.switch.everyCardHasItsHueAndPicture =
+            hues.every(Boolean) && new Set(hues).size === hues.length &&
+            allCardIds().every((id) => card(id).querySelector(':scope > [slot="art"].pic'));
+          const search = root().querySelector('.top heo-search-field').getBoundingClientRect();
+          const switcher = views();
+          // The view switch on a line of its own under the search, each view with its picture.
+          results.switch.theViewSwitchHasItsOwnLineWithIcons =
+            Boolean(switcher?.closest('.viewrow')) && switcher.getBoundingClientRect().top >= search.bottom &&
+            switcher.shadowRoot.querySelectorAll('button[aria-pressed] svg').length === 2;
         }
         progress.textContent = 'switch: open in place';
         {
-          const before = cardIds('set');
+          const before = allCardIds();
           await openCard('spacing');
-          const grid = root().querySelector('.cats[data-cards="set"]').getBoundingClientRect();
+          const grid = root().querySelector('.cats[data-cards="all"]').getBoundingClientRect();
           const box = card('spacing').getBoundingClientRect();
           // Opened where it was, across both columns: not moved to the top, not a popover.
           results.switch.aCardOpensInPlaceAcrossBothColumns =
             card('spacing').open && Math.abs(box.width - grid.width) < 1 &&
-            cardIds('set').join(',') === before.join(',');
+            allCardIds().join(',') === before.join(',');
+          const clipped = (one) => one.getAnimations().some((animation) =>
+            animation.effect?.getKeyframes?.().some((frame) => frame.clipPath && frame.clipPath !== 'none'));
+          const slid = (one) => one.getAnimations().some((animation) =>
+            animation.effect?.getKeyframes?.().some((frame) => frame.translate && !/^0px 0px$|^0px$/.test(frame.translate)));
+          // It grows out of its tile and the cards after it slide down: in a two-column grid a
+          // jump read as the card vanishing and another appearing a row lower.
+          results.switch.openingGrowsTheCardAndSlidesTheOthers = clipped(card('spacing')) && slid(card('size'));
+          // Focus moves into the card it opened: its head, the first stop inside it.
+          results.switch.openingMovesFocusIntoTheCard =
+            root().activeElement === card('spacing') && card('spacing').shadowRoot.activeElement?.classList.contains('head');
           const editor = card('spacing').querySelector('heo-box-editor');
           const rows = card('spacing').querySelector('.rows');
           // The card's rich editor first, then its fixed rows: the editor is the card's way in.
@@ -203,6 +230,9 @@
             Boolean(editor && rows) && editor.getClientRects().length > 0 &&
             Boolean(editor.compareDocumentPosition(rows) & Node.DOCUMENT_POSITION_FOLLOWING);
           await closeCard('spacing');
+          // Closed, focus is back on the tile it shrank into, not lost to the document.
+          results.switch.closingReturnsFocusToTheTile =
+            root().activeElement === card('spacing') && card('spacing').shadowRoot.activeElement?.classList.contains('tile');
         }
         {
           /*
@@ -215,10 +245,11 @@
           fieldIn('interaction', 'cursor')?.dispatchEvent(
             new CustomEvent('value-change', { detail: { value: 'pointer' }, bubbles: true, composed: true }));
           await settle();
+          const at = allCardIds().indexOf('interaction');
           const stayed = target.style.cursor === 'pointer' && card('interaction') === held &&
-            card('interaction')?.open && cardIds('unset').includes('interaction');
+            card('interaction')?.open && !card('interaction').hasAttribute('empty') && allCardIds().indexOf('interaction') === at;
           await closeCard('interaction');
-          results.switch.anOpenCardStaysWhereItIsWhileItsFirstValueIsSet = stayed && cardIds('set').includes('interaction');
+          results.switch.anOpenCardStaysWhereItIsWhileItsFirstValueIsSet = stayed && allCardIds().indexOf('interaction') === at;
           engine.undo();
           await settle();
         }
@@ -228,9 +259,42 @@
           results.switch.onlyOtherHasAnAddPropertyButton =
             adds.length === 1 && adds[0].closest('heo-section[data-card]')?.dataset.card === 'other';
         }
+        progress.textContent = 'cards: source';
+        results.cards = {};
+        {
+          await openCard('typography');
+          const src = (property) => card('typography')?.querySelector(`.row[data-property="${property}"] [data-source]`);
+          const color = src('color');
+          // The value's source under its name, in the accent, and how many elements that rule
+          // styles: an edit here reaches the other cards too.
+          results.cards.aRowNamesItsSourceAndItsReach =
+            text(color?.querySelector('.from')) === '.promo .card' && text(color?.querySelector('.uses')) === '3×' &&
+            getComputedStyle(color.querySelector('.from')).textOverflow === 'ellipsis';
+          // The element's own style says so, with no reach pill: it reaches only this element.
+          results.cards.anInlineValueSaysInline =
+            text(src('font-size')?.querySelector('.from.inline')) === 'inline' && !src('font-size')?.querySelector('.uses');
+          // A row with nothing set has no source line.
+          results.cards.anUnsetRowHasNoSource = !src('word-spacing') || !card('typography')?.querySelector('.row[data-property="word-spacing"]');
+          await closeCard('typography');
+        }
+        {
+          // A flex box gets a Flex card right after Layout, holding the flex rows Layout used to.
+          api.select(document.querySelector('.narrow'));
+          await settle(150);
+          const ids = allCardIds();
+          await openCard('flex');
+          results.cards.aFlexBoxHasAFlexCardAfterLayout =
+            ids[0] === 'layout' && ids[1] === 'flex' && !ids.includes('grid') &&
+            Boolean(card('flex')?.querySelector('.row[data-property="flex-direction"]')) &&
+            !card('layout')?.querySelector('.row[data-property="flex-direction"]');
+          await closeCard('flex');
+          api.select(target);
+          await settle(150);
+          results.cards.aBlockHasNoFlexCard = !card('flex') && !card('grid');
+        }
         progress.textContent = 'switch: applied';
         {
-          const cardsOrder = cardIds('set');
+          const cardsOrder = allCardIds();
           await setView('applied');
           const rows = Array.from(root().querySelectorAll('.applied .row[data-property]')).map((one) => one.dataset.property);
           const applied = engine.elementModel(target).appliedProperties();
@@ -332,17 +396,21 @@
           results.strip.theParentCardShowsACapAndIsHiddenUnderAPseudoElement =
             noParentUnderPseudo && Boolean(card('child')?.open) && Boolean(card('child').querySelector('.capped')) &&
             Boolean(card('child').querySelector('.onparent'));
-          await openCard('position');
-          const note = card('position')?.querySelector('[data-drag-note]');
-          const top = card('position')?.querySelector('.row[data-property="top"]');
-          // The page's drag handles write these offsets: the card says so above the rows they write.
-          results.strip.thePositionCardCarriesTheDragNote =
-            Boolean(note && top) && Boolean(note.compareDocumentPosition(top) & Node.DOCUMENT_POSITION_FOLLOWING);
+          await openCard('layout');
+          const note = card('layout')?.querySelector('[data-drag-note]');
+          const top = card('layout')?.querySelector('.row[data-property="top"]');
+          const position = card('layout')?.querySelector('.row[data-property="position"]');
+          // Position lives in Layout. The page's drag handles write these offsets: the card says so
+          // between the position row and the rows they write.
+          results.strip.theLayoutCardCarriesPositionAndTheDragNote =
+            Boolean(note && top && position) && Boolean(note.compareDocumentPosition(top) & Node.DOCUMENT_POSITION_FOLLOWING) &&
+            Boolean(position.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING) && !card('position');
           api.select(target);
           await settle(150);
           // A static element has no offsets to drag: no note, no offset rows.
-          results.strip.thePositionCardCarriesTheDragNote &&=
-            !card('position')?.querySelector('[data-drag-note]') && !card('position')?.querySelector('.row[data-property="top"]');
+          results.strip.theLayoutCardCarriesPositionAndTheDragNote &&=
+            !card('layout')?.querySelector('[data-drag-note]') && !card('layout')?.querySelector('.row[data-property="top"]');
+          await closeCard('layout');
         }
         /* ------------------------------------------------------------------ *
          * The search: it filters what is shown and adds any property

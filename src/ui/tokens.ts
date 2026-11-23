@@ -57,6 +57,19 @@ export const DARK_TOKENS: Readonly<Record<string, string>> = {
   // An element's id chip: a quiet slate-teal tint, apart from the tag's indigo and the bare
   // classes.
   '--heo-id': 'oklch(72% 0.05 210)',
+  // * The Styles cards' colour coding: each card sets its hue as --h, and these are the lightness
+  // and chroma it is drawn at, as "L C" pairs read through oklch(var(--heo-card-ink) var(--h)).
+  // Pairs rather than whole colours because a var() in a token resolves where the token is
+  // declared, on the root, which has no --h: every card would come out the same hue.
+  '--heo-card-ink': '80% 0.13',
+  '--heo-card-well-a': '36% 0.08',
+  '--heo-card-well-b': '22% 0.04',
+  '--heo-card-tint': '25.5% 0.03',
+  '--heo-card-line': '72% 0.12',
+  '--heo-card-chip': '32% 0.07',
+  '--heo-card-chip-ink': '86% 0.12',
+  '--heo-card-count': '80% 0.12',
+  '--heo-card-count-ink': '22% 0.05',
   '--heo-r-sm': '7px',
   '--heo-r-md': '10px',
   '--heo-r-lg': '14px',
@@ -100,6 +113,15 @@ export const LIGHT_TOKENS: Readonly<Record<string, string>> = {
   '--heo-success-text': 'oklch(48% 0.13 155)',
   '--heo-warn-text': 'oklch(52% 0.12 70)',
   '--heo-shared-text': 'oklch(50% 0.14 48)',
+  '--heo-card-ink': '58% 0.15',
+  '--heo-card-well-a': '95.5% 0.03',
+  '--heo-card-well-b': '89% 0.05',
+  '--heo-card-tint': '98.8% 0.01',
+  '--heo-card-line': '60% 0.14',
+  '--heo-card-chip': '93% 0.045',
+  '--heo-card-chip-ink': '45% 0.14',
+  '--heo-card-count': '46% 0.14',
+  '--heo-card-count-ink': '99% 0.005',
   '--heo-shadow-sm': '0 1px 2px oklch(50% 0.03 265 / 12%)',
   '--heo-shadow-md': '0 8px 24px -6px oklch(50% 0.03 265 / 18%), 0 2px 6px oklch(50% 0.03 265 / 10%)',
   '--heo-shadow-lg': '0 24px 60px -12px oklch(50% 0.03 265 / 24%), 0 6px 16px oklch(50% 0.03 265 / 14%)',
