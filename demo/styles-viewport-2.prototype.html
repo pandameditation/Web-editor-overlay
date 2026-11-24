@@ -1,0 +1,971 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Styles strip, round 2: Base in the primary colour, the visible size ON SCREEN</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly; ← → or ?variant=1|2|3|4.
+
+  Round 2, on design B. Decided: no ruler; no lens. Picking a size or a state shows only what it
+  adds over Base, in Cards and in Applied. Base is picked by default whatever the preview width,
+  drawn in the primary colour; every other chip keeps today's look, and the size the page is showing
+  gets the highlight colour and an ON SCREEN tag, even when nothing is written there yet.
+  The variants are four ways to draw that one chip, alone and picked:
+  1 — Ring and tag: a yellow ring, ON SCREEN as a pill inside the chip (design B as it was).
+  2 — Flag: the tag sits on the chip's top edge like a tab, the ring under it.
+  3 — Split: the chip's left half is a yellow ON SCREEN segment, its label on the right.
+  4 — Marker: a monitor icon in yellow, and a yellow bar under the chip; ON SCREEN said in its tooltip and the context line.
+-->
+  <style>
+    :root {
+      --bg: oklch(19% 0.014 265);
+      --raised: oklch(23.5% 0.016 265);
+      --sunken: oklch(16% 0.012 265);
+      --hover: oklch(28% 0.018 265);
+      --text: oklch(96% 0.005 265);
+      --dim: oklch(74% 0.012 265);
+      --faint: oklch(66% 0.014 265);
+      --line: oklch(100% 0 0 / 9%);
+      --line2: oklch(100% 0 0 / 16%);
+      --accent: #6366f1;
+      --accent-text: color-mix(in oklab, var(--accent) 55%, white);
+      --accent-soft: color-mix(in oklab, var(--accent) 18%, transparent);
+      --accent-line: color-mix(in oklab, var(--accent) 55%, transparent);
+      --size: oklch(84% 0.12 150);
+      --size-bg: oklch(30% 0.06 150);
+      --state: oklch(82% 0.1 300);
+      --state-bg: oklch(30% 0.06 300);
+      --live: oklch(97% 0.02 95);
+      --live-ink: oklch(22% 0.03 265);
+      --live-ring: oklch(86% 0.16 95);
+      --src: oklch(76% 0.11 255);
+      --shared: oklch(76% 0.13 55);
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --ease: cubic-bezier(.2, .8, .2, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      font-family: var(--font);
+      background: #e9ecf2;
+    }
+
+    button,
+    input {
+      font: inherit;
+      color: inherit;
+    }
+
+    :focus-visible {
+      outline: 2px solid color-mix(in oklab, var(--accent) 60%, white);
+      outline-offset: 1px;
+    }
+
+    /* page side */
+    .stage {
+      overflow: auto;
+      padding: 24px 28px 100px;
+      color: #343a4d;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .stage h1 {
+      margin: 0 0 4px;
+      font-size: 15px;
+    }
+
+    .stage p {
+      margin: 0 0 10px;
+      max-width: 64ch;
+    }
+
+    .vp {
+      display: inline-flex;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 10px;
+      background: #1f2433;
+      margin: 4px 0 14px;
+    }
+
+    .vp button {
+      height: 28px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: #c9cede;
+      font: 500 12px var(--mono);
+      cursor: pointer;
+    }
+
+    .vp button[aria-pressed='true'] {
+      background: #fff;
+      color: #1f2433;
+    }
+
+    .frame {
+      margin-bottom: 18px;
+      padding: 18px;
+      border-radius: 12px;
+      background: #f6f7fb;
+      border: 1px dashed #c9cede;
+      transition: max-width .3s var(--ease);
+    }
+
+    .frame .card {
+      padding: var(--pad);
+      border: 1px solid #6366f1;
+      border-radius: 10px;
+      background: #eef2ff;
+      color: #1e1b4b;
+      font-weight: 600;
+      font-size: var(--fs);
+      outline: 2px solid #6366f1;
+      outline-offset: 3px;
+    }
+
+    .frame .lab {
+      margin-top: 8px;
+      color: #5b6275;
+      font: 11px var(--mono);
+    }
+
+    .notes {
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #fff;
+      border: 1px solid #d9dde7;
+      max-width: 660px;
+    }
+
+    .notes h2 {
+      margin: 0 0 6px;
+      font-size: 12.5px;
+    }
+
+    .notes ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .notes li {
+      margin: 3px 0;
+    }
+  </style>
+  <style>
+    #panel {
+      position: relative;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.4;
+      border-left: 1px solid #0006;
+    }
+
+    #scroll {
+      height: 100%;
+      overflow: auto;
+      padding-bottom: 90px;
+    }
+
+    .sticky {
+      position: sticky;
+      top: 0;
+      z-index: 8;
+      background: var(--bg);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .ph {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 12px 12px 10px;
+    }
+
+    .tag {
+      font: 600 11px/1 var(--mono);
+      padding: 5px 7px;
+      border-radius: 6px;
+      background: var(--raised);
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .cchip {
+      font: 11px/1 var(--mono);
+      padding: 5px 7px;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: var(--accent-text);
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+    }
+
+    /* the strip */
+    .cond {
+      padding: 0 12px 10px;
+    }
+
+    .strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .st {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 26px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 99px;
+      background: transparent;
+      box-shadow: inset 0 0 0 1px var(--line2);
+      color: var(--dim);
+      font: 11px var(--mono);
+      cursor: pointer;
+      transition: background .15s, color .15s, box-shadow .15s;
+    }
+
+    .st:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .st.base {
+      font-family: var(--font);
+      font-weight: 600;
+    }
+
+    .st .n {
+      font-size: 9.5px;
+      padding: 0 5px;
+      border-radius: 99px;
+      background: oklch(100% 0 0 / 9%);
+      color: var(--dim);
+    }
+
+    .st .n.zero {
+      background: transparent;
+      box-shadow: inset 0 0 0 1px var(--line2);
+      color: var(--faint);
+    }
+
+    .st[aria-pressed='true'] {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: none;
+    }
+
+    .st.size[aria-pressed='true'] {
+      background: var(--size-bg);
+      color: var(--size);
+      box-shadow: inset 0 0 0 1px var(--size);
+    }
+
+    .st.state[aria-pressed='true'] {
+      background: var(--state-bg);
+      color: var(--state);
+      box-shadow: inset 0 0 0 1px var(--state);
+    }
+
+    .st[aria-pressed='true'] .n {
+      background: oklch(100% 0 0 / 18%);
+      color: inherit;
+    }
+
+    .st.add {
+      color: var(--accent-text);
+      font-family: var(--font);
+    }
+
+    .st.off {
+      opacity: .55;
+    }
+
+    .st svg {
+      flex: none;
+    }
+
+    /* Base, picked: the primary colour (the default .st[aria-pressed] rule). Every chip: the live one. */
+    .st.live { color: var(--text); }
+    .st.live.off { opacity: 1; }
+    .st .tag {
+      padding: 1px 5px; border-radius: 99px; background: var(--live-ring); color: var(--live-ink);
+      font: 700 8.5px var(--font); letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
+    }
+    .st.size.live[aria-pressed='true'] { color: var(--size); }
+
+    /* 1: ring and tag */
+    .v-1 .st.live { box-shadow: inset 0 0 0 2px var(--live-ring); padding-right: 4px; }
+    .v-1 .st.live[aria-pressed='true'] { background: var(--size-bg); box-shadow: inset 0 0 0 2px var(--live-ring), 0 0 0 2px var(--size-bg), 0 0 0 3px var(--size); }
+
+    /* 2: flag on the top edge */
+    .v-2 .strip { padding-top: 9px; row-gap: 16px; }
+    .v-2 .st.live { box-shadow: inset 0 0 0 1.5px var(--live-ring); }
+    .v-2 .st.live .tag { position: absolute; top: -8px; left: 50%; transform: translateX(-50%); box-shadow: 0 0 0 2px var(--bg); }
+    .v-2 .st.live[aria-pressed='true'] { background: var(--size-bg); box-shadow: inset 0 0 0 1.5px var(--live-ring), inset 0 0 0 3px var(--size-bg), inset 0 0 0 4px var(--size); }
+
+    /* 3: split chip */
+    .v-3 .st.live { padding-left: 0; overflow: hidden; box-shadow: inset 0 0 0 1.5px var(--live-ring); }
+    .v-3 .st.live .tag { align-self: stretch; display: flex; align-items: center; padding: 0 7px 0 9px; border-radius: 0; }
+    .v-3 .st.live[aria-pressed='true'] { background: var(--size-bg); box-shadow: inset 0 0 0 1.5px var(--live-ring); }
+    .v-3 .st.live[aria-pressed='true'] .tag::after { content: '\00a0· editing'; }
+
+    /* 4: marker — icon and underline, no words on the chip */
+    .v-4 .strip { padding-bottom: 6px; }
+    .v-4 .st.live svg { color: var(--live-ring); }
+    .v-4 .st.live::after {
+      content: ''; position: absolute; left: 9px; right: 9px; bottom: -6px; height: 3px;
+      border-radius: 2px; background: var(--live-ring); box-shadow: 0 0 8px oklch(86% 0.16 95 / 60%);
+    }
+    .v-4 .ctx .on { padding: 0 5px; border-radius: 99px; background: var(--live-ring); color: var(--live-ink); font: 700 8.5px var(--font); letter-spacing: .05em; text-transform: uppercase; }
+  </style>
+  <style>
+    /* the context line */
+    .ctx {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      font-size: 10.5px;
+      line-height: 1.45;
+      color: var(--dim);
+      background: color-mix(in oklab, var(--size-bg) 55%, transparent);
+    }
+
+    .ctx.base {
+      background: var(--accent-soft);
+    }
+
+    .ctx.state {
+      background: color-mix(in oklab, var(--state-bg) 55%, transparent);
+    }
+
+    .ctx code {
+      font: 10.5px var(--mono);
+      color: var(--text);
+    }
+
+    .ctx .txt {
+      flex: 1 1 160px;
+      min-width: 0;
+    }
+
+    .top {
+      display: grid;
+      gap: 8px;
+      padding: 10px 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    .search {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      height: 32px;
+      padding: 0 9px;
+      border-radius: 8px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      color: var(--faint);
+    }
+
+    .search input {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      outline: none;
+    }
+
+    .viewrow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .vseg {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      flex: 1;
+      padding: 3px;
+      gap: 3px;
+      border-radius: 9px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .vseg button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      height: 28px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--dim);
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+
+    .vseg button[aria-pressed='true'] {
+      background: var(--raised);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .vseg button[aria-pressed='true'] svg {
+      color: var(--accent-text);
+    }
+
+    /* cards, compact */
+    .pad12 {
+      padding: 12px;
+    }
+
+    .cats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .cat {
+      position: relative;
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+      padding: 6px 6px 8px;
+      border-radius: 12px;
+      text-align: left;
+      border: 1px solid oklch(72% 0.12 var(--h) / 24%);
+      background: linear-gradient(180deg, oklch(25.5% 0.03 var(--h)), var(--raised) 62%);
+      transition: opacity .2s, filter .2s;
+    }
+
+    .cat.empty {
+      border-style: dashed;
+      border-color: var(--line2);
+      background: transparent;
+    }
+
+    .well {
+      height: 44px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(120% 120% at 20% 0%, oklch(36% 0.08 var(--h)), oklch(22% 0.04 var(--h)));
+      color: oklch(80% 0.13 var(--h));
+    }
+
+    .cat.empty .well {
+      filter: grayscale(.85);
+      opacity: .5;
+    }
+
+    .ct {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 2px;
+    }
+
+    .ic {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 5px;
+      background: oklch(32% 0.07 var(--h));
+      color: oklch(86% 0.12 var(--h));
+      flex: none;
+    }
+
+    .cat.empty .ic {
+      background: var(--hover);
+      color: var(--dim);
+    }
+
+    .cn {
+      flex: 1;
+      min-width: 0;
+      font-weight: 600;
+      font-size: 11.5px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .cat.empty .cn {
+      color: var(--dim);
+      font-weight: 500;
+    }
+
+    .count {
+      padding: 0 6px;
+      border-radius: 99px;
+      background: oklch(80% 0.12 var(--h));
+      color: oklch(22% 0.05 var(--h));
+      font-size: 9.5px;
+      font-weight: 650;
+      line-height: 15px;
+    }
+
+    .sum {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 3px;
+      color: var(--dim);
+      font: 10px var(--mono);
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    .sum i {
+      flex: none;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: oklch(80% 0.13 var(--h));
+    }
+
+    .cat.empty .sum {
+      color: var(--faint);
+      font-family: var(--font);
+    }
+
+    .cat.empty .sum i {
+      background: transparent;
+      box-shadow: inset 0 0 0 1.5px var(--faint);
+    }
+
+    /* what the picked size or state adds over Base */
+    .adds {
+      position: absolute;
+      top: 9px;
+      right: 9px;
+      padding: 1px 6px;
+      border-radius: 99px;
+      background: var(--size);
+      color: oklch(22% 0.05 150);
+      font: 700 9.5px var(--mono);
+      box-shadow: 0 0 0 2px var(--bg);
+    }
+
+    .cond-state .adds {
+      background: var(--state);
+      color: oklch(22% 0.05 300);
+    }
+
+    .cat.quiet {
+      opacity: .35;
+      filter: saturate(.4);
+    }
+
+    .cat.quiet .adds {
+      display: none;
+    }
+
+    .nothing {
+      grid-column: 1 / -1;
+      margin: 4px 0;
+      padding: 14px 12px;
+      border-radius: 10px;
+      border: 1px dashed var(--line2);
+      color: var(--dim);
+      font-size: 11px;
+      line-height: 1.5;
+      text-align: center;
+    }
+
+    .nothing b {
+      color: var(--text);
+      font-family: var(--mono);
+      font-weight: 500;
+    }
+  </style>
+  <style>
+    /* Applied */
+    .group {
+      padding: 4px 12px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .grp-h {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 32px;
+      font-weight: 600;
+    }
+
+    .grp-h .gw {
+      margin-left: auto;
+      color: var(--faint);
+      font: 400 10px var(--mono);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+    }
+
+    .row .nm {
+      display: grid;
+      min-width: 0;
+    }
+
+    .row .nm b {
+      font: 400 11px var(--mono);
+    }
+
+    .row .nm span {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font: 9.5px var(--mono);
+      color: var(--src);
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .row .nm span em {
+      font-style: normal;
+      padding: 0 5px;
+      border-radius: 99px;
+      font-size: 9px;
+      line-height: 13px;
+    }
+
+    .row .nm span em.size {
+      background: var(--size-bg);
+      color: var(--size);
+    }
+
+    .row .nm span em.state {
+      background: var(--state-bg);
+      color: var(--state);
+    }
+
+    .row .nm span em.many {
+      background: color-mix(in oklab, var(--shared) 20%, var(--raised));
+      color: var(--shared);
+    }
+
+    .val {
+      min-width: 0;
+      height: 26px;
+      padding: 0 7px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      color: var(--text);
+      font: 11px var(--mono);
+      outline: none;
+    }
+
+    .row.base .val {
+      color: var(--dim);
+    }
+
+    .row.added .val {
+      box-shadow: inset 0 0 0 1px var(--size);
+    }
+
+    .cond-state .row.added .val {
+      box-shadow: inset 0 0 0 1px var(--state);
+    }
+
+    .row.over .val {
+      text-decoration: line-through;
+      color: var(--faint);
+    }
+
+    .switcher {
+      position: fixed;
+      left: calc((100% - 340px) / 2);
+      bottom: 18px;
+      transform: translateX(-50%);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: #fde047;
+      color: #111;
+      border-radius: 999px;
+      padding: 5px;
+      box-shadow: 0 10px 30px -8px rgb(0 0 0 / 50%), 0 0 0 1px rgb(0 0 0 / 20%);
+      font: 600 12.5px/1 system-ui, sans-serif;
+    }
+
+    .switcher button {
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      border: 0;
+      background: #111;
+      color: #fde047;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .switcher .lab {
+      padding: 0 12px;
+      min-width: 380px;
+      text-align: center;
+    }
+
+    .switcher .lab small {
+      display: block;
+      font-weight: 500;
+      font-size: 10.5px;
+      opacity: .7;
+      margin-top: 3px;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <h1>Base in the primary colour, the size on screen in yellow</h1>
+    <p>Pick a preview width: the strip stays on <b>Base</b>, and the size the page is showing is marked <b>on screen</b>, even
+      at ≥1280px where nothing is written yet. Pick it, or another size, or <code>:hover</code>: the cards show only what it adds.</p>
+    <div class="vp" role="group" aria-label="Preview width (the toolbar's viewport menu)" id="vp"></div>
+    <div class="frame" id="frame">
+      <div class="card">Pro — everything a growing team needs.</div>
+      <div class="lab" id="flab"></div>
+    </div>
+    <div class="notes" id="notes"></div>
+  </main>
+  <aside id="panel" aria-label="Styles panel (prototype)"></aside>
+  <div class="switcher" role="group" aria-label="Prototype variant switcher">
+    <button type="button" id="prev" aria-label="Previous variant">←</button>
+    <div class="lab" id="vlabel" aria-live="polite"></div>
+    <button type="button" id="next" aria-label="Next variant">→</button>
+  </div>
+  <script>
+    const $ = (s, r = document) => r.querySelector(s);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const panel = $('#panel');
+
+    const VARIANTS = [
+      { k: '1', label: '1 — Ring and tag', note: 'A yellow ring and an ON SCREEN pill inside the chip (design B)' },
+      { k: '2', label: '2 — Flag', note: 'ON SCREEN as a tab on the chip’s top edge' },
+      { k: '3', label: '3 — Split', note: 'The chip opens with a yellow ON SCREEN segment' },
+      { k: '4', label: '4 — Marker', note: 'A yellow monitor icon and underline; the words move to the context line' },
+    ];
+    const COMMON = 'Base is picked by default and drawn in the primary colour. Pick a size or <code>:hover</code>: Cards and Applied show only what it adds; cards it does not touch dim in place.';
+    const NOTES = {
+      1: ['The size on screen keeps the chip’s shape and gains a 2px yellow ring and an <b>ON SCREEN</b> pill after its count. The widest chip of the four.', 'Picked and on screen: the size’s green fill with the yellow ring inside and a green halo outside.', COMMON],
+      2: ['<b>ON SCREEN</b> sits on the top edge like a tab, so the chip keeps its width; the strip gains 9px of top room.', 'Picked and on screen: green fill, yellow ring, a green inner line.', COMMON],
+      3: ['The chip opens with a yellow <b>ON SCREEN</b> segment, then its label and count: one shape, two halves.', 'Picked and on screen: the segment reads <b>ON SCREEN · EDITING</b> and the right half turns green.', COMMON],
+      4: ['No words on the chip: a yellow monitor icon and a glowing bar under it. The tooltip and the context line say <b>ON SCREEN</b>. The narrowest chip.', 'Picked and on screen: green fill, with the yellow icon and bar kept.', COMMON],
+    };
+
+    const ICON = {
+      layout: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>',
+      flex: '<rect x="3" y="6" width="5" height="12" rx="1"/><rect x="10" y="6" width="5" height="12" rx="1"/><rect x="17" y="6" width="4" height="12" rx="1"/>',
+      spacing: '<rect x="3" y="3" width="18" height="18" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/>',
+      size: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+      text: '<path d="M4 7V4h16v3M9 20h6M12 4v16"/>',
+      background: '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
+      border: '<rect x="3" y="3" width="18" height="18" rx="6"/>',
+      effects: '<rect x="3" y="3" width="14" height="14" rx="2"/><path d="M21 7v12a2 2 0 0 1-2 2H7"/>',
+      motion: '<path d="M5 12h9M5 7h5M5 17h5"/><circle cx="18" cy="12" r="3"/>',
+      interaction: '<path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/>',
+      parent: '<rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 3"/><rect x="7" y="9" width="10" height="6" rx="1"/>',
+      other: '<path d="M8 3H6a2 2 0 0 0-2 2v4l-2 3 2 3v4a2 2 0 0 0 2 2h2M16 3h2a2 2 0 0 1 2 2v4l2 3-2 3v4a2 2 0 0 1-2 2h-2"/>',
+      grid: '<rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/>',
+      list: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
+      search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+      screen: '<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>',
+    };
+    const svg = (k, s = 12) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k]}</svg>`;
+
+    const CARDS = [
+      ['layout', 'Layout', 255], ['flex', 'Flex', 228], ['spacing', 'Spacing', 160], ['size', 'Size', 200], ['text', 'Text style', 285],
+      ['background', 'Background', 330], ['border', 'Border', 30], ['effects', 'Shadow & effects', 70], ['motion', 'Motion', 305],
+      ['interaction', 'Interaction', 100], ['parent', 'In its parent', 180], ['other', 'Other', 240],
+    ].map(([id, name, hue]) => ({ id, name, hue }));
+    /** Sizes, mobile first. Base is everything under the first. */
+    const SIZES = [{ key: 'tablet', min: 768 }, { key: 'desktop', min: 1024 }, { key: 'wide', min: 1280 }];
+    const HOVER = ':hover';
+    /** [condition, card, property, value, source, reach] */
+    const DECLS = [
+      ['base', 'layout', 'display', 'flex', '.card.featured', 1], ['base', 'flex', 'flex-direction', 'column', '.card.featured', 1],
+      ['base', 'spacing', 'padding', '16px', '.card', 3], ['base', 'text', 'font-size', '14px', '.card', 3],
+      ['base', 'text', 'font-weight', '600', '.featured', 1], ['base', 'text', 'color', '#1e1b4b', '.featured', 1],
+      ['base', 'background', 'background', '#eef2ff', '.featured', 1], ['base', 'border', 'border', '1px solid #6366f1', '.card', 3],
+      ['base', 'border', 'border-radius', '10px', '.card', 3], ['base', 'effects', 'box-shadow', '0 1px 2px rgb(0 0 0 / 6%)', '.promo .card', 3],
+      ['base', 'motion', 'transition', 'transform 200ms ease', '.card', 3],
+      ['tablet', 'spacing', 'padding', '20px 28px', '.card', 3], ['tablet', 'border', 'border-radius', '12px', '.card', 3],
+      ['desktop', 'text', 'font-size', '16px', '.featured', 1],
+      [HOVER, 'background', 'background', '#e0e7ff', '.featured:hover', 1], [HOVER, 'effects', 'transform', 'translateY(-2px)', '.featured:hover', 1],
+    ].map(([cond, card, prop, value, src, reach]) => ({ cond, card, prop, value, src, reach }));
+    const WIDTHS = [375, 768, 1024, 1500];
+
+    const params = new URLSearchParams(location.search);
+    let variant = VARIANTS.some((v) => v.k === params.get('variant')) ? params.get('variant') : '1';
+    const S = { width: Number(params.get('w')) || 1500, cond: params.get('cond') || 'base', view: params.get('view') || 'cards' };
+  </script>
+  <script>
+    const sizeOf = (key) => SIZES.find((one) => one.key === key);
+    const label = (cond) => (cond === 'base' ? 'Base' : cond === HOVER ? ':hover' : `≥${sizeOf(cond).min}px`);
+    const isSize = (cond) => Boolean(sizeOf(cond));
+    /** The size the page is showing: the largest whose min the width reaches; Base under the first. */
+    const visible = () => [...SIZES].reverse().find((one) => S.width >= one.min)?.key ?? 'base';
+    /** Applies on screen now: Base, and every size the preview width reaches. */
+    const onScreen = (cond) => cond === 'base' || (isSize(cond) && S.width >= sizeOf(cond).min);
+    const rank = (cond) => (cond === 'base' ? 0 : cond === HOVER ? 10 : SIZES.findIndex((one) => one.key === cond) + 1);
+    /** What applies under the picked condition: Base, the sizes up to it, or Base plus the state. */
+    function applying(cond = S.cond) {
+      const ok = (d) => d.cond === 'base' || d.cond === cond || (isSize(cond) && isSize(d.cond) && rank(d.cond) <= rank(cond));
+      const win = new Map();
+      for (const d of DECLS.filter(ok).sort((a, b) => rank(a.cond) - rank(b.cond))) win.set(d.prop, d);
+      return [...win.values()];
+    }
+    const added = (cond = S.cond) => (cond === 'base' ? [] : DECLS.filter((d) => d.cond === cond));
+    const countAt = (cond) => DECLS.filter((d) => d.cond === cond).length;
+    /** Picking a size or a state always shows only what it adds over Base. */
+    const lensOn = () => S.cond !== 'base';
+
+    function chip(cond) {
+      const n = countAt(cond);
+      const kind = cond === 'base' ? 'base' : cond === HOVER ? 'state' : 'size';
+      const live = cond === visible() && cond !== 'base';
+      const tip = live ? `ON SCREEN — ${label(cond)} is what the page shows at ${S.width}px${n ? '' : ': nothing written here yet'}` : isSize(cond) && !onScreen(cond) ? `${label(cond)}: not on screen at ${S.width}px` : label(cond);
+      return `<button type="button" class="st ${kind} ${live ? 'live' : ''} ${isSize(cond) && !onScreen(cond) ? 'off' : ''}" aria-pressed="${S.cond === cond}" data-act="cond" data-c="${cond}" title="${esc(tip)}">
+    ${live && variant === '3' ? '<span class="tag">On screen</span>' : ''}${live && variant === '4' ? svg('screen', 11) : ''}${label(cond)}<span class="n ${n ? '' : 'zero'}">${n}</span>${live && (variant === '1' || variant === '2') ? '<span class="tag">On screen</span>' : ''}</button>`;
+    }
+    function strip() {
+      // Every size written at, and the visible one even when nothing is: one click edits there.
+      const sizes = SIZES.filter((one) => countAt(one.key) || one.key === visible()).map((one) => one.key);
+      const chips = ['base', ...sizes, HOVER].map(chip).join('') + '<button type="button" class="st add" title="Add a state, a size or a pseudo-element">+</button>';
+      return `<div class="strip" role="group" aria-label="Where edits go: Base, a size or a state">${chips}</div>${ctx()}`;
+    }
+    function ctx() {
+      const c = S.cond;
+      const v = visible();
+      const on = variant === '4' ? '<span class="on">On screen</span> ' : 'On screen: ';
+      const seen = v === 'base' ? '' : ` ${on}<code>${label(v)}</code>${countAt(v) ? '' : ', nothing written yet'}.`;
+      if (c === 'base') return `<div class="ctx base"><span class="txt">Editing <b>Base</b>, what every width starts from.${seen}</span></div>`;
+      const n = added().length;
+      const what = c === HOVER
+        ? `Showing only what <code>:hover</code> adds (${n}).`
+        : `Showing only what <code>${label(c)}</code> adds (${n}), written in <code>@media (min-width: ${sizeOf(c).min}px)</code>${onScreen(c) ? '' : `, <b>not</b> on screen at ${S.width}px`}.`;
+      return `<div class="ctx ${c === HOVER ? 'state' : ''}"><span class="txt">${what}${c === v ? '' : seen}${c === v ? ` ${on.trim().replace(/:$/, '')}${variant === '4' ? '' : '.'}` : ''}</span></div>`;
+    }
+  </script>
+  <script>
+    function viewRow() {
+      const seg = `<div class="vseg" role="group" aria-label="View">
+    <button type="button" data-act="view" data-v="cards" aria-pressed="${S.view === 'cards'}">${svg('grid', 13)}Cards</button>
+    <button type="button" data-act="view" data-v="applied" aria-pressed="${S.view === 'applied'}">${svg('list', 13)}Applied</button></div>`;
+      return `<div class="viewrow">${seg}</div>`;
+    }
+    function cardTile(card) {
+      const all = applying().filter((d) => d.card === card.id);
+      const mine = added().filter((d) => d.card === card.id);
+      const shown = lensOn() ? mine : all;
+      const empty = !shown.length;
+      const quiet = lensOn() && !mine.length;
+      return `<div class="cat ${empty && !quiet ? 'empty' : ''} ${quiet ? 'quiet' : ''}" style="--h:${card.hue}">
+    <span class="well">${svg(card.id, 18)}</span>
+    <span class="ct"><span class="ic">${svg(card.id, 11)}</span><span class="cn">${card.name}</span>${shown.length ? `<span class="count">${shown.length}</span>` : ''}</span>
+    <span class="sum"><i></i>${shown.length ? esc(shown.map((d) => d.value.split(' ')[0]).join(' · ')) : quiet ? `Nothing at ${label(S.cond)}` : 'Empty'}</span></div>`;
+    }
+    function cardsView() {
+      const none = lensOn() && !added().length
+        ? `<p class="nothing">Nothing written at <b>${label(S.cond)}</b> yet. A value typed in a card now goes to <b>.featured ${S.cond === HOVER ? ':hover' : label(S.cond)}</b>.</p>` : '';
+      return `<div class="pad12 cond-${S.cond === HOVER ? 'state' : 'size'}"><div class="cats">${none}${CARDS.map(cardTile).join('')}</div></div>`;
+    }
+    function appliedView() {
+      const list = lensOn() ? added() : applying();
+      const rows = CARDS.map((card) => {
+        const mine = list.filter((d) => d.card === card.id);
+        if (!mine.length) return '';
+        return `<div class="group"><div class="grp-h" style="--h:${card.hue}"><span class="ic">${svg(card.id, 11)}</span>${card.name}<span class="gw">${mine.length}</span></div>
+      ${mine.map((d) => {
+          const add = d.cond === S.cond && S.cond !== 'base';
+          const tagged = d.cond === 'base' ? '' : `<em class="${d.cond === HOVER ? 'state' : 'size'}">${label(d.cond)}</em>`;
+          return `<div class="row ${add ? 'added' : S.cond !== 'base' && d.cond === 'base' ? 'base' : ''}"><span class="nm"><b>${d.prop}</b><span>${esc(d.src.replace(':hover', ''))}${tagged}${d.reach > 1 ? `<em class="many">${d.reach}×</em>` : ''}</span></span><input class="val" value="${esc(d.value)}" aria-label="${d.prop}"></div>`;
+        }).join('')}</div>`;
+      }).join('');
+      return `<div class="cond-${S.cond === HOVER ? 'state' : 'size'}">${rows || `<p class="nothing" style="margin:12px">Nothing written at <b>${label(S.cond)}</b> yet.</p>`}</div>`;
+    }
+    function render() {
+      const top = $('#scroll')?.scrollTop ?? 0;
+      panel.className = `v-${variant}`;
+      panel.innerHTML = `<div id="scroll"><div class="sticky"><div class="ph"><span class="tag">div</span><span class="cchip">.card</span><span class="cchip">.featured</span></div>
+    <div class="cond">${strip()}</div>
+    <div class="top"><label class="search">${svg('search', 13)}<input placeholder="Search properties, values, selectors…" aria-label="Search styles"></label>${viewRow()}</div></div>
+    ${S.view === 'applied' ? appliedView() : cardsView()}</div>`;
+      $('#scroll').scrollTop = top;
+      // The page side: the preview width, and the element as it is drawn at it.
+      $('#vp').innerHTML = WIDTHS.map((w) => `<button type="button" data-w="${w}" aria-pressed="${S.width === w}">${w}px</button>`).join('');
+      const win = applying(visible());
+      const val = (p) => win.find((d) => d.prop === p)?.value;
+      const frame = $('#frame');
+      frame.style.maxWidth = `${Math.round(Math.min(S.width, 1500) / 1500 * 100)}%`;
+      frame.style.setProperty('--pad', val('padding'));
+      frame.style.setProperty('--fs', val('font-size'));
+      $('#flab').textContent = `${S.width}px · showing ${label(visible())} · padding ${val('padding')} · font-size ${val('font-size')}`;
+      const v = VARIANTS.find((x) => x.k === variant);
+      $('#vlabel').innerHTML = `${esc(v.label)}<small>${esc(v.note)}</small>`;
+      $('#notes').innerHTML = `<h2>${esc(v.label)}</h2><ul>${NOTES[variant].map((x) => `<li>${x}</li>`).join('')}</ul>`;
+    }
+    panel.addEventListener('click', (e) => {
+      const a = e.target.closest('[data-act]');
+      if (!a || a.disabled) return;
+      if (a.dataset.act === 'cond') S.cond = a.dataset.c;
+      if (a.dataset.act === 'view') S.view = a.dataset.v;
+      render();
+    });
+    // A new preview width leaves the strip where it was: Base stays Base; only the highlight moves.
+    $('#vp').addEventListener('click', (e) => { const b = e.target.closest('[data-w]'); if (b) { S.width = Number(b.dataset.w); render(); } });
+    function setVariant(k) { variant = k; const u = new URL(location.href); u.searchParams.set('variant', k); history.replaceState(null, '', u); render(); }
+    const cycle = (step) => setVariant(VARIANTS[(VARIANTS.findIndex((v) => v.k === variant) + step + VARIANTS.length) % VARIANTS.length].k);
+    document.addEventListener('keydown', (e) => {
+      const t = document.activeElement;
+      if (t && (t.matches('input, textarea, select') || t.isContentEditable)) return;
+      if (e.key === 'ArrowLeft') cycle(-1);
+      if (e.key === 'ArrowRight') cycle(1);
+    });
+    $('#prev').addEventListener('click', () => cycle(-1));
+    $('#next').addEventListener('click', () => cycle(1));
+    render();
+    if (params.has('shot')) setTimeout(() => { const o = document.createElement('div'); o.id = 'out'; o.hidden = true; o.textContent = 'RESULTS:{}:END'; document.body.append(o); }, 600);
+  </script>
+</body>
+
+</html>

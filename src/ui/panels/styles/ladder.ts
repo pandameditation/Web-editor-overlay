@@ -50,8 +50,10 @@ export interface LadderSpec {
   onPick(place: Place, keyboard: boolean): void;
   /** What opens under the picked rung: its value field, its `!important`, its result line. */
   open(place: Place): TemplateResult;
-  /** Declarations whose media does not apply under the condition, listed under the rungs. */
+  /** Declarations whose media does not apply under the condition: a rung each, under the others. */
   inactive: readonly Contribution[];
+  /** One of those picked: edit under its own condition, where it applies. */
+  onPickInactive?(one: Contribution): void;
   /** The new class's name field, on the last rung. Empty draft: the editor names it. */
   newClass?: {
     draft: string;
@@ -160,8 +162,36 @@ export function renderLadder(spec: LadderSpec): TemplateResult {
       ${places.map(rung)}
     </div>
     ${spec.inactive.length
-      ? html`<p class="idle">Not active at this width: ${spec.inactive.map((one, at) => html`${at ? ', ' : ''}<code>${displayName(shortLabel(one), 40)} ${one.value}</code>`)}</p>`
+      ? html`<div class="ladder idles" role="group" aria-label="Not in effect at this width">
+          ${spec.inactive.map((one) => renderIdle(one, spec))}
+        </div>`
       : nothing}`;
+}
+
+/**
+ * A declaration whose media query does not hold at this width (another size, print): a rung of its
+ * own, after the ones in effect, drawn as they are but dimmed, so every viewport the property is
+ * written for reads in one list. Picking it edits under its own condition, where it does apply.
+ */
+function renderIdle(one: Contribution, spec: LadderSpec): TemplateResult {
+  const entry = one.source.kind === 'rule' ? one.source.entry : null;
+  const media = entry?.media ?? null;
+  const where = media ? mediaLabel(media) : entry?.state ?? '';
+  return html`<button
+      type="button"
+      class="lr idle"
+      data-idle=${shortLabel(one)}
+      title=${`Not in effect at this width${where ? `: edit it at ${where}` : ''}`}
+      ?disabled=${!spec.onPickInactive}
+      @click=${() => spec.onPickInactive?.(one)}
+    >
+      <span class="rd"></span>
+      <span class="nm"><span class="pl" title=${entry ? entry.matched : 'inline'}>${displayName(entry ? entry.matched : 'inline', 30)}</span>${media
+        ? html`<span class="sz">${mediaLabel(media)}</span>`
+        : nothing}</span>
+      <span class="cv" title=${one.value}>${one.value}</span>
+      <span class="nowgap"></span>
+    </button>`;
 }
 
 /** The line under a picked rung: what a value there does, and how far it reaches. */
@@ -388,17 +418,16 @@ export const ladderStyles: CSSResult = css`
   .res .link {
     font-size: 10.5px;
   }
-  .idle {
-    margin: 3px 0 0;
-    padding-top: 6px;
+  /* Not in effect at this width: the same rungs after a rule, dimmed, their values unstruck. */
+  .ladder.idles {
+    margin-top: 3px;
+    padding-top: 4px;
     border-top: 1px solid var(--heo-line);
-    color: var(--heo-text-dim);
-    font-size: 10px;
-    line-height: 1.6;
   }
-  .idle code {
-    color: var(--heo-text-dim);
-    font-family: var(--heo-mono);
-    font-size: 10px;
+  .lr.idle {
+    opacity: 0.6;
+  }
+  .lr.idle:hover {
+    opacity: 1;
   }
 `;

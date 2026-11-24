@@ -746,7 +746,7 @@
           await settle(150);
           const hint = textOf(body('.card')?.querySelector('.slot-hint'));
           results.cardBody.slotHintSaysReach =
-            new RegExp(`^Only at ≥768px — ${innerWidth >= 768 ? 'in effect' : 'not'} at ${innerWidth}px\\. Adds to or overrides “Always” there, for all 4 elements\\.$`).test(hint) &&
+            new RegExp(`^Only at ≥768px — ${innerWidth >= 768 ? 'in effect' : 'not'} at ${innerWidth}px\\. Adds to or overrides Base there, for all 4 elements\\.$`).test(hint) &&
             blocks('.card').map((one) => one.dataset.block).join(',') === 'base';
           // The ≥768px :hover rule is a condition of its own: its block alone, read as a hover.
           card('.card')?.querySelector('.slots [data-cond="state::hover@tablet"]')?.click();
@@ -1135,26 +1135,32 @@
           const slotCount = (k, slot) => model().entries
             .filter((entry) => entry.family === k && conditionOf(entry) === slot)
             .reduce((sum, entry) => sum + entry.declarations.length, 0);
+          // A count is a bare number in its marker; a size on screen with part of it beaten reads `won/all`.
+          const countIs = (button, n) => new RegExp(`^(\\d+/)?${n}$`).test(textOf(button?.querySelector('.c')));
           results.strip = {
             sameComponentInThePanelAndCards:
               Boolean(sroot().querySelector('[data-heo-part="strip"][data-strip="panel"]')) &&
               strip('.card')?.matches('.slots[role="group"]'),
             countsPerSlot:
               textOf(strip('.card')?.querySelector('.base .c')) === String(slotCount('.card', 'base')) &&
-              textOf(slotButton('.card', 'phone')?.querySelector('.c')) === `+${slotCount('.card', 'phone')}` &&
-              textOf(slotButton('.card', 'tablet')?.querySelector('.c')) === `+${slotCount('.card', 'tablet')}` &&
+              countIs(slotButton('.card', 'phone'), slotCount('.card', 'phone')) &&
+              countIs(slotButton('.card', 'tablet'), slotCount('.card', 'tablet')) &&
               slotCount('.card', 'tablet') === 1 &&
-              textOf(slotButton('.card', 'state::hover@tablet')?.querySelector('.c')) === '+1',
+              textOf(slotButton('.card', 'state::hover@tablet')?.querySelector('.c')) === '1' &&
+              !/\+/.test(textOf(strip('.card'))?.replace(/\+$/, '') ?? ''),
             // A size that declares nothing has no button; ⋮ has it.
             emptySizesAreNotOnTheBar: !slotButton('.card', 'laptop') && !slotButton('.card', 'desktop'),
           };
           const notNow = innerWidth < 768 ? slotButton('.card', 'tablet') : slotButton('.card', 'phone');
           const nowButton = innerWidth < 768 ? slotButton('.card', 'phone') : slotButton('.card', 'tablet');
-          results.strip.notNowIsDashedNotFaded =
+          // Not in effect at this width: drawn disabled (dashed, the faint ink), never faded, and still
+          // a button; the size on screen has its marker in yellow.
+          results.strip.notNowIsDrawnDisabled =
             notNow?.classList.contains('notnow') && !nowButton?.classList.contains('notnow') &&
             getComputedStyle(notNow).borderTopStyle === 'dashed' &&
-            getComputedStyle(notNow).opacity === '1' &&
-            getComputedStyle(notNow).color === getComputedStyle(nowButton).color;
+            getComputedStyle(notNow).opacity === '1' && !notNow.disabled &&
+            getComputedStyle(notNow).color !== getComputedStyle(nowButton).color &&
+            nowButton?.classList.contains('live') && Boolean(nowButton.querySelector('.c.live'));
           // print declares something, so it is on the bar with its count; "+" offers only the rest.
           const more = () => strip('.card')?.querySelector('.add');
           more()?.click();
@@ -1163,7 +1169,7 @@
           const mediaField = () => stripMenu()?.querySelector('heo-value-field');
           const listed = Array.from(mediaField()?.shadowRoot?.querySelectorAll('.option') ?? []).map((one) => textOf(one));
           results.strip.otherMediaIsOnTheBarAndMoreHasTheRest =
-            textOf(slotButton('.card', 'other:print')) === 'print+1' &&
+            textOf(slotButton('.card', 'other:print')) === 'print1' &&
             listed.some((one) => one.startsWith(':focus')) && !listed.some((one) => one.startsWith(':hover')) &&
             listed.some((one) => one.startsWith('Custom width')) && !listed.some((one) => /@media print\b/.test(one));
           const mediaInput = () => mediaField()?.shadowRoot?.querySelector('input');
@@ -1293,7 +1299,7 @@
               await settle(300);
             }
             const chip = slotButton('.intro-detail', 'other:(max-width: 100px)');
-            const emptyChip = Boolean(chip) && !chip.querySelector('.c') && !/\+/.test(textOf(chip));
+            const emptyChip = Boolean(chip) && textOf(chip.querySelector('.c.zero')) === '0' && !/\+/.test(textOf(chip));
             addButton(block('.intro-detail', 'base'))?.click();
             await settle(200);
             const input = () => inputOf(block('.intro-detail', 'base')?.querySelector('.property-adder'));
@@ -1305,7 +1311,7 @@
             }
             const refusal = textOf(block('.intro-detail', 'base')?.querySelector('.property-adder .field-error'));
             const made = engine.classes.get('intro-detail') && engine.history.size === history + 1;
-            results.strip.anEmptySizeShowsNoPlus = emptyChip;
+            results.strip.anEmptySizeShowsAHollowZero = emptyChip;
             results.adder.aClassPropertyIsNotAlreadySetAtANewSize = !refusal && Boolean(made);
             while (engine.history.size > history) engine.undo();
             target.classList.remove('intro-detail');

@@ -1,5 +1,5 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import { inactivePlaces, placeConditionKey, placeOutcome, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
+import { conditionContext, inactivePlaces, placeConditionKey, placeOutcome, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
 import type { ElementModel } from '../../../core/cascade.js';
 import { normalizeClassName } from '../../../core/classes.js';
 import { splitImportant } from '../../../core/declaration-list.js';
@@ -8,7 +8,7 @@ import { buildSuggestions, valueKindFor } from '../../suggestions.js';
 import { ladderStyles, renderLadder, renderResult } from './ladder.js';
 import { renderPromote } from './promote.js';
 import { conditionKey, conditionName } from './size-strip.js';
-import { readRow, rowPlace, shownValue, slotWidth, submitNewClassName, type RowSpec } from './property-row.js';
+import { readRow, rowIdOf, rowPlace, scopeOfCondition, shownValue, submitNewClassName, type RowSpec } from './property-row.js';
 import type { StylesHost, StylesUiState } from './types.js';
 
 /**
@@ -45,9 +45,8 @@ export function renderCascadePopover(
     : scope.kind === 'size'
       ? conditionName(model, scope.slot)
       : '';
-  const at = scope.kind === 'size' || (scope.kind === 'state' && scope.slot)
-    ? slotWidth(model, scope.slot ?? '') ?? (scope.slot?.startsWith('other:') ? null : host.previewWidth)
-    : host.previewWidth;
+  // The width the ladder is read at: the page's while its condition is on screen, else its slot's.
+  const at = cond.media.startsWith('other:') ? null : conditionContext(model, cond).width ?? host.previewWidth;
   const inactive = inactivePlaces(model, property, cond);
   const all = [...list.applying, ...inactive];
   const notes = [
@@ -92,6 +91,17 @@ export function renderCascadePopover(
     onPick: (place, keyboard) => pick(place.key, keyboard),
     open: (place) => renderOpen(place, host, spec, rowId, cond, list.applying[0]?.value),
     inactive,
+    // A size not in effect here: the strip goes to it, and this menu with it, its rung now in effect.
+    onPickInactive: (one) => {
+      if (one.source.kind !== 'rule') return;
+      const entry = one.source.entry;
+      const key = conditionKey(model.slotOf(entry), entry.state);
+      const next = scopeOfCondition(key);
+      const id = rowIdOf(next, property, host.element);
+      host.engine.cancelPreview();
+      host.patch({ cond: key, popover: { scope: next, property, rowId: id } });
+      host.focusSelector(`.pop [role="radio"][aria-checked="true"]`);
+    },
     newClass: {
       draft,
       onDraft: (text) => host.patch({ newClass: { rowId, name: text } }),

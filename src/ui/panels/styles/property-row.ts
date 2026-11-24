@@ -1,5 +1,5 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
-import { isPseudoElement, mediaLabel } from '../../../core/breakpoints.js';
+import { isPseudoElement, isWidthQuery, mediaLabel } from '../../../core/breakpoints.js';
 import type {
   CascadeContext,
   CascadeList,
@@ -13,10 +13,11 @@ import { normalizeClassName } from '../../../core/classes.js';
 import { renderFamilies } from '../class-editor.js';
 import { entryLabel, reachText, shortLabel } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
-import { defaultPlace, placeOutcome, placesFor, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
+import { conditionContext, defaultPlace, placeOutcome, placesFor, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
 import { icon } from '../../icons.js';
 import { buildSuggestions, shadowSwatches, valueKindFor } from '../../suggestions.js';
 import { renderUses } from '../class-editor.js';
+import { conditionParts } from './size-strip.js';
 import type { RowScope, StylesHost } from './types.js';
 
 /**
@@ -134,25 +135,10 @@ export function rowIdOf(scope: RowScope, property: string, selected: HTMLElement
   return `${scopeKey(scope, selected)}:${property}`;
 }
 
-/** The width a slot is represented by: phone → 320, the others → their preset. */
-export function slotWidth(model: ElementModel, slot: string): number | null {
-  return model.slots().find((one) => one.key === slot)?.at ?? null;
-}
 
-/**
- * The cascade a row reads: a size group at its slot's width, a group under another media query
- * with that query taken to hold, a state group in its state (under its media, when it has one).
- * So a group shows what the element renders with when its condition is in effect, not now.
- */
+/** The cascade a row reads: its condition's (`conditionContext`), the same as its cascade menu's. */
 export function scopeContext(scope: RowScope, model: ElementModel): CascadeContext {
-  const under = (slot: string | undefined): CascadeContext => {
-    if (!slot || slot === 'base') return { width: null };
-    if (slot.startsWith('other:')) return { width: null, media: slot.slice('other:'.length) };
-    return { width: slotWidth(model, slot) };
-  };
-  if (scope.kind === 'size') return under(scope.slot);
-  if (scope.kind === 'state') return { ...under(scope.slot), state: scope.state };
-  return { width: null };
+  return conditionContext(model, rowCondition(scope));
 }
 
 /**
@@ -201,6 +187,58 @@ function needsImportant(model: ElementModel, property: string): boolean {
   );
 }
 
+/** The condition picked on the strip, as the scope every row and rich editor reads and writes under. */
+export function scopeOfCondition(key: string): RowScope {
+  if (key === 'base') return { kind: 'element' };
+  const { media, state } = conditionParts(key);
+  if (!state) return { kind: 'size', slot: media };
+  // A pseudo-element at no media reads any of its rules in effect now (readRow).
+  if (isPseudoElement(state) && media === 'base') return { kind: 'state', state };
+  return { kind: 'state', state, slot: media };
+}
+
+/** A rule written under a width query (a size): not Base's, whatever width it is in effect at. */
+export const underWidth = (entry: RuleEntry): boolean => entry.media !== null && isWidthQuery(entry.media);
+
+/**
+ * Whether a contribution is the scope's own: what the condition itself writes, not what it inherits.
+ *
+ * Base is the element's style attribute and the rules under no size (another media query, print or
+ * a colour scheme, stays Base's); a size is its own rules at rest; a state its own rules under its
+ * media. Picking a size used to show every value in effect at its width, Base's included, so it
+ * could not be told what the size adds, and at Base a size in effect at the previewed width took
+ * over the row: an edit there went into the size's rule.
+ */
+export function ownUnder(scope: RowScope, model: ElementModel, one: Contribution): boolean {
+  if (scope.kind === 'parent') return true;
+  if (one.source.kind === 'inline') return scope.kind === 'element';
+  const entry = one.source.entry;
+  if (scope.kind === 'element') return entry.state === '' && !underWidth(entry);
+  if (scope.kind === 'size') return entry.state === '' && model.slotOf(entry) === scope.slot;
+  // A pseudo-element group is drawn as it always was: any of its rules that applies now.
+  if (scope.slot === undefined && isPseudoElement(scope.state)) return entry.state === scope.state && model.applies(entry);
+  return entry.state === scope.state && model.slotOf(entry) === (scope.slot ?? 'base');
+}
+
+/** A cascade list narrowed to the scope's own contributions (`ownUnder`): what its cards show. */
+export function ownList(scope: RowScope, model: ElementModel, list: CascadeList): CascadeList {
+  return { ...list, applying: list.applying.filter((one) => ownUnder(scope, model, one)) };
+}
+
+/**
+ * What hides a row's own value on screen now: the declaration the element renders with instead, at
+ * the width the page is drawn at, when the value is in effect there and another block wins. Null
+ * when it shows, when it is not in effect now (another size), or under a state.
+ */
+export function hiddenNow(spec: RowSpec, shown: Contribution | undefined): Contribution | null {
+  if (!shown || spec.scope.kind === 'state' || spec.scope.kind === 'parent') return null;
+  const now = spec.model.cascade(spec.property).applying;
+  const block = (one: Contribution): unknown => (one.source.kind === 'inline' ? 'inline' : one.source.entry.rule);
+  if (!now.some((one) => block(one) === block(shown))) return null;
+  const top = now[0];
+  return top && block(top) !== block(shown) ? top : null;
+}
+
 /** What a row's cascade, value and own rule are, for one scope. */
 export function readRow(spec: RowSpec): {
   list: CascadeList;
@@ -213,15 +251,10 @@ export function readRow(spec: RowSpec): {
   const { scope, model, property } = spec;
   const list = model.cascade(property, scopeContext(scope, model));
   const winner = list.applying[0];
-  let shown = winner;
+  // Only the condition's own value: one it inherits (Base's, under a size) is its placeholder.
+  let shown = list.applying.find((one) => ownUnder(scope, model, one));
   let stateTarget: WriteTarget | null = null;
-  if (scope.kind === 'size') {
-    shown =
-      list.applying.find((one) =>
-        one.source.kind === 'rule' &&
-        one.source.entry.state === '' &&
-        model.slotOf(one.source.entry) === scope.slot) ?? winner;
-  } else if (scope.kind === 'state') {
+  if (scope.kind === 'state') {
     // The group's own rule: this state under this media, whatever else would also apply then.
     const slot = scope.slot ?? 'base';
     // A pseudo-element group is drawn as it always was: any of its rules that applies now.
@@ -229,7 +262,7 @@ export function readRow(spec: RowSpec): {
     const mine = (entry: RuleEntry): boolean =>
       entry.state === scope.state && (anyMedia ? model.applies(entry) : model.slotOf(entry) === slot);
     const own = list.applying.find((one) => one.source.kind === 'rule' && mine(one.source.entry));
-    shown = own ?? winner;
+    shown = own;
     const entry =
       own?.source.kind === 'rule'
         ? own.source.entry
@@ -288,8 +321,8 @@ function underCondition(spec: RowSpec, cond: PlaceCondition, one: Contribution):
   if (one.source.kind === 'inline') return cond.media === 'base' && !cond.state;
   const entry = one.source.entry;
   if (entry.state !== cond.state) return false;
-  // At Element any size that applies now is where the value is; a pseudo-element group reads any.
-  if (cond.media === 'base') return !cond.state || isPseudoElement(cond.state) || entry.media === null;
+  // At Base a rule under no size; a pseudo-element group reads any.
+  if (cond.media === 'base') return !cond.state ? !underWidth(entry) : isPseudoElement(cond.state) || entry.media === null;
   return spec.model.slotOf(entry) === cond.media;
 }
 
@@ -640,10 +673,12 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
     : null;
   // The pill beside the name says where an edit goes, when that is not where the value is.
   const editsElsewhere = !shown || picked !== current;
+  // Its own value, in effect on screen and beaten there: by what.
+  const hider = hiddenNow(spec, shown);
 
   return html`<div class="prow">
     <div
-      class=${winner ? 'row set' : 'row'}
+      class=${`${winner ? 'row set' : 'row'}${hider ? ' hidden' : ''}`}
       data-property=${property}
       data-heo-part="row"
       data-row=${rowId}
@@ -688,6 +723,11 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       : nothing}
     </div>
     ${spec.note ? html`<p class="side-note">${spec.note}</p>` : nothing}
+    ${hider
+      ? html`<p class="side-note hidby" data-hidden-by title="The name's cascade menu says which wins, and why">
+          Hidden on screen by <b>${shortLabel(hider)}</b>
+        </p>`
+      : nothing}
   </div>`;
 }
 
@@ -819,6 +859,11 @@ export const propertyRowStyles: CSSResult = css`
     color: var(--heo-text-dim);
     font-size: 10px;
     line-height: 1.4;
+  }
+  /* Its own value, beaten on screen: said under the row, as a family's note is. */
+  .side-note.hidby {
+    margin-left: 98px;
+    color: var(--heo-text-faint);
   }
   .side-note b {
     color: var(--heo-text);

@@ -8,7 +8,7 @@ import {
   mediaShort,
   slotForMedia,
 } from '../../../core/breakpoints.js';
-import type { ElementModel, RuleEntry } from '../../../core/cascade.js';
+import type { Contribution, ElementModel, RuleEntry } from '../../../core/cascade.js';
 import { countText } from '../../../core/save-plan.js';
 import { mediaQueryIssues } from '../../../core/validation.js';
 import { collectPageMedia, mediaApplies } from '../../../core/viewport.js';
@@ -24,13 +24,13 @@ import { ADD_MEDIA_TITLE, addMediaLabel } from '../../create-offer.js';
 import { bestRow, renderSearchField, renderSearchPopover } from './search-popover.js';
 
 /**
- * The conditions bar: "Always", then one button per condition that declares something here, and
+ * The conditions bar: "Base", then one button per condition that declares something here, and
  * "+" to add a state or a media query.
  *
  * A condition is a size (`≤767px`), another media query (`@media print`), a state (`:hover`), or a
  * state under a media query (`:hover ≥768px`). Picking one shows what is declared under it, read as
  * though it were in effect, so a rule nobody is previewing still shows its values; pressing it
- * again goes back to Always. A condition that declares nothing has no button: "+" offers the states
+ * again goes back to Base. A condition that declares nothing has no button: "+" offers the states
  * and the page's media queries not on the bar, then "Add a media query…" for any other (the sizes
  * first), and picking one puts it on the bar, where the "+" was, to be filled. On a source card
  * pseudo-elements are not conditions: they stay blocks under whichever condition is picked. On the
@@ -38,8 +38,10 @@ import { bestRow, renderSearchField, renderSearchPopover } from './search-popove
  * card read and write the pseudo-element, the way picking `:hover` does.
  *
  * The panel's strip and every source card draw it, so picking looks and counts the same wherever it
- * is done. A media condition not in effect at the width the page renders at is drawn dashed, never
- * faded: it is still readable and still a choice.
+ * is done. Every chip is a pill with its count as a small marker. A size on screen (its query holds
+ * at the width the page is drawn at) has that marker in yellow, and says how much of it wins there:
+ * several sizes can be on screen at once, and one can be declared and beaten everywhere. A media
+ * condition not in effect is drawn disabled (dimmed) but stays a choice: pressing it edits there.
  */
 
 /** How pseudo-elements are counted: blocks under a condition (cards), or conditions (the panel). */
@@ -50,7 +52,7 @@ export interface ConditionOptions {
 /*
  * Condition keys.
  *
- * `base` is Always. A media condition is a slot key (`phone`, `tablet`, …) or `other:<media>`. A
+ * `base` is Base. A media condition is a slot key (`phone`, `tablet`, …) or `other:<media>`. A
  * state is `state:<state>`, and a state under a media condition `state:<state>@<media key>`.
  */
 
@@ -97,9 +99,9 @@ export function slotName(model: ElementModel, key: string): string {
   return conditionParts(key).media.startsWith('other:') ? `@media ${media}` : mediaShort(media);
 }
 
-/** A key as one label: `≤767px`, `@media print`, `:hover`, `:hover ≥768px`, or `Always`. */
+/** A key as one label: `≤767px`, `@media print`, `:hover`, `:hover ≥768px`, or `Base`. */
 export function conditionName(model: ElementModel, key: string): string {
-  if (key === 'base') return 'Always';
+  if (key === 'base') return 'Base';
   const { state } = conditionParts(key);
   const media = slotName(model, key);
   return [state, media].filter(Boolean).join(' ');
@@ -112,12 +114,53 @@ export interface BarChip {
   media: string | null;
   /** A device or media icon; null for a state at no media. */
   icon: string | null;
-  /** Visible text beside the icon: a state's name, a media query's short text, or nothing. */
+  /** Visible text beside the icon: a state's name, or a media query's short text (`≥768px`). */
   label: string;
+  /** `size` for a media condition, `state` for a state or pseudo-element (under a media or not). */
+  kind: 'size' | 'state';
   count: number;
   /** A media condition not in effect at the width the page renders at. */
   notNow: boolean;
   title: string;
+  /** A size on screen now: its media query holds at the width the page is drawn at. */
+  live: boolean;
+  /** Of `count`, how many win on screen now; the rest a later query beats. `count` when not live. */
+  won: number;
+}
+
+/** The block a contribution is in: the style attribute, or its rule. */
+const blockOf = (one: Contribution): unknown => (one.source.kind === 'inline' ? 'inline' : one.source.entry.rule);
+
+/** Of a condition's rules, how many declarations the element renders with now (none beats them). */
+function wonNow(model: ElementModel, entries: readonly RuleEntry[]): number {
+  let won = 0;
+  for (const entry of entries) {
+    if (!model.applies(entry)) continue;
+    for (const one of entry.declarations) {
+      const top = model.cascade(one.property).applying[0];
+      if (top && blockOf(top) === entry.rule) won += 1;
+    }
+  }
+  return won;
+}
+
+/**
+ * The count a chip ends with. A size on screen has it in a yellow pill: `3` when all three of its
+ * values win, `1/2` hollow when a later query beats one, faded at `0/1`, hollow `0` when nothing is
+ * written there yet. Any other condition keeps its `+3`.
+ */
+function chipCount(chip: Pick<BarChip, 'count' | 'live' | 'won'>): TemplateResult {
+  const { count, won } = chip;
+  const tone = !count ? 'zero' : !chip.live || won === count ? '' : won ? 'part' : 'part none';
+  const text = chip.live && won !== count ? `${won}/${count}` : `${count}`;
+  return html`<span class=${`c${chip.live ? ' live' : ''}${tone ? ` ${tone}` : ''}`}>${text}</span>`;
+}
+
+/** What a chip on screen says about it, after its name. */
+function liveText(chip: BarChip): string {
+  if (!chip.live) return chip.notNow ? ' · not on screen' : '';
+  if (!chip.count) return ' · on screen, nothing written yet';
+  return chip.won === chip.count ? ' · on screen' : ` · on screen: ${chip.won} of ${chip.count} win, ${chip.count - chip.won} hidden by a later query`;
 }
 
 /**
@@ -134,9 +177,11 @@ export function barConditions(
   options: ConditionOptions & { offWidth?: 'hide' | 'dim' } = {},
 ): { chips: BarChip[]; count(key: string): number } {
   const counts = new Map<string, number>();
+  const under = new Map<string, RuleEntry[]>();
   for (const entry of entries) {
     const key = conditionOf(model, entry, options);
     counts.set(key, (counts.get(key) ?? 0) + entry.declarations.length);
+    under.set(key, [...(under.get(key) ?? []), entry]);
   }
   const count = (key: string): number => counts.get(key) ?? 0;
   const keys = new Set<string>();
@@ -169,14 +214,18 @@ export function barConditions(
     const slot = model.slots().find((one) => one.key === mediaKey) ?? null;
     const n = count(key);
     const notNow = media !== null && !mediaApplies(media, null);
+    const live = media !== null && !state && !notNow;
     const name = conditionName(model, key);
     return {
       key,
       media,
       icon: media === null ? null : slot ? slot.icon : mediaIcon(media),
-      label: state || (slot ? '' : media === null ? '' : mediaShort(media)),
+      label: state || (media === null ? '' : mediaShort(media)),
+      kind: state ? 'state' : 'size',
       count: n,
       notNow,
+      live,
+      won: live ? Math.min(n, wonNow(model, under.get(key) ?? [])) : n,
       title: `${slot && !state ? slot.name : name}${n ? ` — ${countText(n, 'declaration')}` : ' — none yet'}` +
         (notNow ? ` · not in effect ${isWidthQuery(media ?? '') ? `at ${model.width}px` : 'now'}` : ''),
     };
@@ -228,8 +277,6 @@ export interface ConditionBarSpec {
   owner: string;
   /** `base` or a condition key. */
   picked: string;
-  /** The first button's name: `Always` on a card, `Element` on the panel's strip. */
-  alwaysLabel?: string;
   alwaysCount: number;
   alwaysTitle: string;
   chips: readonly BarChip[];
@@ -280,27 +327,27 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
       title=${spec.alwaysTitle}
       @click=${() => spec.onPick('base')}
     >
-      ${spec.alwaysLabel ?? 'Always'} <span class="c">${spec.alwaysCount}</span>
+      Base ${chipCount({ count: spec.alwaysCount, live: false, won: spec.alwaysCount })}
     </button>
     ${spec.chips.map((chip) => {
     const on = spec.picked === chip.key;
     const name = chip.title.split(' — ')[0];
     const pick = html`<button
-        class=${`${chip.count ? '' : 'empty'}${chip.notNow ? ' notnow' : ''}${chip.label ? ' named' : ''}`}
+        class=${`${chip.kind}${chip.count ? '' : ' empty'}${chip.notNow ? ' notnow' : ''}${chip.live ? ' live' : ''}`}
         type="button"
         data-cond=${chip.key}
         data-slot=${chip.key}
         aria-pressed=${on ? 'true' : 'false'}
-        aria-label=${`${name}, ${countText(chip.count, 'declaration')}${on ? '. Press again for Always' : ''}`}
-        title=${on ? `${chip.title}. Press again for Always` : chip.title}
+        aria-label=${`${name}, ${countText(chip.count, 'declaration')}${liveText(chip)}${on ? '. Press again for Base' : ''}`}
+        title=${`${chip.title}${liveText(chip)}${on ? '. Press again for Base' : ''}`}
         @click=${() => spec.onPick(on ? 'base' : chip.key)}
       >
-        ${chip.icon ? icon(chip.icon, 12) : nothing}${chip.label ? html`<span class="n">${chip.label}</span>` : nothing}${chip.count ? html`<span class="c">+${chip.count}</span>` : nothing}
+        ${chip.icon ? icon(chip.icon, 11) : nothing}${chip.label ? html`<span class="n">${chip.label}</span>` : nothing}${chipCount(chip)}
       </button>`;
     // The picked one carries its ×, as a class chip in the header does: the condition being read
     // is the one it would take off.
     return on
-      ? html`<span class="cchip-on">${pick}<button
+      ? html`<span class=${`cchip-on ${chip.kind}`}>${pick}<button
             class="ckill"
             type="button"
             aria-label=${`Remove ${name}`}
@@ -583,40 +630,37 @@ export function stripMediaIssues(draft: string | null): ReturnType<typeof mediaQ
 }
 
 export const sizeStripStyles: CSSResult = css`
+  /*
+   * One pill per condition, outlined, its count a small marker inside. Picked: Base in the primary
+   * colour, a size in the size green, a state in the state violet.
+   */
   .slots {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 2px;
+    gap: 5px;
     margin: 0 0 8px;
-    padding: 2px;
-    border: 1px solid var(--heo-line);
-    border-radius: var(--heo-r-md);
-    background: var(--heo-sunken);
   }
   .slots button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 3px;
-    height: 22px;
-    padding: 0 6px;
-    border: 1px solid transparent;
-    border-radius: var(--heo-r-sm);
+    gap: 5px;
+    height: 24px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 999px;
     background: transparent;
+    box-shadow: inset 0 0 0 1px var(--heo-line-strong);
     color: var(--heo-text-dim);
     font-family: var(--heo-mono);
-    font-size: 10px;
+    font-size: 10.5px;
     white-space: nowrap;
     cursor: pointer;
+    transition: background var(--heo-fast), color var(--heo-fast), opacity var(--heo-fast);
   }
   .slots button:hover {
     background: var(--heo-hover);
-    color: var(--heo-text);
-  }
-  .slots button[aria-pressed='true'] {
-    background: var(--heo-raised);
-    box-shadow: var(--heo-shadow-sm);
     color: var(--heo-text);
   }
   .slots button:focus-visible {
@@ -625,19 +669,23 @@ export const sizeStripStyles: CSSResult = css`
   }
   .slots .base {
     font-family: var(--heo-font);
-    font-size: 10.5px;
+    font-size: 11px;
+    font-weight: 600;
   }
-  .slots .c {
-    color: var(--heo-accent-text);
+  .slots .base[aria-pressed='true'] {
+    background: color-mix(in oklab, var(--heo-accent) 88%, black);
+    box-shadow: none;
+    color: var(--heo-accent-ink);
   }
-  .slots .empty .c,
-  .slots .base .c {
-    color: var(--heo-text-dim);
+  .slots .size[aria-pressed='true'],
+  .slots .cchip-on.size {
+    background: var(--heo-size-bg);
+    color: var(--heo-size);
   }
-  /* Not in effect at this width: dashed, with the ink kept (no fade). */
-  .slots .notnow:not([aria-pressed='true']) {
-    border-style: dashed;
-    border-color: var(--heo-line-strong);
+  .slots .state[aria-pressed='true'],
+  .slots .cchip-on.state {
+    background: var(--heo-state-bg);
+    color: var(--heo-state);
   }
   /* A state or a media query that is not a size reads by name; long ones are cut, the title has all. */
   .slots .n {
@@ -645,43 +693,96 @@ export const sizeStripStyles: CSSResult = css`
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .slots .named .c {
-    margin-left: 1px;
+  /* The count: a small grey marker, hollow at 0. */
+  .slots .c {
+    min-width: 14px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--heo-text) 12%, transparent);
+    color: var(--heo-text-dim);
+    font-family: var(--heo-mono);
+    font-size: 9px;
+    font-weight: 500;
+    line-height: 14px;
+    text-align: center;
   }
-  /* The picked condition and its ×, as a class chip and its cross in the header. */
+  .slots .c.zero {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+    color: var(--heo-text-faint);
+  }
+  .slots [aria-pressed='true'] .c:not(.live) {
+    background: color-mix(in oklab, currentColor 22%, transparent);
+    box-shadow: none;
+    color: inherit;
+  }
+  /* On screen now: the marker in yellow, hollow while a later query hides part of it, faded when all. */
+  .slots .c.live {
+    background: var(--heo-live);
+    color: var(--heo-live-ink);
+    font-weight: 700;
+  }
+  .slots .c.live.part,
+  .slots .c.live.zero {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--heo-live-text);
+    color: var(--heo-live-text);
+  }
+  .slots .c.live.none {
+    opacity: 0.6;
+  }
+  /*
+   * Not in effect at this width: drawn disabled (the faint ink, a dashed outline, its marker
+   * hollow) but still a choice; picked, it is drawn in full. Faded with opacity instead, its icon
+   * fell to 2.2:1 (a11y-contrast styles.notNowStrip).
+   */
+  .slots .notnow:not([aria-pressed='true']) {
+    padding: 0 7px;
+    border: 1px dashed var(--heo-line-strong);
+    box-shadow: none;
+    color: var(--heo-text-faint);
+  }
+  .slots .notnow:not([aria-pressed='true']) .c {
+    background: transparent;
+    box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+    color: var(--heo-text-faint);
+  }
+  .slots .notnow:not([aria-pressed='true']):hover {
+    color: var(--heo-text);
+  }
+  /* The picked condition and its ×, one pill: the condition being read is the one it takes off. */
   .slots .cchip-on {
     display: inline-flex;
     align-items: center;
-    border-radius: var(--heo-r-sm);
-    background: var(--heo-raised);
-    box-shadow: var(--heo-shadow-sm);
+    border-radius: 999px;
+    box-shadow: inset 0 0 0 1px currentColor;
   }
   .slots .cchip-on > button[aria-pressed='true'] {
-    box-shadow: none;
     padding-right: 3px;
+    background: transparent;
+    box-shadow: none;
+    color: inherit;
   }
   .slots .ckill {
     width: 16px;
     height: 16px;
-    margin-right: 3px;
+    margin-right: 4px;
     padding: 0;
-    border-radius: 999px;
-    color: var(--heo-text-dim);
+    box-shadow: none;
+    color: inherit;
   }
   .slots .ckill:hover {
-    background: var(--heo-line-strong);
-    color: var(--heo-text);
+    background: color-mix(in oklab, currentColor 22%, transparent);
+    color: inherit;
   }
-  /* The "+": a round outlined chip, as the header's "+" after the classes is. */
+  /* The "+": round, as the header's "+" after the classes is. */
   .slots .add {
-    width: 22px;
+    width: 24px;
     padding: 0;
-    border-color: var(--heo-line-strong);
-    border-radius: 999px;
     color: var(--heo-text-dim);
   }
   .slots .add[aria-expanded='true'] {
-    border-color: var(--heo-accent-line);
+    box-shadow: inset 0 0 0 1px var(--heo-accent-line);
     color: var(--heo-text);
   }
   /* The custom width panel, in the "+" popover's box (search-popover.ts). */

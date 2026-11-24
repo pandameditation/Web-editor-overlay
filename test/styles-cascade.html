@@ -429,7 +429,9 @@
            */
           rowNamesWhereItEditsAndItsReach:
             Boolean(padRow?.querySelector('.dots [data-source] .from')?.textContent.trim()) &&
-            new RegExp(`edits ${sideLabel.replace(/[.]/g, '\\.')}, 4 elements\\. Show cascade$`).test(padRow?.querySelector('.dots')?.getAttribute('aria-label') ?? '') &&
+            // Base edits Base's padding, in .card, though the size in effect wins it on screen.
+            /edits \.card, 4 elements\. Show cascade$/.test(padRow?.querySelector('.dots')?.getAttribute('aria-label') ?? '') &&
+            padRow?.closest('.prow')?.querySelector('[data-hidden-by]')?.textContent.replace(/\s+/g, ' ').trim() === `Hidden on screen by ${sideLabel}` &&
             padRow?.querySelector('.dots .uses')?.textContent.trim() === '4×' &&
             /edits inline, only this element\. Show cascade$/.test(rowIn('effective', 'font-size')?.querySelector('.dots')?.getAttribute('aria-label') ?? '') &&
             !rowIn('effective', 'font-size')?.querySelector('.dots .uses'),
@@ -450,7 +452,7 @@
         const bgPicked = await pickedOf('background-color');
         const sizePicked = await pickedOf('font-size');
         results.effective.theLadderStartsWhereTheValueIsWritten =
-          padPicked.key === `.card|${below768 ? 'phone' : 'tablet'}` &&
+          padPicked.key === '.card|base' &&
           bgPicked.key === '.card.featured|base' &&
           sizePicked.key === 'inline' &&
           !root().querySelector('.prow .under, .prow .where, .dest-line');
@@ -535,9 +537,10 @@
           !pop() && root().activeElement === rowIn('effective', 'color')?.querySelector('.dots');
 
         await openDot('effective', 'padding');
+        // A size not in effect at this width is a rung of its own after the others, dimmed.
         results.popover.listsOtherSizesAtActual =
-          /^Not active at this width: .*\.card /.test(pop()?.querySelector('.idle')?.textContent.trim() ?? '') &&
-          pop()?.querySelector('.idle')?.textContent.includes(otherLabel) &&
+          Array.from(pop()?.querySelectorAll('.idles .lr.idle') ?? []).some((one) =>
+            /\.card/.test(one.querySelector('.pl')?.textContent ?? '') && one.querySelector('.sz')?.textContent.trim() === otherLabel) &&
           !rungsOf().some((one) => one.querySelector('.sz')?.textContent.trim() === otherLabel);
         /*
          * The popover follows its row when the dock scrolls. A scroll does not leave the dock's
@@ -681,12 +684,12 @@
           /inherited from section\.promo \(\.promo\)/.test(inherited) &&
           /Typing a value adds it inline/.test(inherited);
         results.popover.explainsBrowserDefault = /the browser's default/.test(defaultText);
-        // Nothing writes it, so an edit at Element goes inline at any width: previewing a size changes
-        // nothing about that, and the popover says the same as at Actual. (The strip follows the
-        // preview to its size, R13; Element is picked back by hand.)
+        // Nothing writes it, so an edit at Base goes inline at any width: previewing a size changes
+        // nothing about that, and the popover says the same as at Actual. (The strip stays on Base
+        // while a preview shows a size; the size is marked on screen instead.)
         engine.setPreviewWidth(320);
         await settle();
-        const followedTheSize = root().querySelector('[data-strip="panel"] .base')?.getAttribute('aria-pressed') === 'false';
+        const followedTheSize = root().querySelector('[data-strip="panel"] .base')?.getAttribute('aria-pressed') === 'true';
         root().querySelector('[data-strip="panel"] .base')?.click();
         await settle();
         // The precondition: 320px picks a real size slot (the sample's max-width 767px), not All sizes.
@@ -888,7 +891,7 @@
         const backToAlways = bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true' &&
           !root().querySelector('.ctxline');
         results.bar = {
-          startsAtElement: /^Element \d+$/.test(alwaysText) && bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true',
+          startsAtBase: /^Base \d+$/.test(alwaysText) && bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true',
           listsOnlyConditionsThatDeclareSomething:
             keysOnBar.includes('state::hover') && keysOnBar.includes('other:print') &&
             keysOnBar.includes('state::hover@tablet') && keysOnBar.includes('state:::before') &&

@@ -318,9 +318,9 @@
          * ------------------------------------------------------------------ */
         progress.textContent = 'strip: element';
         results.strip = {};
-        // The element itself first, named as what it is (not "Always", a source card's word).
-        results.strip.theStripStartsWithElement =
-          /^Element\b/.test(text(strip()?.querySelector('.base'))) && strip()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true';
+        // Base first, what every state starts from (not "Always", a source card's word).
+        results.strip.theStripStartsWithBase =
+          /^Base\b/.test(text(strip()?.querySelector('.base'))) && strip()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true';
         {
           strip()?.querySelector('.add')?.click();
           await settle(60);

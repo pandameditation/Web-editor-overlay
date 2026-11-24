@@ -517,14 +517,22 @@
         engine.undo();
         await settle();
 
-        /* ---- Spacing: its row and its box editor write where each value is written now ---- */
+        /*
+         * ---- Spacing: its row and its box editor write Base's value where it is written ----
+         * A size in effect now wins padding (its rule is later), yet Base is Base's: it used to
+         * show the size's padding and write the edit into the size's rule.
+         */
         const phonePadBefore = phoneCard.style.getPropertyValue('padding');
         const winnerRule = innerWidth < 768 ? phoneCard : tabletCard;
         const winnerPadBefore = winnerRule.style.getPropertyValue('padding');
+        const basePadBefore = baseCard.style.getPropertyValue('padding');
         await send(fieldIn('spacing', 'padding'), 'value-change', '5px 6px');
         results.box = {
-          aMediaRuleWinnerIsEditedInPlace:
-            winnerRule.style.getPropertyValue('padding') === '5px 6px' && !inlineText(second, 'padding') && !anyBox(),
+          aBaseEditStaysInBaseUnderAWinningSize:
+            baseCard.style.getPropertyValue('padding') === '5px 6px' &&
+            winnerRule.style.getPropertyValue('padding') === winnerPadBefore && !inlineText(second, 'padding') && !anyBox(),
+          // And the row says the size hides it on screen.
+          theRowSaysASizeHidesIt: /Hidden on screen by \.card (≥768px|≤767px)/.test(rowIn('spacing', 'padding')?.closest('.prow')?.querySelector('[data-hidden-by]')?.textContent.replace(/\s+/g, ' ') ?? ''),
         };
         engine.undo();
         await settle();
@@ -535,12 +543,14 @@
         }));
         await settle();
         results.box.theBoxEditorWritesEachSideWhereItIsWritten =
-          winnerRule.style.getPropertyValue('padding-top') === '3px' &&
-          winnerRule.style.getPropertyValue('padding-bottom') === '4px' &&
+          baseCard.style.getPropertyValue('padding-top') === '3px' &&
+          baseCard.style.getPropertyValue('padding-bottom') === '4px' &&
+          winnerRule.style.getPropertyValue('padding') === winnerPadBefore &&
           !inlineText(second, 'padding-top') && engine.history.size === size + 1 && !anyBox();
         engine.undo();
         await settle();
         results.box.oneUndoTakesTheBatchBack =
+          baseCard.style.getPropertyValue('padding') === basePadBefore &&
           winnerRule.style.getPropertyValue('padding') === winnerPadBefore && phoneCard.style.getPropertyValue('padding') === phonePadBefore;
         // `#imp` has no rule for its margin at any size, so the same commit goes inline.
         api.select(imp);

@@ -51,6 +51,16 @@ export const DARK_TOKENS: Readonly<Record<string, string>> = {
   // light glass, so the light theme darkens them.
   '--heo-success-text': 'var(--heo-success)',
   '--heo-warn-text': 'var(--heo-warn)',
+  // On screen now: a size whose media query holds at the width the page renders at. A yellow
+  // fill with a dark ink (both themes), and the yellow as a line or small text where it is hollow.
+  '--heo-live': 'oklch(86% 0.16 95)',
+  '--heo-live-ink': 'oklch(22% 0.03 265)',
+  '--heo-live-text': 'var(--heo-live)',
+  // The strip's picked size and picked state: a green and a violet, each a tint and its ink.
+  '--heo-size': 'oklch(84% 0.12 150)',
+  '--heo-size-bg': 'oklch(30% 0.06 150)',
+  '--heo-state': 'oklch(82% 0.1 300)',
+  '--heo-state-bg': 'oklch(30% 0.06 300)',
   // Several elements share it, so an edit reaches past this one: the uses pill's orange.
   '--heo-shared': 'oklch(76% 0.13 55)',
   '--heo-shared-text': 'var(--heo-shared)',
@@ -112,6 +122,12 @@ export const LIGHT_TOKENS: Readonly<Record<string, string>> = {
   '--heo-accent-text': 'color-mix(in oklab, var(--heo-accent) 80%, black)',
   '--heo-success-text': 'oklch(48% 0.13 155)',
   '--heo-warn-text': 'oklch(52% 0.12 70)',
+  // The yellow as text read 1.5:1 on light glass: hollow pills take a dark gold instead.
+  '--heo-live-text': 'oklch(50% 0.11 85)',
+  '--heo-size': 'oklch(40% 0.11 150)',
+  '--heo-size-bg': 'oklch(93% 0.05 150)',
+  '--heo-state': 'oklch(42% 0.14 300)',
+  '--heo-state-bg': 'oklch(94% 0.04 300)',
   '--heo-shared-text': 'oklch(50% 0.14 48)',
   '--heo-card-ink': '58% 0.15',
   '--heo-card-well-a': '95.5% 0.03',

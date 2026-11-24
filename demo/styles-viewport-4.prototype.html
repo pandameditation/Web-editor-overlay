@@ -1,0 +1,1124 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Styles strip, round 4: on screen but beaten, and the cascade menu says who wins</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly; ← → or ?variant=1|2|3
+  (&w=1024&cond=mid&view=applied&pop=padding).
+
+  Round 4, on design 4 (the count pill turns yellow when its query is on screen). What it lacked: a query
+  that matches and is declared, but whose values a later matching query beats. The strip says so; the
+  cascade menu (today's ladder, per property) says which query wins.
+  1 — Split count: yellow for what wins, grey struck for what is hidden; today's ladder, "Not on screen" under it.
+  2 — Won/declared: 1/2 in a hollow yellow pill; the ladder says why each rung wins or loses.
+  3 — Corner badge −1 that opens the cascade of the first hidden value; the ladder draws a width rail per rung.
+-->
+  <style>
+    :root {
+      --bg: oklch(19% 0.014 265);
+      --raised: oklch(23.5% 0.016 265);
+      --sunken: oklch(16% 0.012 265);
+      --hover: oklch(28% 0.018 265);
+      --text: oklch(96% 0.005 265);
+      --dim: oklch(74% 0.012 265);
+      --faint: oklch(66% 0.014 265);
+      --line: oklch(100% 0 0 / 9%);
+      --line2: oklch(100% 0 0 / 16%);
+      --accent: #6366f1;
+      --accent-text: color-mix(in oklab, var(--accent) 55%, white);
+      --accent-soft: color-mix(in oklab, var(--accent) 18%, transparent);
+      --accent-line: color-mix(in oklab, var(--accent) 55%, transparent);
+      --size: oklch(84% 0.12 150);
+      --size-bg: oklch(30% 0.06 150);
+      --state: oklch(82% 0.1 300);
+      --state-bg: oklch(30% 0.06 300);
+      --live: oklch(97% 0.02 95);
+      --live-ink: oklch(22% 0.03 265);
+      --live-ring: oklch(86% 0.16 95);
+      --src: oklch(76% 0.11 255);
+      --shared: oklch(76% 0.13 55);
+      --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --ease: cubic-bezier(.2, .8, .2, 1);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      font-family: var(--font);
+      background: #e9ecf2;
+    }
+
+    button,
+    input {
+      font: inherit;
+      color: inherit;
+    }
+
+    :focus-visible {
+      outline: 2px solid color-mix(in oklab, var(--accent) 60%, white);
+      outline-offset: 1px;
+    }
+
+    /* page side */
+    .stage {
+      overflow: auto;
+      padding: 24px 28px 100px;
+      color: #343a4d;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .stage h1 {
+      margin: 0 0 4px;
+      font-size: 15px;
+    }
+
+    .stage p {
+      margin: 0 0 10px;
+      max-width: 64ch;
+    }
+
+    .vp {
+      display: inline-flex;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 10px;
+      background: #1f2433;
+      margin: 4px 0 14px;
+    }
+
+    .vp button {
+      height: 28px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: #c9cede;
+      font: 500 12px var(--mono);
+      cursor: pointer;
+    }
+
+    .vp button[aria-pressed='true'] {
+      background: #fff;
+      color: #1f2433;
+    }
+
+    .frame {
+      margin-bottom: 18px;
+      padding: 18px;
+      border-radius: 12px;
+      background: #f6f7fb;
+      border: 1px dashed #c9cede;
+      transition: max-width .3s var(--ease);
+    }
+
+    .frame .card {
+      padding: var(--pad);
+      border: 1px solid #6366f1;
+      border-radius: 10px;
+      background: #eef2ff;
+      color: #1e1b4b;
+      font-weight: 600;
+      font-size: var(--fs);
+      outline: 2px solid #6366f1;
+      outline-offset: 3px;
+    }
+
+    .frame .lab {
+      margin-top: 8px;
+      color: #5b6275;
+      font: 11px var(--mono);
+    }
+
+    .notes {
+      padding: 12px 14px;
+      border-radius: 10px;
+      background: #fff;
+      border: 1px solid #d9dde7;
+      max-width: 660px;
+    }
+
+    .notes h2 {
+      margin: 0 0 6px;
+      font-size: 12.5px;
+    }
+
+    .notes ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .notes li {
+      margin: 3px 0;
+    }
+  </style>
+  <style>
+    #panel {
+      position: relative;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.4;
+      border-left: 1px solid #0006;
+    }
+
+    #scroll {
+      height: 100%;
+      overflow: auto;
+      padding-bottom: 90px;
+    }
+
+    .sticky {
+      position: sticky;
+      top: 0;
+      z-index: 8;
+      background: var(--bg);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .ph {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 12px 12px 10px;
+    }
+
+    .tag {
+      font: 600 11px/1 var(--mono);
+      padding: 5px 7px;
+      border-radius: 6px;
+      background: var(--raised);
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .cchip {
+      font: 11px/1 var(--mono);
+      padding: 5px 7px;
+      border-radius: 6px;
+      background: var(--accent-soft);
+      color: var(--accent-text);
+      box-shadow: inset 0 0 0 1px var(--accent-line);
+    }
+
+    /* the strip */
+    .cond {
+      padding: 0 12px 10px;
+    }
+
+    .strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .st {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 26px;
+      padding: 0 9px;
+      border: 0;
+      border-radius: 99px;
+      background: transparent;
+      box-shadow: inset 0 0 0 1px var(--line2);
+      color: var(--dim);
+      font: 11px var(--mono);
+      cursor: pointer;
+      transition: background .15s, color .15s, box-shadow .15s;
+    }
+
+    .st:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .st.base {
+      font-family: var(--font);
+      font-weight: 600;
+    }
+
+    .st .n {
+      font-size: 9.5px;
+      padding: 0 5px;
+      border-radius: 99px;
+      background: oklch(100% 0 0 / 9%);
+      color: var(--dim);
+    }
+
+    .st .n.zero {
+      background: transparent;
+      box-shadow: inset 0 0 0 1px var(--line2);
+      color: var(--faint);
+    }
+
+    .st[aria-pressed='true'] {
+      background: var(--accent);
+      color: #fff;
+      box-shadow: none;
+    }
+
+    .st.size[aria-pressed='true'] {
+      background: var(--size-bg);
+      color: var(--size);
+      box-shadow: inset 0 0 0 1px var(--size);
+    }
+
+    .st.state[aria-pressed='true'] {
+      background: var(--state-bg);
+      color: var(--state);
+      box-shadow: inset 0 0 0 1px var(--state);
+    }
+
+    .st[aria-pressed='true'] .n {
+      background: oklch(100% 0 0 / 18%);
+      color: inherit;
+    }
+
+    .st.add {
+      color: var(--accent-text);
+      font-family: var(--font);
+    }
+
+    .st.off {
+      opacity: .55;
+    }
+
+    .st svg {
+      flex: none;
+    }
+
+    /* Design 4: the count pill says it. Grey: not on screen. Yellow: on screen and every value wins. */
+    .st.size.live[aria-pressed='true'] { color: var(--size); }
+    .st.off { opacity: .5; }
+    .st.off[aria-pressed='true'] { opacity: 1; }
+    .st.live .n { background: var(--live-ring); color: var(--live-ink); font-weight: 700; }
+    .st.live .n.zero { background: transparent; box-shadow: inset 0 0 0 1px var(--live-ring); color: var(--live-ring); }
+    .st .n s { text-decoration-thickness: 1.5px; }
+
+    /* 1: split count, winners in yellow, the beaten part grey and struck */
+    .v-1 .st.live .n.split { display: inline-flex; padding: 0; overflow: hidden; background: transparent; box-shadow: inset 0 0 0 1px var(--live-ring); }
+    .v-1 .st.live .n.split > * { padding: 0 5px; }
+    .v-1 .st.live .n.split .w { background: var(--live-ring); color: var(--live-ink); }
+    .v-1 .st.live .n.split .l { color: var(--dim); font-weight: 500; text-decoration: line-through; }
+
+    /* 2: won / declared, hollow until every value wins */
+    .v-2 .st.live .n.part { background: transparent; box-shadow: inset 0 0 0 1px var(--live-ring); color: var(--live-ring); }
+    .v-2 .st.live .n.part.none { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--live-ring) 55%, transparent); color: color-mix(in oklab, var(--live-ring) 70%, var(--dim)); }
+
+    /* 3: a corner badge for what is hidden; it opens the cascade of the first hidden value */
+    .stw { position: relative; display: inline-flex; }
+    .beat {
+      position: absolute; top: -6px; right: -5px; z-index: 1; height: 14px; min-width: 14px; padding: 0 4px;
+      border: 0; border-radius: 99px; background: var(--raised); color: var(--dim);
+      box-shadow: 0 0 0 1.5px var(--bg), inset 0 0 0 1px var(--line2); font: 600 8.5px/14px var(--mono); cursor: pointer;
+    }
+    .beat:hover { color: var(--text); box-shadow: 0 0 0 1.5px var(--bg), inset 0 0 0 1px var(--live-ring); }
+    .v-3 .strip { padding-top: 4px; row-gap: 9px; }
+    .v-3 .st.live .n.none { background: transparent; box-shadow: inset 0 0 0 1px var(--live-ring); color: var(--live-ring); }
+
+    /* Applied: the row's cascade button, and the "hidden by" tag that opens it too */
+    .row { position: relative; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) 22px !important; }
+    .dots { width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--faint); cursor: pointer; font: 700 12px/1 var(--font); }
+    .dots:hover, .dots[aria-expanded='true'] { background: var(--hover); color: var(--text); }
+    .row .nm span em.hid { background: transparent; box-shadow: inset 0 0 0 1px var(--line2); color: var(--faint); cursor: pointer; }
+    .row .nm span em.hid:hover { color: var(--text); box-shadow: inset 0 0 0 1px var(--live-ring); }
+    .row .nm span em.hid.out { box-shadow: none; cursor: default; }
+    .cat .sum s { color: var(--faint); text-decoration-color: var(--faint); }
+    /* The cascade menu (today's ladder: strongest first, "now" on the winner, hidden values struck) */
+    .pop {
+      position: absolute; left: -4px; right: -4px; top: calc(100% + 4px); z-index: 20; padding: 10px;
+      border-radius: 12px; background: var(--raised); box-shadow: 0 0 0 1px var(--line2), 0 18px 40px -12px #000c;
+    }
+    .pop .cap { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+    .pop .cap b { font: 600 11.5px var(--mono); }
+    .pop .cap span { color: var(--faint); font: 10px var(--mono); }
+    .pop .oh { display: flex; justify-content: space-between; color: var(--faint); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; padding: 0 6px 4px; }
+    .lad { display: grid; gap: 2px; }
+    .lr {
+      display: grid; grid-template-columns: 12px minmax(0, 1fr) auto 34px; align-items: center; gap: 7px;
+      min-height: 30px; padding: 3px 6px; border: 0; border-radius: 7px; background: transparent; color: var(--text);
+      text-align: left; font: inherit; cursor: pointer;
+    }
+    .lr:hover { background: var(--hover); }
+    .lr.on { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
+    .lr .rd { width: 10px; height: 10px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--line2); }
+    .lr.on .rd { box-shadow: inset 0 0 0 3px var(--accent); }
+    .lr .pl { display: flex; overflow: hidden; align-items: center; gap: 5px; min-width: 0; font: 10.5px var(--mono); color: var(--src); }
+    .lr .sz { white-space: nowrap; flex: none; padding: 0 5px; border-radius: 99px; background: var(--size-bg); color: var(--size); font-size: 9.5px; line-height: 14px; }
+    .lr .sz.base { background: transparent; box-shadow: inset 0 0 0 1px var(--line2); color: var(--dim); font-family: var(--font); }
+    .lr .sz.lit { box-shadow: inset 0 0 0 1px var(--live-ring); }
+    .lr .cv { font: 11px var(--mono); color: var(--text); white-space: nowrap; }
+    .lr.hid .cv { color: var(--dim); text-decoration: line-through; }
+    .lr.idle { opacity: .55; }
+    .lr.idle .cv { color: var(--faint); }
+    .lr .now { padding: 0 6px; border-radius: 99px; background: color-mix(in oklab, var(--size) 20%, var(--raised)); color: var(--size); font: 600 9.5px/15px var(--font); text-align: center; }
+    .lr .why { grid-column: 2 / -1; color: var(--faint); font-size: 10px; margin-top: -2px; }
+    .lr .why b { color: var(--dim); font: 500 10px var(--mono); }
+    .pop .res { margin: 6px 6px 0; font-size: 10.5px; color: var(--dim); }
+    .pop .res .ok { color: var(--size); font-weight: 600; }
+    .pop .res .ko { color: oklch(78% 0.12 40); font-weight: 600; }
+    .pop .idle-line { margin: 8px 6px 0; color: var(--faint); font-size: 10px; }
+    .pop .idle-line code { font: 10px var(--mono); color: var(--dim); }
+    .pop .sep { margin: 8px 6px 4px; color: var(--faint); font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; }
+
+    /* 3: a width rail per rung: where its query matches (outline), and where it wins (fill) */
+    .rail { position: relative; height: 8px; border-radius: 4px; background: var(--sunken); min-width: 84px; }
+    .rail i { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+    .rail i.m { box-shadow: inset 0 0 0 1px var(--line2); }
+    .rail i.w { background: var(--size); }
+    .rail i.w.base { background: var(--dim); }
+    .rail b { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--live-ring); border-radius: 1px; }
+    .v-3 .lr .rail { grid-column: 2; grid-row: 2; width: 160px; margin: 2px 0 3px; }
+    .v-3 .lr > span:empty:not(.rd) { display: none; }
+    .v-3 .lr .rd { grid-row: 1; grid-column: 1; } .v-3 .lr .pl { grid-row: 1; grid-column: 2; } .v-3 .lr .cv { grid-row: 1; grid-column: 3; } .v-3 .lr .now { grid-row: 1; grid-column: 4; }
+    .axis { display: flex; justify-content: space-between; width: 160px; margin-left: 25px; color: var(--faint); font: 8.5px var(--mono); }
+  </style>
+  <style>
+    /* the context line */
+    .ctx {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      font-size: 10.5px;
+      line-height: 1.45;
+      color: var(--dim);
+      background: color-mix(in oklab, var(--size-bg) 55%, transparent);
+    }
+
+    .ctx.base {
+      background: var(--accent-soft);
+    }
+
+    .ctx.state {
+      background: color-mix(in oklab, var(--state-bg) 55%, transparent);
+    }
+
+    .ctx code {
+      font: 10.5px var(--mono);
+      color: var(--text);
+    }
+
+    .ctx .txt {
+      flex: 1 1 160px;
+      min-width: 0;
+    }
+
+    .top {
+      display: grid;
+      gap: 8px;
+      padding: 10px 12px;
+      border-top: 1px solid var(--line);
+    }
+
+    .search {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      height: 32px;
+      padding: 0 9px;
+      border-radius: 8px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      color: var(--faint);
+    }
+
+    .search input {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      outline: none;
+    }
+
+    .viewrow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .vseg {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      flex: 1;
+      padding: 3px;
+      gap: 3px;
+      border-radius: 9px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+
+    .vseg button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      height: 28px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--dim);
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+
+    .vseg button[aria-pressed='true'] {
+      background: var(--raised);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--line2);
+    }
+
+    .vseg button[aria-pressed='true'] svg {
+      color: var(--accent-text);
+    }
+
+    /* cards, compact */
+    .pad12 {
+      padding: 12px;
+    }
+
+    .cats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .cat {
+      position: relative;
+      display: grid;
+      gap: 4px;
+      min-width: 0;
+      padding: 6px 6px 8px;
+      border-radius: 12px;
+      text-align: left;
+      border: 1px solid oklch(72% 0.12 var(--h) / 24%);
+      background: linear-gradient(180deg, oklch(25.5% 0.03 var(--h)), var(--raised) 62%);
+      transition: opacity .2s, filter .2s;
+    }
+
+    .cat.empty {
+      border-style: dashed;
+      border-color: var(--line2);
+      background: transparent;
+    }
+
+    .well {
+      height: 44px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(120% 120% at 20% 0%, oklch(36% 0.08 var(--h)), oklch(22% 0.04 var(--h)));
+      color: oklch(80% 0.13 var(--h));
+    }
+
+    .cat.empty .well {
+      filter: grayscale(.85);
+      opacity: .5;
+    }
+
+    .ct {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 2px;
+    }
+
+    .ic {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 5px;
+      background: oklch(32% 0.07 var(--h));
+      color: oklch(86% 0.12 var(--h));
+      flex: none;
+    }
+
+    .cat.empty .ic {
+      background: var(--hover);
+      color: var(--dim);
+    }
+
+    .cn {
+      flex: 1;
+      min-width: 0;
+      font-weight: 600;
+      font-size: 11.5px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .cat.empty .cn {
+      color: var(--dim);
+      font-weight: 500;
+    }
+
+    .count {
+      padding: 0 6px;
+      border-radius: 99px;
+      background: oklch(80% 0.12 var(--h));
+      color: oklch(22% 0.05 var(--h));
+      font-size: 9.5px;
+      font-weight: 650;
+      line-height: 15px;
+    }
+
+    .sum {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 3px;
+      color: var(--dim);
+      font: 10px var(--mono);
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    .sum i {
+      flex: none;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: oklch(80% 0.13 var(--h));
+    }
+
+    .cat.empty .sum {
+      color: var(--faint);
+      font-family: var(--font);
+    }
+
+    .cat.empty .sum i {
+      background: transparent;
+      box-shadow: inset 0 0 0 1.5px var(--faint);
+    }
+
+    /* what the picked size or state adds over Base */
+    .adds {
+      position: absolute;
+      top: 9px;
+      right: 9px;
+      padding: 1px 6px;
+      border-radius: 99px;
+      background: var(--size);
+      color: oklch(22% 0.05 150);
+      font: 700 9.5px var(--mono);
+      box-shadow: 0 0 0 2px var(--bg);
+    }
+
+    .cond-state .adds {
+      background: var(--state);
+      color: oklch(22% 0.05 300);
+    }
+
+    .cat.quiet {
+      opacity: .35;
+      filter: saturate(.4);
+    }
+
+    .cat.quiet .adds {
+      display: none;
+    }
+
+    .nothing {
+      grid-column: 1 / -1;
+      margin: 4px 0;
+      padding: 14px 12px;
+      border-radius: 10px;
+      border: 1px dashed var(--line2);
+      color: var(--dim);
+      font-size: 11px;
+      line-height: 1.5;
+      text-align: center;
+    }
+
+    .nothing b {
+      color: var(--text);
+      font-family: var(--mono);
+      font-weight: 500;
+    }
+  </style>
+  <style>
+    /* Applied */
+    .group {
+      padding: 4px 12px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .grp-h {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 32px;
+      font-weight: 600;
+    }
+
+    .grp-h .gw {
+      margin-left: auto;
+      color: var(--faint);
+      font: 400 10px var(--mono);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+    }
+
+    .row .nm {
+      display: grid;
+      min-width: 0;
+    }
+
+    .row .nm b {
+      font: 400 11px var(--mono);
+    }
+
+    .row .nm span {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font: 9.5px var(--mono);
+      color: var(--src);
+      overflow: hidden;
+      white-space: nowrap;
+    }
+
+    .row .nm span em {
+      font-style: normal;
+      padding: 0 5px;
+      border-radius: 99px;
+      font-size: 9px;
+      line-height: 13px;
+    }
+
+    .row .nm span em.size {
+      background: var(--size-bg);
+      color: var(--size);
+    }
+
+    .row .nm span em.state {
+      background: var(--state-bg);
+      color: var(--state);
+    }
+
+    .row .nm span em.many {
+      background: color-mix(in oklab, var(--shared) 20%, var(--raised));
+      color: var(--shared);
+    }
+
+    .val {
+      min-width: 0;
+      height: 26px;
+      padding: 0 7px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--sunken);
+      box-shadow: inset 0 0 0 1px var(--line);
+      color: var(--text);
+      font: 11px var(--mono);
+      outline: none;
+    }
+
+    .row.base .val {
+      color: var(--dim);
+    }
+
+    .row.added .val {
+      box-shadow: inset 0 0 0 1px var(--size);
+    }
+
+    .cond-state .row.added .val {
+      box-shadow: inset 0 0 0 1px var(--state);
+    }
+
+    .row.over .val {
+      text-decoration: line-through;
+      color: var(--faint);
+    }
+
+    .switcher {
+      position: fixed;
+      left: calc((100% - 340px) / 2);
+      bottom: 18px;
+      transform: translateX(-50%);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: #fde047;
+      color: #111;
+      border-radius: 999px;
+      padding: 5px;
+      box-shadow: 0 10px 30px -8px rgb(0 0 0 / 50%), 0 0 0 1px rgb(0 0 0 / 20%);
+      font: 600 12.5px/1 system-ui, sans-serif;
+    }
+
+    .switcher button {
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      border: 0;
+      background: #111;
+      color: #fde047;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .switcher .lab {
+      padding: 0 12px;
+      min-width: 380px;
+      text-align: center;
+    }
+
+    .switcher .lab small {
+      display: block;
+      font-weight: 500;
+      font-size: 10.5px;
+      opacity: .7;
+      margin-top: 3px;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <h1>On screen, yet beaten: who wins is in the cascade menu</h1>
+    <p>Pick <b>1024px</b>: three queries match, and two of them lose some or all of their values to ≥1024px. The strip
+      marks it on the count; Applied's <b>⋯</b> (or a <b>hidden by</b> tag) opens the cascade menu, strongest first.</p>
+    <div class="vp" role="group" aria-label="Preview width (the toolbar's viewport menu)" id="vp"></div>
+    <div class="frame" id="frame">
+      <div class="card">Pro — everything a growing team needs.</div>
+      <div class="lab" id="flab"></div>
+    </div>
+    <div class="notes" id="notes"></div>
+  </main>
+  <aside id="panel" aria-label="Styles panel (prototype)"></aside>
+  <div class="switcher" role="group" aria-label="Prototype variant switcher">
+    <button type="button" id="prev" aria-label="Previous variant">←</button>
+    <div class="lab" id="vlabel" aria-live="polite"></div>
+    <button type="button" id="next" aria-label="Next variant">→</button>
+  </div>
+  <script>
+    const $ = (s, r = document) => r.querySelector(s);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const panel = $('#panel');
+
+    const VARIANTS = [
+      { k: '1', label: '1 — Split count, ladder', note: 'The count splits into what wins (yellow) and what is hidden (struck); the cascade menu is today’s ladder' },
+      { k: '2', label: '2 — Won / declared, ladder with reasons', note: 'The count reads 1/2 until every value wins; each rung says why it wins or loses' },
+      { k: '3', label: '3 — Corner badge, width rails', note: 'A small badge counts what is hidden and opens its cascade; each rung draws where it wins across widths' },
+    ];
+    const COMMON = [
+      'Design 4: the count turns yellow when the query is on screen. Try <b>1024px</b>: ≥768px, 768–1279px and ≥1024px all match, but <b>768–1279px</b> only holds a padding that ≥1024px beats, and <b>≥768px</b> keeps only its border-radius.',
+      'Which query wins is told in the cascade menu: open it with <b>⋯</b> on a row in Applied, or with a <b>hidden by</b> tag. Picking a rung edits there.',
+    ];
+    const NOTES = {
+      1: ['On a matching query, the count splits: <b>1</b> in yellow wins, <b>1</b> struck in grey is declared but beaten. All beaten: only the struck part, in a yellow outline.', 'The cascade menu is today’s ladder: strongest first, <b>now</b> on the winner, beaten values struck; queries that do not match are listed under it, “Not on screen at 1024px”.', ...COMMON],
+      2: ['On a matching query, the count reads <b>won/declared</b> (1/2) in a hollow yellow pill; it fills only when every value wins. <b>0/1</b> fades: declared, on screen, and beaten everywhere.', 'In the ladder, each rung says why: <b>wins — last matching rule</b>, <b>beaten by ≥1024px — same selector, later in the stylesheet</b>, <b>not on screen — 1023px and narrower</b>. Non-matching rungs stay in the ladder, dimmed, so the whole order reads at once.', ...COMMON],
+      3: ['The count stays design 4’s; a small corner badge <b>−1</b> says how many of its values are hidden. Clicking it opens Applied on that query with the first hidden value’s cascade.', 'Each rung of the ladder carries a width rail (0–1600px): outlined where its query matches, filled where it wins, with the preview width in yellow. For padding, one look shows 768–1279px winning only from 768 to 1023px, and ≥768px never winning at all.', ...COMMON],
+    };
+
+    const ICON = {
+      layout: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>',
+      flex: '<rect x="3" y="6" width="5" height="12" rx="1"/><rect x="10" y="6" width="5" height="12" rx="1"/><rect x="17" y="6" width="4" height="12" rx="1"/>',
+      spacing: '<rect x="3" y="3" width="18" height="18" rx="2"/><rect x="8" y="8" width="8" height="8" rx="1"/>',
+      size: '<path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>',
+      text: '<path d="M4 7V4h16v3M9 20h6M12 4v16"/>',
+      background: '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
+      border: '<rect x="3" y="3" width="18" height="18" rx="6"/>',
+      effects: '<rect x="3" y="3" width="14" height="14" rx="2"/><path d="M21 7v12a2 2 0 0 1-2 2H7"/>',
+      motion: '<path d="M5 12h9M5 7h5M5 17h5"/><circle cx="18" cy="12" r="3"/>',
+      interaction: '<path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/>',
+      parent: '<rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 3"/><rect x="7" y="9" width="10" height="6" rx="1"/>',
+      other: '<path d="M8 3H6a2 2 0 0 0-2 2v4l-2 3 2 3v4a2 2 0 0 0 2 2h2M16 3h2a2 2 0 0 1 2 2v4l2 3-2 3v4a2 2 0 0 1-2 2h-2"/>',
+      grid: '<rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/>',
+      list: '<path d="M8 6h13M8 12h13M8 18h13"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
+      search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+      screen: '<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>',
+    };
+    const svg = (k, s = 12) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[k]}</svg>`;
+
+    const CARDS = [
+      ['layout', 'Layout', 255], ['flex', 'Flex', 228], ['spacing', 'Spacing', 160], ['size', 'Size', 200], ['text', 'Text style', 285],
+      ['background', 'Background', 330], ['border', 'Border', 30], ['effects', 'Shadow & effects', 70], ['motion', 'Motion', 305],
+      ['interaction', 'Interaction', 100], ['parent', 'In its parent', 180], ['other', 'Other', 240],
+    ].map(([id, name, hue]) => ({ id, name, hue }));
+    /** Media queries in source order (the cascade order). min/max in px. */
+    const SIZES = [
+      { key: 'narrow', max: 1023, label: '<1024px' },
+      { key: 'tablet', min: 768, label: '≥768px' },
+      { key: 'mid', min: 768, max: 1279, label: '768–1279px' },
+      { key: 'desktop', min: 1024, label: '≥1024px' },
+      { key: 'wide', min: 1280, label: '≥1280px' },
+    ];
+    const HOVER = ':hover';
+    /** [condition, card, property, value, source, reach] */
+    const DECLS = [
+      ['base', 'layout', 'display', 'flex', '.card.featured', 1], ['base', 'flex', 'flex-direction', 'column', '.card.featured', 1],
+      ['base', 'spacing', 'padding', '16px', '.card', 3], ['base', 'text', 'font-size', '14px', '.card', 3],
+      ['base', 'text', 'font-weight', '600', '.featured', 1], ['base', 'text', 'color', '#1e1b4b', '.featured', 1],
+      ['base', 'background', 'background', '#eef2ff', '.featured', 1], ['base', 'border', 'border', '1px solid #6366f1', '.card', 3],
+      ['base', 'border', 'border-radius', '10px', '.card', 3], ['base', 'effects', 'box-shadow', '0 1px 2px rgb(0 0 0 / 6%)', '.promo .card', 3],
+      ['base', 'motion', 'transition', 'transform 200ms ease', '.card', 3],
+      ['narrow', 'text', 'line-height', '1.4', '.card', 3],
+      ['tablet', 'spacing', 'padding', '20px 28px', '.card', 3], ['tablet', 'border', 'border-radius', '12px', '.card', 3],
+      ['mid', 'spacing', 'padding', '18px 24px', '.card', 3],
+      ['desktop', 'text', 'font-size', '16px', '.featured', 1], ['desktop', 'spacing', 'padding', '24px 32px', '.card', 3],
+      [HOVER, 'background', 'background', '#e0e7ff', '.featured:hover', 1], [HOVER, 'effects', 'transform', 'translateY(-2px)', '.featured:hover', 1],
+    ].map(([cond, card, prop, value, src, reach]) => ({ cond, card, prop, value, src, reach }));
+    const WIDTHS = [375, 768, 1024, 1500];
+
+    const params = new URLSearchParams(location.search);
+    let variant = VARIANTS.some((v) => v.k === params.get('variant')) ? params.get('variant') : '1';
+    const S = { width: Number(params.get('w')) || 1500, cond: params.get('cond') || 'base', view: params.get('view') || 'cards', pop: params.get('pop') || null };
+  </script>
+  <script>
+    const sizeOf = (key) => SIZES.find((one) => one.key === key);
+    const isSize = (cond) => Boolean(sizeOf(cond));
+    const label = (cond) => (cond === 'base' ? 'Base' : cond === HOVER ? ':hover' : sizeOf(cond).label);
+    const query = (cond) => { const z = sizeOf(cond); return [z.min != null && `(min-width: ${z.min}px)`, z.max != null && `(max-width: ${z.max}px)`].filter(Boolean).join(' and '); };
+    /** The query matches at the preview width. Base always applies; :hover only under the pointer. */
+    const matches = (cond, w = S.width) => cond === 'base' || (isSize(cond) && (sizeOf(cond).min ?? 0) <= w && w <= (sizeOf(cond).max ?? Infinity));
+    const range = (cond) => { const z = sizeOf(cond); return z.min != null && z.max != null ? `${z.min}–${z.max}px` : z.min != null ? `${z.min}px and wider` : `${z.max}px and narrower`; };
+    const lit = (cond) => isSize(cond) && matches(cond);
+    const litSizes = () => SIZES.filter((one) => matches(one.key)).map((one) => one.key);
+    const rank = (cond) => (cond === 'base' ? 0 : cond === HOVER ? 99 : SIZES.findIndex((one) => one.key === cond) + 1);
+    const countAt = (cond) => DECLS.filter((d) => d.cond === cond).length;
+    /** What the picked condition holds: Base's own values, or only what a size or a state adds. */
+    const added = (cond = S.cond) => DECLS.filter((d) => d.cond === cond);
+    const lensOn = () => S.cond !== 'base';
+    /** The later matching query that beats this value on screen, if any. */
+    const hiddenBy = (d) => (matches(d.cond) ? DECLS.filter((o) => o.prop === d.prop && matches(o.cond) && rank(o.cond) > rank(d.cond)).sort((a, b) => rank(b.cond) - rank(a.cond))[0]?.cond : null);
+    /** On screen now: Base and every matching query, last one wins. */
+    function screen() {
+      const win = new Map();
+      for (const d of DECLS.filter((x) => matches(x.cond)).sort((a, b) => rank(a.cond) - rank(b.cond))) win.set(d.prop, d);
+      return [...win.values()];
+    }
+    /** Of what a query declares, what loses on screen now (a later matching query has the same property). */
+    const beaten = (cond) => (matches(cond) ? added(cond).filter((d) => hiddenBy(d)) : []);
+    function count(cond) {
+      const n = countAt(cond);
+      const lost = lit(cond) ? beaten(cond).length : 0;
+      const won = n - lost;
+      if (!lit(cond) || !lost) return `<span class="n ${n ? '' : 'zero'}">${n}</span>`;
+      const tip = `${won} of ${n} win${won === 1 ? 's' : ''} on screen; ${lost} hidden by a later query`;
+      if (variant === '1') return `<span class="n split" title="${tip}">${won ? `<span class="w">${won}</span>` : ''}<span class="l">${lost}</span></span>`;
+      if (variant === '2') return `<span class="n part ${won ? '' : 'none'}" title="${tip}">${won}/${n}</span>`;
+      return `<span class="n ${won ? '' : 'none'}">${n}</span>`;
+    }
+    function chip(cond) {
+      const n = countAt(cond);
+      const kind = cond === 'base' ? 'base' : cond === HOVER ? 'state' : 'size';
+      const on = lit(cond);
+      const lost = on ? beaten(cond).length : 0;
+      const tip = cond === 'base' ? 'Base: what every state starts from'
+        : isSize(cond) ? `${label(cond)} — @media ${query(cond)}: ${on ? `on screen at ${S.width}px${lost ? `, ${lost} of ${n} hidden by a later query` : ''}` : `not on screen at ${S.width}px`}${n ? '' : ', nothing written yet'}`
+        : ':hover — applies under the pointer';
+      const btn = `<button type="button" class="st ${kind} ${on ? 'live' : ''} ${isSize(cond) && !on ? 'off' : ''}" aria-pressed="${S.cond === cond}" data-act="cond" data-c="${cond}" title="${esc(tip)}">${label(cond)}${count(cond)}</button>`;
+      if (variant !== '3' || !lost) return btn;
+      return `<span class="stw">${btn}<button type="button" class="beat" data-act="beat" data-c="${cond}" title="${lost} of its values hidden on screen: see which query wins" aria-label="${lost} hidden at ${label(cond)}: open the cascade">−${lost}</button></span>`;
+    }
+    function strip() {
+      // Every query written at, and every one that matches now even when empty: one click edits there.
+      const sizes = SIZES.filter((one) => countAt(one.key) || matches(one.key)).map((one) => one.key);
+      const add = '<button type="button" class="st add" title="Add a state, a size or a pseudo-element">+</button>';
+      return `<div class="strip" role="group" aria-label="Where edits go: Base, a size or a state">${['base', ...sizes, HOVER].map(chip).join('')}${add}</div>${ctx()}`;
+    }
+    function ctx() {
+      const c = S.cond;
+      const on = litSizes();
+      const list = (keys) => keys.map((k) => `<code>${label(k)}</code>`).join(', ');
+      const hid = added(c).filter((d) => hiddenBy(d));
+      const hidTxt = hid.length ? ` ${hid.length} of its values ${hid.length > 1 ? 'are' : 'is'} hidden by ${list([...new Set(hid.map(hiddenBy))].sort((a, b) => rank(a) - rank(b)))}.` : '';
+      if (c === 'base') {
+        const over = on.length ? ` On screen at ${S.width}px, ${list(on)} ${on.length > 1 ? 'stack' : 'sits'} on top of it.` : ` Nothing else is on screen at ${S.width}px.`;
+        return `<div class="ctx base"><span class="txt">Editing <b>Base</b>, what every state starts from.${over}${hidTxt}</span></div>`;
+      }
+      if (c === HOVER) return `<div class="ctx state"><span class="txt">Editing <code>:hover</code>, showing only what it adds (${added().length}).</span></div>`;
+      const others = on.filter((k) => k !== c);
+      const where = matches(c)
+        ? ` On screen at ${S.width}px${others.length ? `, with ${list(others)}` : ''}.${hidTxt}`
+        : ` <b>Not</b> on screen at ${S.width}px: edits here show at ${range(c)}.`;
+      return `<div class="ctx"><span class="txt">Editing only <code>@media ${query(c)}</code>, showing what it adds (${added().length}).${where}</span></div>`;
+    }
+  </script>
+  <script>
+    function viewRow() {
+      return `<div class="viewrow"><div class="vseg" role="group" aria-label="View">
+    <button type="button" data-act="view" data-v="cards" aria-pressed="${S.view === 'cards'}">${svg('grid', 13)}Cards</button>
+    <button type="button" data-act="view" data-v="applied" aria-pressed="${S.view === 'applied'}">${svg('list', 13)}Applied</button></div></div>`;
+    }
+    function cardTile(card) {
+      const shown = added().filter((d) => d.card === card.id);
+      const quiet = lensOn() && !shown.length;
+      const empty = !shown.length && !quiet;
+      const vals = shown.map((d) => { const v = esc(d.value.split(' ')[0]); const by = hiddenBy(d); return by ? `<s title="Hidden on screen by ${esc(label(by))}">${v}</s>` : v; }).join(' · ');
+      return `<div class="cat ${empty ? 'empty' : ''} ${quiet ? 'quiet' : ''}" style="--h:${card.hue}">
+    <span class="well">${svg(card.id, 18)}</span>
+    <span class="ct"><span class="ic">${svg(card.id, 11)}</span><span class="cn">${card.name}</span>${shown.length ? `<span class="count">${shown.length}</span>` : ''}</span>
+    <span class="sum"><i></i>${shown.length ? vals : quiet ? `Nothing at ${label(S.cond)}` : 'Empty'}</span></div>`;
+    }
+    function cardsView() {
+      const none = lensOn() && !added().length
+        ? `<p class="nothing">Nothing written at <b>${label(S.cond)}</b> yet. A value typed in a card now goes to <b>.featured ${S.cond === HOVER ? ':hover' : `@media ${query(S.cond)}`}</b>.</p>` : '';
+      return `<div class="pad12 cond-${S.cond === HOVER ? 'state' : 'size'}"><div class="cats">${none}${CARDS.map(cardTile).join('')}</div></div>`;
+    }
+/** The winner of a property at a width: the last matching declaration in cascade order. */
+const winnerAt = (prop, w) => DECLS.filter((d) => d.prop === prop && d.cond !== HOVER && matches(d.cond, w)).sort((a, b) => rank(b.cond) - rank(a.cond))[0];
+/** Width segments [from, to) in px where test(w) holds, sampled every 4px up to 1600. */
+function segs(test) {
+  const out = [];
+  for (let w = 0; w <= 1600; w += 4) {
+    const ok = test(w);
+    const last = out[out.length - 1];
+    if (ok && last && last[1] === w) last[1] = w + 4; else if (ok) out.push([w, w + 4]);
+  }
+  return out;
+}
+const pct = (w) => `${Math.min(w, 1600) / 16}%`;
+function rail(d) {
+  const m = segs((w) => matches(d.cond, w)).map(([a, b]) => `<i class="m" style="left:${pct(a)};width:calc(${pct(b)} - ${pct(a)})"></i>`).join('');
+  const w = segs((x) => winnerAt(d.prop, x) === d).map(([a, b]) => `<i class="w ${d.cond === 'base' ? 'base' : ''}" style="left:${pct(a)};width:calc(${pct(b)} - ${pct(a)})"></i>`).join('');
+  return `<span class="rail" title="${esc(label(d.cond))}: matches on the outline, wins on the fill">${m}${w}<b style="left:${pct(S.width)}"></b></span>`;
+}
+function why(d, win) {
+  if (!matches(d.cond)) return `not on screen — ${range(d.cond)}`;
+  if (win === d) return d.cond === 'base' ? 'wins — no query on screen sets it' : 'wins — the last matching rule for it';
+  const by = hiddenBy(d);
+  const same = DECLS.find((o) => o.cond === by && o.prop === d.prop)?.src === d.src;
+  return `beaten by <b>${label(by)}</b> — ${same ? 'same selector, later in the stylesheet' : 'later in the stylesheet'}`;
+}
+function ladder(prop) {
+  const all = DECLS.filter((d) => d.prop === prop && d.cond !== HOVER);
+  const on = all.filter((d) => matches(d.cond)).sort((a, b) => rank(b.cond) - rank(a.cond));
+  const off = all.filter((d) => !matches(d.cond));
+  const win = on[0];
+  // The pressed query gets a rung even when it holds nothing for this property: a value there is one click away.
+  const here = S.cond !== HOVER && !all.some((d) => d.cond === S.cond) ? { cond: S.cond, prop, value: '', src: all[0]?.src ?? '.card', empty: true } : null;
+  const rows = [...on, ...(variant === '1' ? [] : off)];
+  if (here) rows.splice(Math.max(0, matches(here.cond) ? rows.filter((d) => matches(d.cond) && rank(d.cond) > rank(here.cond)).length : rows.length), 0, here);
+  const rung = (d) => {
+    const tone = d.empty ? '' : !matches(d.cond) ? 'idle' : d === win ? 'win' : 'hid';
+    const sz = d.cond === 'base' ? '<span class="sz base">Base</span>' : `<span class="sz ${lit(d.cond) ? 'lit' : ''}">${label(d.cond)}</span>`;
+    const line = variant === '2' ? `<span class="why">${d.empty ? `empty — ${matches(d.cond) ? 'a value here would apply' : 'a value here would not show at this width'}` : why(d, win)}</span>` : '';
+    return `<button type="button" class="lr ${tone} ${S.cond === d.cond ? 'on' : ''}" role="radio" aria-checked="${S.cond === d.cond}" data-act="rung" data-c="${d.cond}" title="${d.empty ? '' : esc(why(d, win).replace(/<\/?b>/g, ''))}">
+          <span class="rd"></span><span class="pl">${esc(d.src)}${sz}</span>${variant === '3' && !d.empty ? rail(d) : variant === '3' ? '<span></span>' : ''}<span class="cv">${d.empty ? '—' : esc(d.value)}</span>${d === win ? '<span class="now">now</span>' : '<span></span>'}${line}</button>`;
+  };
+  const picked = all.find((d) => d.cond === S.cond) ?? here;
+  let res = '';
+  if (picked && variant !== '3') {
+    const top = picked.empty ? win : hiddenBy(picked) ? { cond: hiddenBy(picked) } : null;
+    const applies = picked.empty ? !win || rank(picked.cond) > rank(win.cond) : picked === win;
+    const below = picked.empty ? win : on[1];
+    res = `<p class="res">${!matches(picked.cond) ? `<span class="ko">Not on screen at ${S.width}px</span>: shows at ${range(picked.cond)}.`
+      : applies ? `<span class="ok">${picked.empty ? 'A value here will apply' : 'Applies'}</span>${below ? `, over <b>${label(below.cond)}</b>` : ''}.`
+        : `<span class="ko">${picked.empty ? 'A value here will be hidden by' : 'Hidden by'} <b>${label(top.cond)}</b></span>.`}</p>`;
+  }
+  const idle = variant === '1' && off.length ? `<p class="idle-line">Not on screen at ${S.width}px: ${off.map((d) => `<code>${label(d.cond)} ${esc(d.value)}</code>`).join(', ')}</p>` : '';
+  const axis = variant === '3' ? '<div class="axis"><i>0</i><i>800</i><i>1600px</i></div>' : '';
+  return `<div class="pop" role="dialog" aria-label="Cascade for ${prop}"><div class="cap"><b>${prop}</b><span>at ${S.width}px</span></div>
+        <div class="oh"><span>Strongest first</span><span>applies</span></div>${axis}<div class="lad" role="radiogroup" aria-label="Where ${prop} is written">${rows.map(rung).join('')}</div>${res}${idle}</div>`;
+}
+function appliedView() {
+  const list = added();
+  const rows = CARDS.map((card) => {
+    const mine = list.filter((d) => d.card === card.id);
+    if (!mine.length) return '';
+    return `<div class="group"><div class="grp-h" style="--h:${card.hue}"><span class="ic">${svg(card.id, 11)}</span>${card.name}<span class="gw">${mine.length}</span></div>
+      ${mine.map((d) => {
+      const by = hiddenBy(d);
+      const tag = d.cond === 'base' ? '' : `<em class="${d.cond === HOVER ? 'state' : 'size'}">${label(d.cond)}</em>`;
+      const note = by ? `<em class="hid" data-act="pop" data-p="${d.prop}" title="On screen, ${esc(label(by))} wins: open the cascade">hidden by ${label(by)}</em>`
+        : isSize(d.cond) && !matches(d.cond) ? `<em class="hid out">not on screen</em>` : '';
+      const open = S.pop === d.prop;
+      return `<div class="row ${by ? 'over' : d.cond !== 'base' ? 'added' : ''}"><span class="nm"><b>${d.prop}</b><span>${esc(d.src.replace(':hover', ''))}${tag}${note}</span></span><input class="val" value="${esc(d.value)}" aria-label="${d.prop}">
+            <button type="button" class="dots" data-act="pop" data-p="${d.prop}" aria-expanded="${open}" title="Cascade: where ${d.prop} is written, and what wins">⋯</button>${open ? ladder(d.prop) : ''}</div>`;
+    }).join('')}</div>`;
+  }).join('');
+  // A rung picked in the menu can be a query with nothing for the property yet: the row stays, empty, to write there.
+  const ghost = S.pop && !list.some((d) => d.prop === S.pop)
+    ? `<div class="group"><div class="row added"><span class="nm"><b>${S.pop}</b><span>${esc(DECLS.find((d) => d.prop === S.pop)?.src ?? '')}<em class="size">${label(S.cond)}</em><em class="hid out">empty</em></span></span><input class="val" placeholder="${esc(winnerAt(S.pop, S.width)?.value ?? '')}" aria-label="${S.pop}">
+            <button type="button" class="dots" data-act="pop" data-p="${S.pop}" aria-expanded="true">⋯</button>${ladder(S.pop)}</div></div>` : '';
+    return `<div class="cond-${S.cond === HOVER ? 'state' : 'size'}">${ghost}${rows || ghost ? rows : `<p class="nothing" style="margin:12px">Nothing written at <b>${label(S.cond)}</b> yet.</p>`}</div>`;
+    }
+    function render() {
+      const top = $('#scroll')?.scrollTop ?? 0;
+      panel.className = `v-${variant}`;
+      panel.innerHTML = `<div id="scroll"><div class="sticky"><div class="ph"><span class="tag">div</span><span class="cchip">.card</span><span class="cchip">.featured</span></div>
+    <div class="cond">${strip()}</div>
+    <div class="top"><label class="search">${svg('search', 13)}<input placeholder="Search properties, values, selectors…" aria-label="Search styles"></label>${viewRow()}</div></div>
+    ${S.view === 'applied' ? appliedView() : cardsView()}</div>`;
+      $('#scroll').scrollTop = top;
+      // The page side: the preview width, and the element as it is drawn at it.
+      $('#vp').innerHTML = WIDTHS.map((w) => `<button type="button" data-w="${w}" aria-pressed="${S.width === w}">${w}px</button>`).join('');
+      const win = screen();
+      const val = (p) => win.find((d) => d.prop === p)?.value;
+      const frame = $('#frame');
+      frame.style.maxWidth = `${Math.round(Math.min(S.width, 1500) / 1500 * 100)}%`;
+      frame.style.setProperty('--pad', val('padding'));
+      frame.style.setProperty('--fs', val('font-size'));
+      const on = litSizes();
+      $('#flab').textContent = `${S.width}px · on screen: Base${on.map((k) => ` + ${label(k)}`).join('')} · padding ${val('padding')} · font-size ${val('font-size')}`;
+      const v = VARIANTS.find((x) => x.k === variant);
+      $('#vlabel').innerHTML = `${esc(v.label)}<small>${esc(v.note)}</small>`;
+      $('#notes').innerHTML = `<h2>${esc(v.label)}</h2><ul>${NOTES[variant].map((x) => `<li>${x}</li>`).join('')}</ul>`;
+    }
+    panel.addEventListener('click', (e) => {
+      const a = e.target.closest('[data-act]');
+      if (!a) { if (!e.target.closest('.pop') && S.pop) { S.pop = null; render(); } return; }
+      if (a.disabled) return;
+      const act = a.dataset.act;
+      if (act === 'cond') S.cond = a.dataset.c;
+      if (act === 'view') { S.view = a.dataset.v; S.pop = null; }
+      if (act === 'pop') S.pop = S.pop === a.dataset.p ? null : a.dataset.p;
+      // A rung edits there; the row it was opened from may then belong to another query, so the menu stays on its property.
+      if (act === 'rung') S.cond = a.dataset.c;
+      if (act === 'beat') { S.cond = a.dataset.c; S.view = 'applied'; S.pop = beaten(a.dataset.c)[0]?.prop ?? null; }
+      if (act === 'cond' && S.pop && !added().some((d) => d.prop === S.pop)) S.pop = null;
+      render();
+    });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.pop) { S.pop = null; render(); } });
+    // A new preview width leaves the strip where it was: Base stays Base; only the marks move.
+    $('#vp').addEventListener('click', (e) => { const b = e.target.closest('[data-w]'); if (b) { S.width = Number(b.dataset.w); render(); } });
+    function setVariant(k) { variant = k; const u = new URL(location.href); u.searchParams.set('variant', k); history.replaceState(null, '', u); render(); }
+    const cycle = (step) => setVariant(VARIANTS[(VARIANTS.findIndex((v) => v.k === variant) + step + VARIANTS.length) % VARIANTS.length].k);
+    document.addEventListener('keydown', (e) => {
+      const t = document.activeElement;
+      if (t && (t.matches('input, textarea, select') || t.isContentEditable)) return;
+      if (e.key === 'ArrowLeft') cycle(-1);
+      if (e.key === 'ArrowRight') cycle(1);
+    });
+    $('#prev').addEventListener('click', () => cycle(-1));
+    $('#next').addEventListener('click', () => cycle(1));
+    render();
+    if (params.has('shot')) setTimeout(() => { const o = document.createElement('div'); o.id = 'out'; o.hidden = true; o.textContent = 'RESULTS:{}:END'; document.body.append(o); }, 600);
+  </script>
+</body>
+
+</html>

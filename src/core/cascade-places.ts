@@ -12,6 +12,7 @@ import {
 import { toRecord } from './declaration-list.js';
 import type { AddDestination } from './save-plan.js';
 import { specificityOf } from './specificity.js';
+import { mediaApplies } from './viewport.js';
 
 /**
  * The places one property can be written for one element under one condition: the rungs of the
@@ -90,14 +91,19 @@ export function conditionMedia(model: ElementModel, media: string): string | nul
 }
 
 /**
- * The cascade a condition is read under: a size at its slot's width, another media query taken to
- * hold, a state in its state. So the ladder ranks what applies when the condition is in effect.
+ * The cascade a condition is read under: a size on screen at the width the page is drawn at, a size
+ * that is not at its slot's width, another media query taken to hold, a state in its state. So the
+ * ladder ranks what applies when the condition is in effect, and for a size on screen what applies
+ * on screen. Read at its slot's width instead, ≥768px picked while previewing 1024px ranked its own
+ * padding "now" and "Applies" while ≥1024px's was the one drawn, and the row said it was hidden.
  */
 export function conditionContext(model: ElementModel, cond: PlaceCondition): CascadeContext {
   const state = cond.state ? { state: cond.state } : {};
   if (cond.media === 'base') return { width: null, ...state };
   if (cond.media.startsWith('other:')) return { width: null, media: cond.media.slice('other:'.length), ...state };
-  return { width: model.slots().find((one) => one.key === cond.media)?.at ?? null, ...state };
+  const slot = model.slots().find((one) => one.key === cond.media);
+  if (slot && mediaApplies(slot.media, null)) return { width: null, ...state };
+  return { width: slot?.at ?? null, ...state };
 }
 
 /** Inline style is a place only at Element: a size, a state or a pseudo-element cannot be inline. */

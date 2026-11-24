@@ -83,6 +83,8 @@ import {
   targetOf,
   rowCondition,
   scopeContext,
+  scopeOfCondition,
+  ownList,
   type RowPlace,
   type RowSpec,
 } from './styles/property-row.js';
@@ -352,16 +354,6 @@ const VIEWS: SegmentOption[] = [
 const PANEL_STRIP = 'panel';
 /** On the panel's strip, pseudo-elements are conditions and sizes off the previewed width stay, dimmed. */
 const STRIP_OPTIONS = { pseudo: 'condition', offWidth: 'dim' } as const;
-
-/** The condition picked on the strip, as the scope every row and rich editor reads and writes under. */
-function scopeOfCondition(key: string): RowScope {
-  if (key === 'base') return { kind: 'element' };
-  const { media, state } = conditionParts(key);
-  if (!state) return { kind: 'size', slot: media };
-  // A pseudo-element at no media reads any of its rules in effect now (readRow).
-  if (isPseudoElement(state) && media === 'base') return { kind: 'state', state };
-  return { kind: 'state', state, slot: media };
-}
 
 /**
  * The card a property shows in for this render: the first visible card listing it now, else
@@ -1105,7 +1097,7 @@ export class HeoStylesPanel extends HeoElement {
       ${selectionNotice(this.editor.selection.length, el)}
       <div class="cond">
         ${this.#renderStrip(model, host, strip)}
-        ${this.#renderContextLine(model, strip.picked, cards)}
+        ${this.#renderContextLine(model, strip.picked, cards, strip.chips)}
       </div>
       <div class="top">
         <heo-search-field
@@ -1162,29 +1154,32 @@ export class HeoStylesPanel extends HeoElement {
    * while it is empty (the size a preview follows). The pick is the hand pick, else the previewed
    * width's size (R13).
    */
-  #strip(model: ElementModel, previewWidth: number | null): { chips: BarChip[]; picked: string } {
-    const wanted = this.ui.cond ?? previewSlot(model, previewWidth);
-    const { chips } = barConditions(
+  #strip(model: ElementModel, previewWidth: number | null): { chips: BarChip[]; picked: string; base: number } {
+    // Base, whatever the width: a preview shows a size, it does not pick where edits go.
+    const wanted = this.ui.cond ?? 'base';
+    // The size the previewed width shows keeps its chip even with nothing written there: one press edits there.
+    const shows = previewSlot(model, previewWidth);
+    const { chips, count } = barConditions(
       model,
       model.entries,
       previewWidth,
-      [...(this.ui.otherSlots.get(PANEL_STRIP) ?? []), wanted],
+      [...(this.ui.otherSlots.get(PANEL_STRIP) ?? []), wanted, ...(shows === 'base' ? [] : [shows])],
       STRIP_OPTIONS,
     );
     const picked = wanted !== 'base' && chips.some((chip) => chip.key === wanted) ? wanted : 'base';
-    return { chips, picked };
+    // Base counts the style attribute's declarations too: the panel is the element's, not a rule's.
+    return { chips, picked, base: count('base') + model.inline.length };
   }
 
-  #renderStrip(model: ElementModel, host: StylesHost, strip: { chips: BarChip[]; picked: string }): TemplateResult {
+  #renderStrip(model: ElementModel, host: StylesHost, strip: { chips: BarChip[]; picked: string; base: number }): TemplateResult {
     const { chips, picked } = strip;
     const menuId = `strip-${PANEL_STRIP}`;
     const draft = this.ui.mediaDraft?.owner === PANEL_STRIP ? this.ui.mediaDraft : null;
     return renderConditionBar({
       owner: PANEL_STRIP,
       picked,
-      alwaysLabel: 'Element',
-      alwaysCount: model.appliedProperties().length,
-      alwaysTitle: 'The element itself, as it renders now',
+      alwaysCount: strip.base,
+      alwaysTitle: 'Base: what every state starts from',
       chips,
       remaining: remainingConditions(model, chips.map((chip) => chip.key), host.previewWidth, picked, STRIP_OPTIONS),
       menuOpen: this.ui.menu?.id === menuId,
@@ -1217,7 +1212,7 @@ export class HeoStylesPanel extends HeoElement {
   }
 
   /** One line under the strip for the picked condition: what is being styled, and whether it shows now. */
-  #renderContextLine(model: ElementModel, picked: string, cards: CardRender): TemplateResult | typeof nothing {
+  #renderContextLine(model: ElementModel, picked: string, cards: CardRender, chips: readonly BarChip[]): TemplateResult | typeof nothing {
     if (picked === 'base') return nothing;
     const { state } = conditionParts(picked);
     const media = slotMedia(model, picked);
@@ -1235,13 +1230,17 @@ export class HeoStylesPanel extends HeoElement {
     }
     if (state) {
       return html`<p class="ctxline" data-ctx="state">
-        Showing the element on <code>${state}</code>${at}. What it does not set there is its value at rest.
+        Showing only what <code>${state}</code>${at} adds. What it does not set there is its value at rest.
       </p>`;
     }
     const applies = media !== null && mediaApplies(media, null);
+    const chip = chips.find((one) => one.key === picked);
+    const lost = chip?.live ? chip.count - chip.won : 0;
     return html`<p class="ctxline" data-ctx="size">
-      Styling at <code>${size}</code>${media !== null && isWidthQuery(media) ? html` (<code>@media ${media}</code>)` : nothing},
-      <span class=${applies ? 'on' : 'off'}>${mediaNow(media ?? '', applies, model.width)}</span>.
+      Showing only what <code>${size}</code> adds${media !== null && isWidthQuery(media) ? html` (<code>@media ${media}</code>)` : nothing},
+      <span class=${applies ? 'on' : 'off'}>${mediaNow(media ?? '', applies, model.width)}</span>.${lost
+        ? html` <span class="off" data-hidden-count>${lost} of its ${chip!.count} ${chip!.count === 1 ? 'value' : 'values'} ${lost === 1 ? 'is' : 'are'} hidden on screen</span>: a name's cascade menu says by what.`
+        : nothing}
     </p>`;
   }
 
@@ -1295,7 +1294,9 @@ export class HeoStylesPanel extends HeoElement {
       visible,
       lists,
       read,
-      cascade: (property) => model.cascade(property, ctx),
+      // Only the condition's own declarations, as its rows show: an editor fed what the condition
+      // inherits drew Base's padding under a size as though the size set it.
+      cascade: (property) => ownList(scope, model, model.cascade(property, ctx)),
       spec: (property, listId) => ({
         ...spec(property, listId),
         ...(typeInline && TYPOGRAPHY_PROPERTIES.includes(property) ? { preferInline: true } : {}),

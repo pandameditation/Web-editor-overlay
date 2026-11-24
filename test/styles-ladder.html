@@ -395,17 +395,28 @@
 
         progress.textContent = 'menu: inactive';
         {
+          const bar = () => root().querySelector('[data-strip="panel"]');
           engine.setPreviewWidth(320);
           await settle(100);
-          // At 320 the strip follows the preview to the phone size (R13): the Spacing card reads it there.
+          // At 320 the strip stays on Base: the Spacing card reads Base's padding.
           await openMenu('padding');
-          const idle = text(pop()?.querySelector('.idle'));
-          // Another size's value is not a rung (it does not compete here) but it is listed.
+          const idles = Array.from(pop()?.querySelectorAll('.ladder.idles .lr.idle') ?? []);
+          const tablet = idles.find((one) => text(one.querySelector('.sz')) === '≥768px');
+          // Another size's value does not compete here, so it is not among the rungs that do, but it
+          // is a rung of its own after them, one per viewport, dimmed.
           results.menu.inactiveSizesAreListedAtTheBottom =
-            idle.startsWith('Not active at this width:') && idle.includes('.card ≥768px 20px 28px') &&
+            Boolean(tablet) && /^\.card/.test(text(tablet.querySelector('.pl'))) && text(tablet.querySelector('.cv')) === '20px 28px' &&
             !rungs().some((one) => text(one.querySelector('.sz')) === '≥768px') &&
-            Boolean(pop()?.querySelector('.ladder ~ .idle'));
+            Boolean(pop()?.querySelector('.ladder[role="radiogroup"] ~ .ladder.idles'));
+          // Picking it edits there: the strip goes to that size, and the menu stays, its rung checked.
+          tablet?.click();
+          await settle(100);
+          results.menu.anInactiveRungPicksItsSize =
+            bar()?.querySelector('[data-cond="tablet"]')?.getAttribute('aria-pressed') === 'true' &&
+            Boolean(pop()) && /≥768px/.test(text(pop()?.querySelector('[role="radio"][aria-checked="true"] .sz')));
           await closeMenu();
+          bar()?.querySelector('.base')?.click();
+          await settle();
           engine.setPreviewWidth(null);
           await settle(100);
         }

@@ -90,7 +90,9 @@ export interface CardView {
   family: Family;
   /** Members in effect at the preview width; a state rule emptied by its trash is left out. */
   visible: RuleEntry[];
-  /** `base` (Always) or a condition key. */
+  /** Every member at any width, but an emptied state rule: what the bar and a picked condition read. */
+  written: RuleEntry[];
+  /** `base` or a condition key. */
   picked: string;
   /** The conditions bar's buttons. */
   chips: BarChip[];
@@ -99,8 +101,8 @@ export interface CardView {
 
 export function cardView(family: Family, host: StylesHost): CardView {
   const { model, previewWidth, ui } = host;
-  const visible = family.members.filter((entry) =>
-    visibleAt(entry, previewWidth) && !(entry.state && !entry.declarations.length));
+  const written = family.members.filter((entry) => !(entry.state && !entry.declarations.length));
+  const visible = written.filter((entry) => visibleAt(entry, previewWidth));
   // Picked from ⋮ or added as a state, with nothing written yet: on the bar until something is.
   const waiting = [
     ...(ui.otherSlots.get(family.key) ?? []),
@@ -108,11 +110,22 @@ export function cardView(family: Family, host: StylesHost): CardView {
       .filter((one) => one.family === family.key && !isPseudoElement(one.state))
       .map((one) => conditionKey(one.slot, one.state)),
   ];
-  let picked = ui.cardPicks.get(family.key) ?? previewSlot(model, previewWidth);
-  // The pick keeps its button while it is the pick, even empty: the size a preview follows, say.
-  const { chips, count } = barConditions(model, visible, previewWidth, [...waiting, picked]);
+  /*
+   * The panel's strip, for one family: Base whatever the width, every condition it writes at
+   * (those not in effect drawn disabled, still a choice), the size the preview shows even empty,
+   * and the pick while it is empty.
+   */
+  let picked = ui.cardPicks.get(family.key) ?? 'base';
+  const shows = previewSlot(model, previewWidth);
+  const { chips, count } = barConditions(
+    model,
+    written,
+    previewWidth,
+    [...waiting, picked, ...(shows === 'base' ? [] : [shows])],
+    { offWidth: 'dim' },
+  );
   if (picked !== 'base' && !chips.some((chip) => chip.key === picked)) picked = 'base';
-  return { family, visible, picked, chips, count };
+  return { family, visible, written, picked, chips, count };
 }
 
 
@@ -295,7 +308,7 @@ export function renderFamilyCard(
   host: StylesHost,
   options: { group: 'classes' | 'rules'; popped: Popped },
 ): TemplateResult {
-  const { family, visible, picked } = view;
+  const { family, visible, written, picked } = view;
   const { model, ui, engine } = host;
   const key = family.key;
   const name = family.isClass ? simpleClassName(key) : null;
@@ -307,7 +320,8 @@ export function renderFamilyCard(
   const body = (): TemplateResult => {
     // The pick as its media (the slot the blocks are under) and its state, when it is one.
     const { media: slot, state: pickedState } = conditionParts(picked);
-    const inSlot = visible.filter((entry) => model.slotOf(entry) === slot);
+    // A picked condition reads its own blocks at any width, as the panel's strip does.
+    const inSlot = written.filter((entry) => model.slotOf(entry) === slot);
     const short = slotName(model, picked);
     const media = slotMedia(model, picked);
     const label = `${key}${short ? ` ${short}` : ''}`;
@@ -481,17 +495,17 @@ export function renderFamilyCard(
       return null;
     };
     const whenText = pickedState
-      ? html`Only on <b>${pickedState}</b>${short ? html`, ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} <b>${short}</b>` : nothing} — when it applies, over “Always”${uses > 1 ? `, for all ${uses} elements` : ''}.`
+      ? html`Only on <b>${pickedState}</b>${short ? html`, ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} <b>${short}</b>` : nothing} — when it applies, over Base${uses > 1 ? `, for all ${uses} elements` : ''}.`
       : html`Only ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} <b>${short}</b> — ${media === null ? '' : mediaNow(media, mediaApplies(media, null), model.width)}.
-          Adds to or overrides “Always” there${uses > 1 ? `, for all ${uses} elements` : ''}.`;
+          Adds to or overrides Base there${uses > 1 ? `, for all ${uses} elements` : ''}.`;
     return html`<div class="body">
       ${renderConditionBar({
       owner: key,
       picked,
       alwaysCount: view.count('base'),
-      alwaysTitle: 'With no condition: at every size and in every state',
+      alwaysTitle: 'Base: what every state starts from, with no condition',
       chips: view.chips,
-      remaining: remainingConditions(model, view.chips.map((chip) => chip.key), host.previewWidth, picked),
+      remaining: remainingConditions(model, view.chips.map((chip) => chip.key), host.previewWidth, picked, { offWidth: 'dim' }),
       menuOpen: ui.menu?.id === `strip-${key}`,
       mediaDraft: ui.mediaDraft?.owner === key ? ui.mediaDraft.text : null,
       widthDraft: ui.mediaDraft?.owner === key ? ui.mediaDraft.width ?? null : null,
