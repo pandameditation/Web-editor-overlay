@@ -967,6 +967,33 @@
           aMediaQueryShowsItsValueWithoutPreviewing: printPressed && printColour === '#000000',
           pressingTheOnePickedGoesBackToAlways: backToAlways,
         };
+        /*
+         * The element's Base counts properties, not declarations: a colour set by four rules at Base
+         * is one property Base supplies, though three of its declarations lose to other Base rules.
+         * Counted by declaration, Base read 11/14 for an element Base styled in full. What it does
+         * not supply is what a size on screen overrides, and each such row is struck with its pill.
+         */
+        {
+          const model = engine.elementModel(target);
+          const atBase = model.entries.filter((entry) => entry.state === '' && model.slotOf(entry) === 'base');
+          const baseProps = new Set([...atBase.flatMap((entry) => entry.declarations.map((one) => one.property)),
+            ...model.inline.map((one) => one.property)]);
+          const declarations = atBase.reduce((sum, entry) => sum + entry.declarations.length, 0) + model.inline.length;
+          const byOtherSizes = [...baseProps].filter((property) => {
+            const top = model.cascade(property).applying[0];
+            return top && top.source.kind === 'rule' && model.slotOf(top.source.entry) !== 'base';
+          });
+          const marker = bar()?.querySelector('.base .c')?.textContent.trim() ?? '';
+          const expected = byOtherSizes.length ? `${baseProps.size - byOtherSizes.length}/${baseProps.size}` : `${baseProps.size}`;
+          await setView('applied');
+          const struck = Array.from(root().querySelectorAll('.applied .row.hidden')).map((row) => row.dataset.property).sort();
+          await setView('cards');
+          results.bar.baseCountsPropertiesNotDeclarations =
+            declarations > baseProps.size && marker === expected &&
+            /hidden by a size$/.test(bar()?.querySelector('.base')?.title ?? '') === byOtherSizes.length > 0;
+          results.bar.whatASizeTakesFromBaseIsStruck =
+            byOtherSizes.length > 0 && struck.join(',') === [...byOtherSizes].sort().join(',');
+        }
 
         /* ---- states and pseudo-elements, picked on the strip ---- */
         const hoverList = fresh.cascade('background-color', { width: null, state: ':hover' }).applying;

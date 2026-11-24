@@ -135,6 +135,13 @@ export interface BarChip {
   won: number;
   /** A pseudo-element that draws nothing now (a `::before` with no `content`): drawn disabled. */
   undrawn?: boolean;
+  /** What `count` counts: a rule's declarations (a card), or the element's properties (the panel). */
+  per: 'declaration' | 'property';
+}
+
+/** A chip's count in words: `3 declarations`, `1 property`. */
+export function countOf(n: number, per: 'declaration' | 'property'): string {
+  return per === 'property' ? `${n} ${n === 1 ? 'property' : 'properties'}` : countText(n, 'declaration');
 }
 
 /** The block a contribution is in: the style attribute, or its rule. */
@@ -178,22 +185,55 @@ function liveText(chip: BarChip): string {
  * from ⋮, or a state added and not written yet) while it is empty. While a width is previewed, a
  * media condition not in effect there is left out, as its rules are, unless `offWidth` is `dim`:
  * the panel's strip keeps it, drawn as not in effect, since it is where a value for that size goes.
+ *
+ * What a count counts depends on whose bar it is. A card is one rule's, so it counts that rule's
+ * declarations and how many the element renders with. The panel's (`per: 'property'`) is the
+ * element's: it counts the properties set under each condition, the style attribute's at Base, and
+ * how many of them that condition supplies on screen. Counted by declaration there, Base read 11/14
+ * for an element Base styled in full: a colour set by four rules is four declarations, three of
+ * them beaten, though by other Base rules, so Base still supplied it.
  */
 export function barConditions(
   model: ElementModel,
   entries: readonly RuleEntry[],
   previewWidth: number | null,
   extra: readonly string[] = [],
-  options: { offWidth?: 'hide' | 'dim' } = {},
+  options: { offWidth?: 'hide' | 'dim'; per?: 'declaration' | 'property' } = {},
 ): { chips: BarChip[]; count(key: string): number; base: { count: number; won: number } } {
+  const per = options.per ?? 'declaration';
   const counts = new Map<string, number>();
   const under = new Map<string, RuleEntry[]>();
+  // By property: the names set under each condition, the style attribute's at Base.
+  const properties = new Map<string, Set<string>>();
+  const note = (key: string, property: string): void => {
+    const set = properties.get(key) ?? new Set<string>();
+    set.add(property);
+    properties.set(key, set);
+  };
   for (const entry of entries) {
     const key = conditionOf(model, entry);
     counts.set(key, (counts.get(key) ?? 0) + entry.declarations.length);
     under.set(key, [...(under.get(key) ?? []), entry]);
+    for (const one of entry.declarations) note(key, one.property);
+  }
+  if (per === 'property') {
+    for (const one of model.inline) note('base', one.property);
+    counts.clear();
+    for (const [key, set] of properties) counts.set(key, set.size);
   }
   const count = (key: string): number => counts.get(key) ?? 0;
+  /** Of what `key` sets, how much it supplies on screen now. */
+  const supplied = (key: string): number => {
+    if (per === 'declaration') return wonNow(model, under.get(key) ?? []);
+    let won = 0;
+    for (const property of properties.get(key) ?? []) {
+      const top = model.cascade(property).applying[0];
+      if (!top) continue;
+      const from = top.source.kind === 'inline' ? 'base' : conditionOf(model, top.source.entry);
+      if (from === key) won += 1;
+    }
+    return won;
+  };
   const keys = new Set<string>();
   for (const [key, n] of counts) if (key !== 'base' && n > 0) keys.add(key);
   for (const key of extra) if (key !== 'base') keys.add(key);
@@ -241,14 +281,15 @@ export function barConditions(
       notNow,
       live,
       // The element's cascade does not hold a pseudo-element's declarations: they are all its own.
-      won: live && !pseudo ? Math.min(n, wonNow(model, under.get(key) ?? [])) : n,
+      won: live && !pseudo ? Math.min(n, supplied(key)) : n,
       ...(undrawn ? { undrawn } : {}),
-      title: `${slot && !state ? slot.name : name}${n ? ` — ${countText(n, 'declaration')}` : ' — none yet'}` +
+      per,
+      title: `${slot && !state ? slot.name : name}${n ? ` — ${countOf(n, per)}` : ' — none yet'}` +
         (notNow ? ` · not in effect ${isWidthQuery(media ?? '') ? `at ${model.width}px` : 'now'}` : ''),
     };
   });
   // Base is always on screen: its marker is yellow like a size's, and says how much of it wins.
-  const base = { count: count('base'), won: Math.min(count('base'), wonNow(model, under.get('base') ?? [])) };
+  const base = { count: count('base'), won: Math.min(count('base'), supplied('base')) };
   return { chips, count, base };
 }
 
@@ -298,6 +339,8 @@ export interface ConditionBarSpec {
   /** Base's declarations, and how many of them the element renders with now. */
   always: { count: number; won: number };
   alwaysTitle: string;
+  /** What can hide part of Base: `a size or a rule` on a card, `a size` on the element's bar. */
+  alwaysHiddenBy?: string;
   chips: readonly BarChip[];
   /** With `pseudos`, "+" offers pseudo-elements too, and says so. */
   remaining: RemainingConditions;
@@ -345,7 +388,7 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
       aria-pressed=${spec.picked === 'base' ? 'true' : 'false'}
       title=${`${spec.alwaysTitle} · ${spec.always.won === spec.always.count
       ? 'always on screen'
-      : `on screen: ${spec.always.won} of ${spec.always.count} win, ${spec.always.count - spec.always.won} hidden by a size or a rule`}`}
+      : `on screen: ${spec.always.won} of ${spec.always.count} win, ${spec.always.count - spec.always.won} hidden by ${spec.alwaysHiddenBy ?? 'a size or a rule'}`}`}
       @click=${() => spec.onPick('base')}
     >
       Base ${chipCount({ ...spec.always, live: true })}
@@ -359,7 +402,7 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
         data-cond=${chip.key}
         data-slot=${chip.key}
         aria-pressed=${on ? 'true' : 'false'}
-        aria-label=${`${name}, ${countText(chip.count, 'declaration')}${liveText(chip)}${on ? '. Press again for Base' : ''}`}
+        aria-label=${`${name}, ${countOf(chip.count, chip.per)}${liveText(chip)}${on ? '. Press again for Base' : ''}`}
         title=${`${chip.title}${liveText(chip)}${on ? '. Press again for Base' : ''}`}
         @click=${() => spec.onPick(on ? 'base' : chip.key)}
       >
@@ -372,7 +415,7 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
             class="ckill"
             type="button"
             aria-label=${`Remove ${name}`}
-            title=${chip.count ? `Remove ${name} and its ${countText(chip.count, 'declaration')}` : `Remove ${name} from the bar`}
+            title=${chip.count ? `Remove ${name} and its ${countOf(chip.count, chip.per)}` : `Remove ${name} from the bar`}
             @click=${() => spec.onRemove(chip.key)}
           >
             ${icon('close', 9)}

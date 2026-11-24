@@ -982,16 +982,17 @@
         await settle();
         const fresh = engine.elementModel(target);
         const fraction = fresh.entries.find((entry) => entry.media === '(max-width: 767.98px)');
-        const phoneCount = fresh.entries
+        // The panel's strip counts the element's properties: one set by two rules is one.
+        const phoneCount = new Set(fresh.entries
           .filter((entry) => entry.state === '' && fresh.slotOf(entry) === 'phone')
-          .reduce((sum, entry) => sum + entry.declarations.length, 0);
+          .flatMap((entry) => entry.declarations.map((one) => one.property))).size;
         results.strip = {
           stripTogglesBackToElement: onPhone && pressedSlot() === 'base',
           // Bootstrap's 767.98px is the phone breakpoint, not "another media query".
           toleratesFractionalBreakpoints:
             Boolean(fraction) && fresh.slotOf(fraction) === 'phone' &&
             (strip()?.querySelector('[data-slot="phone"]')?.getAttribute('aria-label') ?? '').startsWith(
-              `Phone, up to 767px, ${phoneCount} declarations`),
+              `Phone, up to 767px, ${phoneCount} ${phoneCount === 1 ? 'property' : 'properties'}`),
         };
 
         /*

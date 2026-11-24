@@ -352,8 +352,11 @@ const VIEWS: SegmentOption[] = [
 
 /** The panel's condition strip: its id, for its menu and the conditions added to it. */
 const PANEL_STRIP = 'panel';
-/** On the panel's strip, sizes off the previewed width stay, dimmed. */
-const STRIP_OPTIONS = { offWidth: 'dim' } as const;
+/**
+ * On the panel's strip, sizes off the previewed width stay, dimmed, and counts are the element's
+ * properties (a card counts its rule's declarations): see `barConditions`.
+ */
+const STRIP_OPTIONS = { offWidth: 'dim', per: 'property' } as const;
 
 /**
  * The card a property shows in for this render: the first visible card listing it now, else
@@ -1169,9 +1172,8 @@ export class HeoStylesPanel extends HeoElement {
       STRIP_OPTIONS,
     );
     const picked = wanted !== 'base' && chips.some((chip) => chip.key === wanted) ? wanted : 'base';
-    // Base counts the style attribute's declarations too: the panel is the element's, not a rule's.
-    const inlineWon = model.inline.filter((one) => model.cascade(one.property).applying[0]?.source.kind === 'inline').length;
-    return { chips, picked, base: { count: base.count + model.inline.length, won: base.won + inlineWon } };
+    // The style attribute is Base's too: `per: 'property'` counts it there.
+    return { chips, picked, base };
   }
 
   #renderStrip(model: ElementModel, host: StylesHost, strip: { chips: BarChip[]; picked: string; base: { count: number; won: number } }): TemplateResult {
@@ -1183,6 +1185,8 @@ export class HeoStylesPanel extends HeoElement {
       picked,
       always: strip.base,
       alwaysTitle: 'Base: what every state starts from',
+      // Another rule at Base supplying a property is still Base: only a size takes one from it.
+      alwaysHiddenBy: 'a size',
       chips,
       remaining: remainingConditions(model, chips.map((chip) => chip.key), host.previewWidth, picked, STRIP_OPTIONS),
       menuOpen: this.ui.menu?.id === menuId,
