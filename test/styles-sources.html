@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <title>Styles cards and the controls they share with Tokens</title>
@@ -8,7 +9,12 @@
     class card has an li to add ::marker to.
   -->
   <style id="site">
-    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
     .card {
       padding: 12px 16px;
       margin: 0 0 12px;
@@ -22,29 +28,71 @@
       opacity: 1;
       display: block;
     }
-    .featured { border: 1px solid #a5b4fc; }
-    .card.featured { background-color: #eef2ff; }
-    .promo .card { color: #3730a3 !important; }
-    section p { letter-spacing: 0.01em; }
+
+    .featured {
+      border: 1px solid #a5b4fc;
+    }
+
+    .card.featured {
+      background-color: #eef2ff;
+    }
+
+    .promo .card {
+      color: #3730a3 !important;
+    }
+
+    section p {
+      letter-spacing: 0.01em;
+    }
+
     @media (max-width: 767px) {
-      .cards { grid-template-columns: 1fr; }
-      .card { padding: 10px 12px; }
+      .cards {
+        grid-template-columns: 1fr;
+      }
+
+      .card {
+        padding: 10px 12px;
+      }
     }
+
     @media (min-width: 768px) {
-      .card { padding: 20px 28px; }
+      .card {
+        padding: 20px 28px;
+      }
     }
+
     @media print {
-      .card { color: #000000; }
+      .card {
+        color: #000000;
+      }
     }
-    .card:hover { background-color: #f9fafb; }
+
+    .card:hover {
+      background-color: #f9fafb;
+    }
+
     @media (min-width: 768px) {
-      .card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+      .card:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      }
     }
-    .featured:focus-within { outline: 2px solid #6366f1; }
-    .featured::before { content: "★"; color: #f59e0b; }
-    .item { padding-left: 4px; color: #374151; }
+
+    .featured:focus-within {
+      outline: 2px solid #6366f1;
+    }
+
+    .featured::before {
+      content: "★";
+      color: #f59e0b;
+    }
+
+    .item {
+      padding-left: 4px;
+      color: #374151;
+    }
   </style>
 </head>
+
 <body>
   <section class="promo">
     <div class="cards">
@@ -54,7 +102,9 @@
       <p class="card">Fourth</p>
     </div>
   </section>
-  <ul class="list"><li id="item" class="item">An item</li></ul>
+  <ul class="list">
+    <li id="item" class="item">An item</li>
+  </ul>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -1126,10 +1176,11 @@
           await pop('.card');
           const strip = (k) => card(k)?.querySelector('[data-heo-part="strip"]');
           const slotButton = (k, slot) => strip(k)?.querySelector(`[data-slot="${slot}"]`);
-          // Counted per condition: a state under a size is its own, a pseudo-element counts with its size.
+          // Counted per condition: a state under a size is its own; a pseudo-element counts nowhere.
           const conditionOf = (entry) => {
             const slot = model().slotOf(entry);
-            if (!entry.state || entry.state.includes('::')) return slot;
+            if (entry.state.includes('::')) return null;
+            if (!entry.state) return slot;
             return slot === 'base' ? `state:${entry.state}` : `state:${entry.state}@${slot}`;
           };
           const slotCount = (k, slot) => model().entries
@@ -1153,6 +1204,22 @@
             // A size that declares nothing has no button; ⋮ has it.
             emptySizesAreNotOnTheBar: !slotButton('.card', 'laptop') && !slotButton('.card', 'desktop'),
           };
+          /*
+           * A pseudo-element's block is not its media's count. On a card it sits under its media,
+           * and its declarations were added to Base's: .featured::before's two made Base read 0/3
+           * for a class whose one Base declaration is the element's own.
+           */
+          {
+            await pop('.featured');
+            const own = slotCount('.featured', 'base');
+            const pseudoHasTwo = model().entries.some((entry) =>
+              entry.family === '.featured' && entry.state === '::before' && entry.declarations.length === 2);
+            results.strip.aPseudoElementIsNotCountedInBase =
+              pseudoHasTwo && Boolean(strip('.featured')) &&
+              countIs(strip('.featured')?.querySelector('.base'), own) &&
+              !new RegExp(`/?${own + 2}$`).test(textOf(strip('.featured')?.querySelector('.base .c')));
+            await pop('.card');
+          }
           const notNow = innerWidth < 768 ? slotButton('.card', 'tablet') : slotButton('.card', 'phone');
           const nowButton = innerWidth < 768 ? slotButton('.card', 'phone') : slotButton('.card', 'tablet');
           // Not in effect at this width: drawn disabled (dashed, the faint ink), never faded, and still
@@ -1544,7 +1611,7 @@
               beforeOf(target, 'content') === '"★"' &&
               beforeOf(target, 'color') === 'rgb(255, 0, 0)' &&
               textOf(block('.card', '::before')?.querySelector('.block-hint')) ===
-                'Not adding content: this element already has a ::before from .featured::before.';
+              'Not adding content: this element already has a ::before from .featured::before.';
             engine.undo();
             engine.undo();
             await settle(250);
@@ -1892,4 +1959,5 @@
     })();
   </script>
 </body>
+
 </html>

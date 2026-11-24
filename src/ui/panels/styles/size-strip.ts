@@ -126,6 +126,8 @@ export interface BarChip {
   live: boolean;
   /** Of `count`, how many win on screen now; the rest a later query beats. `count` when not live. */
   won: number;
+  /** Nothing for the element itself, only pseudo-element blocks: on the bar to reach them, at 0. */
+  pseudoOnly?: boolean;
 }
 
 /** The block a contribution is in: the style attribute, or its rule. */
@@ -159,7 +161,7 @@ function chipCount(chip: Pick<BarChip, 'count' | 'live' | 'won'>): TemplateResul
 /** What a chip on screen says about it, after its name. */
 function liveText(chip: BarChip): string {
   if (!chip.live) return chip.notNow ? ' · not on screen' : '';
-  if (!chip.count) return ' · on screen, nothing written yet';
+  if (!chip.count) return chip.pseudoOnly ? ' · on screen' : ' · on screen, nothing written yet';
   return chip.won === chip.count ? ' · on screen' : ` · on screen: ${chip.won} of ${chip.count} win, ${chip.count - chip.won} hidden by a later query`;
 }
 
@@ -178,14 +180,28 @@ export function barConditions(
 ): { chips: BarChip[]; count(key: string): number; base: { count: number; won: number } } {
   const counts = new Map<string, number>();
   const under = new Map<string, RuleEntry[]>();
+  // Conditions holding only pseudo-element blocks (on a card, where those are blocks, not conditions).
+  const pseudoOnly = new Set<string>();
   for (const entry of entries) {
     const key = conditionOf(model, entry, options);
+    /*
+     * A pseudo-element's block is not the condition's own count. On a card it sits under its media,
+     * and its declarations were added to that media's: a class whose only rule is a `::before` read
+     * Base 0/8, the eight being the pseudo-element's, and 0 because the element itself renders with
+     * none of them (they style the pseudo-element). It still keeps its media's chip on the bar,
+     * since that chip is how its block is reached.
+     */
+    if (isPseudoElement(entry.state) && options.pseudo !== 'condition') {
+      if (entry.declarations.length) pseudoOnly.add(key);
+      continue;
+    }
     counts.set(key, (counts.get(key) ?? 0) + entry.declarations.length);
     under.set(key, [...(under.get(key) ?? []), entry]);
   }
   const count = (key: string): number => counts.get(key) ?? 0;
   const keys = new Set<string>();
   for (const [key, n] of counts) if (key !== 'base' && n > 0) keys.add(key);
+  for (const key of pseudoOnly) if (key !== 'base') keys.add(key);
   for (const key of extra) if (key !== 'base') keys.add(key);
   const visible = (key: string): boolean => {
     const media = slotMedia(model, key);
@@ -226,7 +242,8 @@ export function barConditions(
       notNow,
       live,
       won: live ? Math.min(n, wonNow(model, under.get(key) ?? [])) : n,
-      title: `${slot && !state ? slot.name : name}${n ? ` — ${countText(n, 'declaration')}` : ' — none yet'}` +
+      pseudoOnly: !n && pseudoOnly.has(key),
+      title: `${slot && !state ? slot.name : name}${n ? ` — ${countText(n, 'declaration')}` : pseudoOnly.has(key) ? ' — pseudo-elements only' : ' — none yet'}` +
         (notNow ? ` · not in effect ${isWidthQuery(media ?? '') ? `at ${model.width}px` : 'now'}` : ''),
     };
   });
