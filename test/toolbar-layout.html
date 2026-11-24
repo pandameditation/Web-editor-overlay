@@ -117,7 +117,7 @@
         engine.setLayout('float');
         engine.resetPanelPosition('page');
         engine.resetPanelPosition('selection');
-        engine.setPanelWidth('page', 264);
+        engine.setPanelWidth('page', 328);
         engine.setPanelWidth('selection', 340);
         api.select(document.getElementById('first'));
         engine.setDockTab('tree');
@@ -129,7 +129,12 @@
        * Panels. The page's tabs on the left, the selection's on the right, from one table.
        * ---------------------------------------------------------------- */
       progress.textContent = 'panels';
+      // The page panel's default width, read before reset() sets one.
+      const defaultPageWidth = state().pageWidth;
       await reset();
+      // At its default width every page tab fits one line: at 264px SEO wrapped under Layers.
+      const pageTabsOnOneLine = defaultPageWidth === 328 && Math.round(rect(dock('page')).width) === 328 &&
+        new Set(tabs('page').map((tab) => Math.round(rect(tab).top))).size === 1;
       const KEYS = { Layers: 'E', Blocks: 'B', Tokens: 'T', SEO: 'O', Styles: 'S', Props: 'P', Media: 'M', Code: 'C' };
       const labels = (side) => tabs(side).map((t) => t.getAttribute('aria-label'));
       const pageBox = rect(dock('page'));
@@ -178,6 +183,7 @@
           labels('selection').join() === 'Styles,Props,Media,Code' && Math.round(innerWidth - selectionBox.right) === 14),
         bothPanelsAreOpenTogether: state().pageOpen && state().dockOpen && Boolean(dock('page')) && Boolean(dock('selection')),
         eachTabTipShowsItsKey: tipsCarryKeys,
+        pageTabsFitOneLineAtTheDefaultWidth: pageTabsOnOneLine,
         aTabTipShowsOnKeyboardFocus: tipOnFocus,
         otherTipsStayHidden: othersHidden,
         theTipStaysInsideThePanel: tipInside,
@@ -861,7 +867,7 @@
 
       let from = grabPoint('page');
       await drag(from, { x: from.x + 60, y: from.y });
-      const pageGrew = state().pageWidth === 324 && Math.round(rect(dock('page')).width) === 324 &&
+      const pageGrew = state().pageWidth === 388 && Math.round(rect(dock('page')).width) === 388 &&
         Math.round(rect(dock('page')).left) === 14;
 
       from = grabPoint('selection');
@@ -920,7 +926,7 @@
         state().pageFloat?.x === 200 && state().pageFloat?.y === 80;
       from = grabPoint('page');
       await drag(from, { x: from.x + 30, y: from.y });
-      const pinnedResized = state().pageWidth === 294 && Math.round(rect(dock('page')).width) === 294;
+      const pinnedResized = state().pageWidth === 358 && Math.round(rect(dock('page')).width) === 358;
       engine.setLayout('float');
       await frames();
       // The parked box was kept for when the panels float again.

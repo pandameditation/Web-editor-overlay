@@ -1467,7 +1467,9 @@ export class EditorEngine {
       dockFloat: null,
       pageOpen: false,
       pageTab: 'tree',
-      pageWidth: 264,
+      // Wide enough for its four tabs on one line: at 264px SEO wrapped to a second, and at 320px
+      // it still did by a pixel (the strip needs about 322px).
+      pageWidth: 328,
       pageFloat: null,
       layout: 'float',
       previewLabel: false,
