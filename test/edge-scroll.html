@@ -96,6 +96,33 @@
       });
 
       /* ------------------------------------------------------------------ *
+       * The base speed: a viewport every five seconds, anywhere in the band, at once.
+       * ------------------------------------------------------------------ */
+      /*
+       * At the band's inner edge depth adds nothing, so what is left is the base. It was 30px/s,
+       * and a fifth of that while the dwell warmed up: 6px/s, minutes per screen, which read as
+       * the edge doing nothing. Measured from a cold start, so it is there from the first frame.
+       */
+      await check('theBaseSpeedIsAViewportInFiveSeconds', async () => {
+        const band = Math.round(Math.max(44, Math.min(140, innerHeight * 0.14)));
+        engine.cancelDrag();
+        await beginDrag(bottom(band - 1));
+        const early = await holdAt(() => bottom(band - 1), 400);
+        const rest = await holdAt(() => bottom(band - 1), 1100);
+        engine.cancelDrag();
+        const perSecond = innerHeight / 5;
+        const rate = (early + rest) / 1.5;
+        return {
+          expectedPerSecond: Math.round(perSecond),
+          measuredPerSecond: Math.round(rate),
+          inTheFirst400ms: Math.round(early),
+          aboutAViewportInFiveSeconds: rate > perSecond * 0.8 && rate < perSecond * 1.35,
+          // Half the base over those 400ms, for a busy machine's slow frames; the old 6px/s gave a fifth.
+          fromTheFirstFrame: early > perSecond * 0.4 * 0.5,
+        };
+      });
+
+      /* ------------------------------------------------------------------ *
        * Slow to begin with, faster the longer it is held.
        * ------------------------------------------------------------------ */
       await check('itStartsSlowAndBuildsUp', async () => {
@@ -248,6 +275,28 @@
         engine.updateDrag(middleX(), innerHeight + 40);
         await wait(400);
         return { moved: Math.round(scrollY - from), willCancel: engine.store.value.drag?.willCancel ?? null };
+      });
+
+      /*
+       * Pushed a few pixels past the edge, as a mouse does, it keeps scrolling at the edge's
+       * speed. That read as leaving the window: the drag went to "release to cancel", the scrolling
+       * paused and its warm-up was thrown away, so pushing harder at the edge slowed the page.
+       */
+      await check('aFewPixelsPastTheEdgeStillScrollsAtFullSpeed', async () => {
+        engine.cancelDrag();
+        await beginDrag(bottom(2));
+        const atEdge = await holdAt(() => bottom(2), 600);
+        engine.cancelDrag();
+        await beginDrag(bottom(-8));
+        const past = await holdAt(() => bottom(-8), 600);
+        const cancelling = engine.store.value.drag?.willCancel ?? null;
+        engine.cancelDrag();
+        return {
+          atTheEdge: Math.round(atEdge),
+          eightPixelsPast: Math.round(past),
+          notACancel: cancelling === false,
+          asFastAsTheEdge: past > atEdge * 0.85,
+        };
       });
 
       // And the edge itself is not read as having left the window any more.

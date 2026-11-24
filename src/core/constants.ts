@@ -123,6 +123,15 @@ export const EDITING_ATTR = 'data-heo-editing';
 export const MODAL_ATTR = 'data-heo-modal';
 
 /**
+ * How far past the window's edge a drag's pointer may go and still count as at the edge, in px.
+ *
+ * Leaving the window is how a drag is abandoned, and the edge is where it scrolls. A mouse pushed
+ * at the edge overshoots it by a few pixels, so the two need room between them: without it,
+ * pushing harder at the edge to scroll faster read as leaving, and the scrolling paused.
+ */
+export const DRAG_LEAVE_MARGIN = 24;
+
+/**
  * Timings for the reorder gesture, in milliseconds.
  *
  * `dwell` is the heart of it: a candidate position has to persist before the DOM

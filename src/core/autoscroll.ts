@@ -12,8 +12,14 @@
  *   third of the band is a crawl and the last few pixels are a sprint. Linear depth gives no
  *   usable slow speed: by the time the movement is visible, it is already too fast to aim.
  *
- * - **Dwell.** Speed also builds while the pointer stays in the band, from a fifth of the target
- *   rate up to all of it. Without it, clipping a corner on the way somewhere else launches the
+ * - **A base speed.** Anywhere in the band, from the first frame, the page moves at least a
+ *   viewport every five seconds. Depth and dwell only ever add to it. The band's slowest speed
+ *   used to be 30px/s, and a fifth of that while the dwell warmed up: 6px/s, two and a half
+ *   minutes a screen, which read as the edge doing nothing at all; a screen every twelve, then
+ *   eight, seconds still felt slow.
+ *
+ * - **Dwell.** What depth adds also builds while the pointer stays in the band, from a fifth of
+ *   it up to all of it. Without it, clipping a corner on the way somewhere else launches the
  *   page, and the user has lost their place; with it, a brief overshoot costs a few pixels.
  *
  * - **Forgiveness.** Leaving the band briefly does not reset the dwell. Hands shake, and a
@@ -60,8 +66,11 @@ const BAND_SHARE = 0.14;
 const BAND_MAX = 140;
 const BAND_MIN = 44;
 
-/** Slow enough to place something precisely, at the very inner edge of the band. */
-const SLOWEST = 30;
+/**
+ * The base speed: one viewport, along the axis being scrolled, in this many seconds. Slow enough
+ * to place something precisely at the band's inner edge, and never so slow that it looks stuck.
+ */
+const VIEWPORT_SECONDS = 5;
 /** Fast enough to cross a long document without lifting the pointer, at the outer edge. */
 const FASTEST = 1600;
 
@@ -169,7 +178,9 @@ export function startEdgeScroll(hooks: EdgeScrollHooks): () => void {
       if (!target) continue;
       // `push` carries the sign; its magnitude is the eased depth into the band.
       const into = Math.abs(push);
-      const speed = SLOWEST + (FASTEST - SLOWEST) * ease(into);
+      const base = (axis === 'y' ? innerHeight : innerWidth) / VIEWPORT_SECONDS;
+      // Depth's share builds with the dwell; the base does not wait for it.
+      const speed = base + Math.max(0, FASTEST - base) * ease(into) * warm;
       /*
        * Depth decides how much of the sustained gain is on offer, linearly.
        *
@@ -178,7 +189,7 @@ export function startEdgeScroll(hooks: EdgeScrollHooks): () => void {
        * which is not somewhere a hand can be asked to stay for three seconds.
        */
       const sustained = 1 + (gain - 1) * into;
-      debt[axis] += Math.sign(push) * speed * warm * sustained * dt;
+      debt[axis] += Math.sign(push) * speed * sustained * dt;
       const whole = Math.trunc(debt[axis]);
       if (!whole) continue;
       debt[axis] -= whole;

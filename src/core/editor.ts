@@ -17,6 +17,7 @@ import {
   BLOCK_STYLE_ID,
   CLASS_STYLE_ID,
   DRAGGING_ATTR,
+  DRAG_LEAVE_MARGIN,
   DRAG_TIMING,
   EDITING_ATTR,
   DOCKED_BAR_HEIGHT,
@@ -9430,8 +9431,14 @@ export class EditorEngine {
      * rest of the page: pushing right up to the edge to keep scrolling — which is exactly what
      * the last stretch of the band invites — announced the move was about to be abandoned.
      * Pointer capture reports coordinates beyond the window, so the real thing is detectable.
+     *
+     * And a little past the edge is still the edge. A mouse pushed to it overshoots by a few
+     * pixels, and counting those as having left put the drag into "release to cancel", which
+     * pauses the scrolling and, after a moment, throws its warm-up and gears away: pushing harder
+     * at the edge slowed the page down. Leaving takes a deliberate move out, past the margin.
      */
-    const outside = x < 0 || y < 0 || x > innerWidth || y > innerHeight;
+    const margin = DRAG_LEAVE_MARGIN;
+    const outside = x < -margin || y < -margin || x > innerWidth + margin || y > innerHeight + margin;
     if (outside) {
       if (!drag.willCancel) this.#applyDrop(drag.origin.parent, drag.origin.nextSibling, drag.element);
       this.#dragPending = null;
