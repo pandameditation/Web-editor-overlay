@@ -431,7 +431,10 @@
             Boolean(padRow?.querySelector('.dots [data-source] .from')?.textContent.trim()) &&
             // Base edits Base's padding, in .card, though the size in effect wins it on screen.
             /edits \.card, 4 elements\. Show cascade$/.test(padRow?.querySelector('.dots')?.getAttribute('aria-label') ?? '') &&
-            padRow?.closest('.prow')?.querySelector('[data-hidden-by]')?.textContent.replace(/\s+/g, ' ').trim() === `Hidden on screen by ${sideLabel}` &&
+            // Its value is still shown, struck, with a pill naming the size that wins on screen.
+            padRow?.querySelector('.dots [data-hidden-by]')?.textContent.trim() === `hidden by ${sideLabel.slice('.card '.length)}` &&
+            padRow?.classList.contains('hidden') && Boolean(padRow?.querySelector('heo-value-field')?.value) &&
+            getComputedStyle(padRow.querySelector('heo-value-field').shadowRoot.querySelector('input')).textDecorationLine === 'line-through' &&
             padRow?.querySelector('.dots .uses')?.textContent.trim() === '4×' &&
             /edits inline, only this element\. Show cascade$/.test(rowIn('effective', 'font-size')?.querySelector('.dots')?.getAttribute('aria-label') ?? '') &&
             !rowIn('effective', 'font-size')?.querySelector('.dots .uses'),

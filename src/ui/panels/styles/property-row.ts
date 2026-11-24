@@ -239,6 +239,11 @@ export function hiddenNow(spec: RowSpec, shown: Contribution | undefined): Contr
   return top && block(top) !== block(shown) ? top : null;
 }
 
+/** What hides a value, as short as its pill allows: the size it is written at, else its rule. */
+function hiderName(hider: Contribution): string {
+  return hider.source.kind === 'rule' && hider.source.entry.media ? mediaLabel(hider.source.entry.media) : shortLabel(hider);
+}
+
 /** What a row's cascade, value and own rule are, for one scope. */
 export function readRow(spec: RowSpec): {
   list: CascadeList;
@@ -729,6 +734,9 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
               ${source.reach ? renderUses(source.reach) : nothing}
             </span>`
       : nothing}
+          ${hider
+      ? html`<span class="hidby" data-hidden-by title=${`Set here, and hidden on screen by ${shortLabel(hider)}: the cascade menu says why`}>hidden by ${hiderName(hider)}</span>`
+      : nothing}
         </span>
       </button>
       ${control}
@@ -745,11 +753,6 @@ export function renderPropertyRow(spec: RowSpec, host: StylesHost): TemplateResu
       : nothing}
     </div>
     ${spec.note ? html`<p class="side-note">${spec.note}</p>` : nothing}
-    ${hider
-      ? html`<p class="side-note hidby" data-hidden-by title="The name's cascade menu says which wins, and why">
-          Hidden on screen by <b>${shortLabel(hider)}</b>
-        </p>`
-      : nothing}
   </div>`;
 }
 
@@ -803,6 +806,28 @@ export const propertyRowStyles: CSSResult = css`
   }
   .row .from.inline {
     color: var(--heo-text-faint);
+  }
+  /*
+   * Its own value, set and beaten on screen: a hollow pill on its own line under the source,
+   * naming what wins (its size when it has one), and the value struck until it is edited.
+   */
+  .row .hidby {
+    justify-self: start;
+    max-width: 100%;
+    margin-top: 1px;
+    overflow: hidden;
+    padding: 0 5px;
+    border-radius: 999px;
+    box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+    color: var(--heo-text-dim);
+    font-family: var(--heo-font);
+    font-size: 9px;
+    line-height: 13px;
+    text-overflow: ellipsis;
+  }
+  .row.hidden heo-value-field:not(:focus-within) {
+    --heo-field-decoration: line-through;
+    --heo-field-ink: var(--heo-text-dim);
   }
   .row .src .uses {
     font-size: 9px;
@@ -881,11 +906,6 @@ export const propertyRowStyles: CSSResult = css`
     color: var(--heo-text-dim);
     font-size: 10px;
     line-height: 1.4;
-  }
-  /* Its own value, beaten on screen: said under the row, as a family's note is. */
-  .side-note.hidby {
-    margin-left: 98px;
-    color: var(--heo-text-faint);
   }
   .side-note b {
     color: var(--heo-text);

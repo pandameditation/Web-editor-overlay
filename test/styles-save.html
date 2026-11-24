@@ -532,7 +532,7 @@
             baseCard.style.getPropertyValue('padding') === '5px 6px' &&
             winnerRule.style.getPropertyValue('padding') === winnerPadBefore && !inlineText(second, 'padding') && !anyBox(),
           // And the row says the size hides it on screen.
-          theRowSaysASizeHidesIt: /Hidden on screen by \.card (≥768px|≤767px)/.test(rowIn('spacing', 'padding')?.closest('.prow')?.querySelector('[data-hidden-by]')?.textContent.replace(/\s+/g, ' ') ?? ''),
+          theRowSaysASizeHidesIt: /^hidden by (≥768px|≤767px)$/.test(rowIn('spacing', 'padding')?.querySelector('[data-hidden-by]')?.textContent.trim() ?? ''),
         };
         engine.undo();
         await settle();

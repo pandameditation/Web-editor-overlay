@@ -187,9 +187,11 @@ export class HeoValueField extends LitElement {
         padding: 0 6px;
         border: 0;
         background: transparent;
-        color: var(--heo-text);
+        /* A host can say its value is set but not drawn (a row's value a later rule hides). */
+        color: var(--heo-field-ink, var(--heo-text));
         font-family: var(--heo-mono);
         font-size: 11.5px;
+        text-decoration: var(--heo-field-decoration, none);
       }
       input:focus {
         outline: none;

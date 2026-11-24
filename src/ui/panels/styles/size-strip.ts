@@ -736,6 +736,13 @@ export const sizeStripStyles: CSSResult = css`
   .slots .c.live.none {
     opacity: 0.6;
   }
+  /* On picked Base's accent a hollow yellow marker could not be read: it keeps the yellow fill. */
+  .slots .base[aria-pressed='true'] .c.live {
+    background: var(--heo-live);
+    box-shadow: none;
+    color: var(--heo-live-ink);
+    opacity: 1;
+  }
   /*
    * Not in effect at this width: drawn disabled (the faint ink, a dashed outline, its marker
    * hollow) but still a choice; picked, it is drawn in full. Faded with opacity instead, its icon
