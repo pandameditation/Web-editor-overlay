@@ -891,7 +891,7 @@
         const backToAlways = bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true' &&
           !root().querySelector('.ctxline');
         results.bar = {
-          startsAtBase: /^Base \d+$/.test(alwaysText) && bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true',
+          startsAtBase: /^Base (\d+\/)?\d+$/.test(alwaysText) && Boolean(bar()?.querySelector('.base .c.live')) && bar()?.querySelector('.base')?.getAttribute('aria-pressed') === 'true',
           listsOnlyConditionsThatDeclareSomething:
             keysOnBar.includes('state::hover') && keysOnBar.includes('other:print') &&
             keysOnBar.includes('state::hover@tablet') && keysOnBar.includes('state:::before') &&

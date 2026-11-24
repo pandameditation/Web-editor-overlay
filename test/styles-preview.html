@@ -937,6 +937,43 @@
           await settle(300);
         }
 
+        /*
+         * ---- a value typed under a size, against the element's own inline value ----
+         * `style="font-size: 16px"` beat any rule, so a font-size typed at ≥768px landed in
+         * .featured there and the page did not change. The inline value now moves into .featured
+         * at Base in the same undo step: the size shows, Base is drawn as before.
+         */
+        progress.textContent = 'inline hand-off';
+        {
+          engine.setPreviewWidth(1024);
+          await settle(300);
+          strip()?.querySelector('[data-cond="tablet"]')?.click();
+          await settle();
+          for (const one of root().querySelectorAll('heo-section[card]')) if (!one.open) one.shadowRoot?.querySelector('.tile')?.click();
+          await settle();
+          const history = engine.history.size;
+          root().querySelector('heo-section[card] .row[data-property="font-size"] heo-value-field')?.dispatchEvent(
+            new CustomEvent('value-change', { detail: { value: '19px' }, bubbles: true, composed: true }));
+          await settle();
+          const atSize = getComputedStyle(target).fontSize;
+          const inlineGone = !target.style.getPropertyValue('font-size');
+          const oneStep = engine.history.size === history + 1;
+          engine.setPreviewWidth(320);
+          await settle(300);
+          const atBase = getComputedStyle(target).fontSize;
+          engine.undo();
+          await settle();
+          results.handOff = {
+            theSizeValueShows: atSize === '19px',
+            theInlineValueMovedOut: inlineGone,
+            baseIsDrawnAsBefore: atBase === '16px',
+            inOneUndoStep: oneStep && target.style.getPropertyValue('font-size') === '16px',
+          };
+          strip()?.querySelector('.base')?.click();
+          engine.setPreviewWidth(null);
+          await settle(300);
+        }
+
         /* ---- what a card and the groups show depends on the preview (R7) ---- */
         progress.textContent = 'filter';
         engine.setPreviewWidth(null);

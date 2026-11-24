@@ -175,7 +175,7 @@ export function barConditions(
   previewWidth: number | null,
   extra: readonly string[] = [],
   options: ConditionOptions & { offWidth?: 'hide' | 'dim' } = {},
-): { chips: BarChip[]; count(key: string): number } {
+): { chips: BarChip[]; count(key: string): number; base: { count: number; won: number } } {
   const counts = new Map<string, number>();
   const under = new Map<string, RuleEntry[]>();
   for (const entry of entries) {
@@ -230,7 +230,9 @@ export function barConditions(
         (notNow ? ` · not in effect ${isWidthQuery(media ?? '') ? `at ${model.width}px` : 'now'}` : ''),
     };
   });
-  return { chips, count };
+  // Base is always on screen: its marker is yellow like a size's, and says how much of it wins.
+  const base = { count: count('base'), won: Math.min(count('base'), wonNow(model, under.get('base') ?? [])) };
+  return { chips, count, base };
 }
 
 /** What "+" offers, by kind. `pseudos` only where pseudo-elements are conditions. */
@@ -277,7 +279,8 @@ export interface ConditionBarSpec {
   owner: string;
   /** `base` or a condition key. */
   picked: string;
-  alwaysCount: number;
+  /** Base's declarations, and how many of them the element renders with now. */
+  always: { count: number; won: number };
   alwaysTitle: string;
   chips: readonly BarChip[];
   /** With `pseudos`, "+" offers pseudo-elements too, and says so. */
@@ -321,13 +324,15 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
     data-menu-place=${menuId}
   >
     <button
-      class="base"
+      class="base live"
       type="button"
       aria-pressed=${spec.picked === 'base' ? 'true' : 'false'}
-      title=${spec.alwaysTitle}
+      title=${`${spec.alwaysTitle} · ${spec.always.won === spec.always.count
+        ? 'always on screen'
+        : `on screen: ${spec.always.won} of ${spec.always.count} win, ${spec.always.count - spec.always.won} hidden by a size or a rule`}`}
       @click=${() => spec.onPick('base')}
     >
-      Base ${chipCount({ count: spec.alwaysCount, live: false, won: spec.alwaysCount })}
+      Base ${chipCount({ ...spec.always, live: true })}
     </button>
     ${spec.chips.map((chip) => {
     const on = spec.picked === chip.key;

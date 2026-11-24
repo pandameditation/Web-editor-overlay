@@ -13,7 +13,7 @@ import { normalizeClassName } from '../../../core/classes.js';
 import { renderFamilies } from '../class-editor.js';
 import { entryLabel, reachText, shortLabel } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
-import { conditionContext, defaultPlace, placeOutcome, placesFor, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
+import { conditionContext, defaultPlace, inlineHandOff, placeOutcome, placesFor, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
 import { icon } from '../../icons.js';
 import { buildSuggestions, shadowSwatches, valueKindFor } from '../../suggestions.js';
 import { renderUses } from '../class-editor.js';
@@ -421,8 +421,30 @@ export function writeChosen(
     places.delete(choice.rowId);
     host.patch({ places, newClass: null });
   }
+  /*
+   * Under a size or a state, the element's own inline value would hide what is written: it moves
+   * to the same class at Base in the same undo step, so Base looks the same and the size shows.
+   */
+  const cond = rowCondition(spec.scope);
+  const handOff = inlineHandOff(spec.model, property, cond, picked, element, {
+    ownedClass: (name) => engine.classes.get(name) ?? null,
+  });
+  if (handOff) {
+    engine.writeDeclarationsTo([
+      { dest: handOff.base.dest, property, value: handOff.value },
+      { dest: { kind: 'target', target: { kind: 'inline', element } }, property, value: '' },
+      { dest: picked.dest, property, value: written },
+    ], `Set ${property} at ${picked.label}${picked.media ? ` ${mediaLabel(picked.media)}` : ''}`, element);
+    engine.notify(`Moved the element's inline ${property} into ${handOff.base.label}, so the value at ${picked.media ? mediaLabel(picked.media) : picked.state} can apply.`, 'info');
+    return;
+  }
   const { hint } = engine.writeDeclarationTo(picked.dest, property, written);
   if (hint) engine.notify(hint, 'info');
+  else if (cond.media !== 'base' || cond.state) {
+    // Under a condition the row shows the value typed even when it loses: say so, and where to look.
+    const { by } = placeOutcome(spec.model, property, cond, picked, typed.important === true);
+    if (by) engine.notify(`Written in ${picked.label}, but ${shortLabel(by)} still wins: its cascade menu says why.`, 'info');
+  }
 }
 
 /** Paint a value being typed where the place would write it. */

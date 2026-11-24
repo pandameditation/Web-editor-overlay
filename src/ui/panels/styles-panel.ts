@@ -1154,12 +1154,12 @@ export class HeoStylesPanel extends HeoElement {
    * while it is empty (the size a preview follows). The pick is the hand pick, else the previewed
    * width's size (R13).
    */
-  #strip(model: ElementModel, previewWidth: number | null): { chips: BarChip[]; picked: string; base: number } {
+  #strip(model: ElementModel, previewWidth: number | null): { chips: BarChip[]; picked: string; base: { count: number; won: number } } {
     // Base, whatever the width: a preview shows a size, it does not pick where edits go.
     const wanted = this.ui.cond ?? 'base';
     // The size the previewed width shows keeps its chip even with nothing written there: one press edits there.
     const shows = previewSlot(model, previewWidth);
-    const { chips, count } = barConditions(
+    const { chips, base } = barConditions(
       model,
       model.entries,
       previewWidth,
@@ -1168,17 +1168,18 @@ export class HeoStylesPanel extends HeoElement {
     );
     const picked = wanted !== 'base' && chips.some((chip) => chip.key === wanted) ? wanted : 'base';
     // Base counts the style attribute's declarations too: the panel is the element's, not a rule's.
-    return { chips, picked, base: count('base') + model.inline.length };
+    const inlineWon = model.inline.filter((one) => model.cascade(one.property).applying[0]?.source.kind === 'inline').length;
+    return { chips, picked, base: { count: base.count + model.inline.length, won: base.won + inlineWon } };
   }
 
-  #renderStrip(model: ElementModel, host: StylesHost, strip: { chips: BarChip[]; picked: string; base: number }): TemplateResult {
+  #renderStrip(model: ElementModel, host: StylesHost, strip: { chips: BarChip[]; picked: string; base: { count: number; won: number } }): TemplateResult {
     const { chips, picked } = strip;
     const menuId = `strip-${PANEL_STRIP}`;
     const draft = this.ui.mediaDraft?.owner === PANEL_STRIP ? this.ui.mediaDraft : null;
     return renderConditionBar({
       owner: PANEL_STRIP,
       picked,
-      alwaysCount: strip.base,
+      always: strip.base,
       alwaysTitle: 'Base: what every state starts from',
       chips,
       remaining: remainingConditions(model, chips.map((chip) => chip.key), host.previewWidth, picked, STRIP_OPTIONS),

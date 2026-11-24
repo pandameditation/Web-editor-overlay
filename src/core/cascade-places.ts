@@ -390,3 +390,43 @@ export function defaultPlace(model: ElementModel, element: HTMLElement, cond: Pl
   const mine = own ? places.find((one) => one.key === `.${CSS.escape(own)}|${condKey}`) : undefined;
   return mine ?? places.find((one) => one.key === `new-class|${condKey}`) ?? places[0];
 }
+
+/**
+ * When a value written at `picked` (a size, a state) would be hidden by the element's own inline
+ * declaration of the property, and nothing else: where that inline value can go instead so both
+ * show. The inline value moves into the same family's block at Base (the picked class, or the
+ * element's new class), which every condition's rule then beats by coming later.
+ *
+ * Measured, not assumed: the move happens only if the Base block's value would still be what the
+ * element renders with at Base (no other rule beats it once inline is gone), and the picked place
+ * ranks after it. Without this, a value typed under ≥768px landed in `.featured` at ≥768px while
+ * the element's `style="font-size: 16px"` kept winning: the field changed and the page did not.
+ */
+export function inlineHandOff(
+  model: ElementModel,
+  property: string,
+  cond: PlaceCondition,
+  picked: Place,
+  element: HTMLElement,
+  options: PlacesOptions = {},
+): { base: Place; value: string } | null {
+  if (inlineAllowed(cond) || picked.key === 'inline') return null;
+  const own = model.inline.find((one) => one.property.toLowerCase() === property.toLowerCase());
+  if (!own || own.important) return null;
+  const { by } = placeOutcome(model, property, cond, picked, false);
+  if (by?.source.kind !== 'inline') return null;
+  const atBase: PlaceCondition = { media: 'base', state: '' };
+  const places = placesFor(model, property, atBase, element, options);
+  const base = picked.key.startsWith('new-class|')
+    ? places.find((one) => one.key.startsWith('new-class|'))
+    : places.find((one) => one.family !== null && one.family === picked.family && one.key === `${picked.family}|base`);
+  if (!base || base.target?.kind === 'readonly' || base.reach !== 1) return null;
+  // At Base, with inline gone, the moved value must still be the one drawn.
+  const rest = onePerBlock(model.cascade(property, conditionContext(model, atBase)).applying)
+    .filter((one) => one.source.kind !== 'inline' && blockOf(one) !== blockOf(base.rank));
+  const moved: Contribution = { ...base.rank, property };
+  if (rest[0] && compareContributions(moved, rest[0]) >= 0) return null;
+  // And the picked rule must come after it, to win where its condition holds.
+  if (compareContributions({ ...picked.rank, property }, moved) >= 0) return null;
+  return { base, value: own.value };
+}

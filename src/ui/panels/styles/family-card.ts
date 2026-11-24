@@ -97,6 +97,8 @@ export interface CardView {
   /** The conditions bar's buttons. */
   chips: BarChip[];
   count(key: string): number;
+  /** Base's declarations and how many the element renders with now. */
+  base: { count: number; won: number };
 }
 
 export function cardView(family: Family, host: StylesHost): CardView {
@@ -117,7 +119,7 @@ export function cardView(family: Family, host: StylesHost): CardView {
    */
   let picked = ui.cardPicks.get(family.key) ?? 'base';
   const shows = previewSlot(model, previewWidth);
-  const { chips, count } = barConditions(
+  const { chips, count, base } = barConditions(
     model,
     written,
     previewWidth,
@@ -125,7 +127,7 @@ export function cardView(family: Family, host: StylesHost): CardView {
     { offWidth: 'dim' },
   );
   if (picked !== 'base' && !chips.some((chip) => chip.key === picked)) picked = 'base';
-  return { family, visible, written, picked, chips, count };
+  return { family, visible, written, picked, chips, count, base };
 }
 
 
@@ -502,7 +504,7 @@ export function renderFamilyCard(
       ${renderConditionBar({
       owner: key,
       picked,
-      alwaysCount: view.count('base'),
+      always: view.base,
       alwaysTitle: 'Base: what every state starts from, with no condition',
       chips: view.chips,
       remaining: remainingConditions(model, view.chips.map((chip) => chip.key), host.previewWidth, picked, { offWidth: 'dim' }),

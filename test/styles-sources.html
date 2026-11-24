@@ -1142,7 +1142,9 @@
               Boolean(sroot().querySelector('[data-heo-part="strip"][data-strip="panel"]')) &&
               strip('.card')?.matches('.slots[role="group"]'),
             countsPerSlot:
-              textOf(strip('.card')?.querySelector('.base .c')) === String(slotCount('.card', 'base')) &&
+              // Base is always on screen: its marker is yellow, and says how much of it wins.
+              countIs(strip('.card')?.querySelector('.base'), slotCount('.card', 'base')) &&
+              Boolean(strip('.card')?.querySelector('.base .c.live')) &&
               countIs(slotButton('.card', 'phone'), slotCount('.card', 'phone')) &&
               countIs(slotButton('.card', 'tablet'), slotCount('.card', 'tablet')) &&
               slotCount('.card', 'tablet') === 1 &&
