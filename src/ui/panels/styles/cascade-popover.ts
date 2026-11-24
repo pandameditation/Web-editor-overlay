@@ -88,7 +88,12 @@ export function renderCascadePopover(
     label: 'Strongest first',
     places: choice.places,
     picked: picked.key,
-    onPick: (place, keyboard) => pick(place.key, keyboard),
+    /*
+     * An empty place, when something applies, keeps the focus on its radio: focused, its field
+     * opened the suggestion list on every pick, and the eye followed it. The placeholder shows the
+     * value that applies, the eyedropper writes it, and a click in the field types as before.
+     */
+    onPick: (place, keyboard) => pick(place.key, keyboard || (!place.declared && list.applying.length > 0)),
     open: (place) => renderOpen(place, host, spec, rowId, cond, list.applying[0]?.value),
     inactive,
     // A size not in effect here: the strip goes to it, and this menu with it, its rung now in effect.
@@ -121,7 +126,8 @@ export function renderCascadePopover(
 /**
  * Under the picked rung: the place's own value field, its `!important`, and the result line. A set
  * place edits its declaration where it is; an empty one writes the first value there (creating the
- * rule or the class), with `!important` when that was asked for first.
+ * rule or the class), with `!important` when that was asked for first. An empty place shows the
+ * value that applies as its placeholder, and its eyedropper writes that same value here.
  */
 function renderOpen(
   place: Place,
@@ -193,6 +199,7 @@ function renderOpen(
         .property=${property}
         .suggestions=${buildSuggestions(engine, property, element)}
         placeholder=${winnerValue ?? getComputedStyle(element).getPropertyValue(property).trim()}
+        .sample=${declared ? '' : winnerValue ?? ''}
         @value-input=${(event: CustomEvent<{ value: string }>) => preview(event.detail.value)}
         @value-revert=${() => engine.cancelPreview()}
         @value-change=${(event: CustomEvent<{ value: string }>) => commit(event.detail.value)}

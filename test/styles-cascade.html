@@ -679,6 +679,47 @@
             escapesCloseBackToTheDotAndKeepTheSelection: escapesCloseBackToTheDot,
           };
         }
+        /*
+         * Picking an empty place for a property that has a value is mostly to write that value
+         * there. Its field stays empty and unfocused, the value that applies as its placeholder
+         * (filling and focusing it opened the suggestion list on every pick), and an eyedropper at
+         * the field's end writes that same value in one click.
+         */
+        {
+          const inlinePadding = () => target.style.getPropertyValue('padding');
+          const openField = () => pop()?.querySelector('.open heo-value-field');
+          const dropper = () => openField()?.shadowRoot?.querySelector('button.sample');
+          await openDot('effective', 'padding');
+          const current = pop()?.querySelector('.ladder > .lr.win .cv')?.textContent.trim() ?? '';
+          const startsOnASetPlace = checkedRung()?.dataset.place === '.card|base' && !inlinePadding() && !dropper();
+          rungAt('inline')?.click();
+          await settle();
+          await openField()?.updateComplete;
+          await frames();
+          const input = openField()?.shadowRoot?.querySelector('input');
+          const emptyWithThePlaceholder = openField()?.value === '' && input?.value === '' && input?.placeholder === current;
+          const notFocusedNoList = openField()?.shadowRoot?.activeElement !== input && !openField()?.open;
+          const offered = Boolean(dropper()) && dropper().getAttribute('aria-label') === `Same value here: ${current}` &&
+            dropper().title === 'Same value here' && Boolean(dropper().querySelector('svg'));
+          dropper()?.click();
+          await settle();
+          const written = inlinePadding() === current &&
+            pop()?.querySelector('.ladder > [data-place="inline"] .cv')?.textContent.trim() === current;
+          // Set now: the field shows the value, and the eyedropper is gone (nothing to sample into).
+          const goneOnceSet = openField()?.value === current && !dropper() && !openField()?.open;
+          engine.undo();
+          await settle();
+          await closePop();
+          results.carry = {
+            startsOnASetPlace,
+            anEmptyPlaceShowsTheValueAsPlaceholder: current.length > 0 && emptyWithThePlaceholder,
+            andIsNeitherFocusedNorListed: notFocusedNoList,
+            itsEyedropperOffersThatValue: offered,
+            oneClickWritesItThere: written,
+            theEyedropperGoesOnceTheValueIsSet: goneOnceSet,
+            undoTakesItBack: !inlinePadding(),
+          };
+        }
         await openDot('typography', 'font-family');
         const inherited = pop()?.querySelector('.none')?.textContent.replace(/\s+/g, ' ') ?? '';
         await closePop();

@@ -4497,10 +4497,16 @@ export class EditorEngine {
    *
    * Only there: a value elsewhere (the element's inline one included) is left as it is, so what
    * the ladder's result line said ("hidden by inline") is what happens.
+   *
+   * Inline is written even when the value is the one that already applies. `overrideStyle` skips
+   * that case, which is right for a field that just shows the winner, but here the place was
+   * picked: writing a class's value inline was the point, and it was silently dropped.
    */
   writeDeclarationTo(dest: AddDestination, property: string, value: string): { hint: string | null } {
     if (dest.kind === 'target' && dest.target.kind === 'inline') {
-      this.overrideStyle(property, value, dest.target.element);
+      const el = dest.target.element;
+      if (!splitImportant(value).value) this.overrideStyle(property, value, el);
+      else this.setStyle(property, this.#inlineText(el, property, value), el);
       return { hint: null };
     }
     if (dest.kind === 'target') {

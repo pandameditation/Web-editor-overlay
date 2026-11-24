@@ -35,6 +35,8 @@ const PATHS: Record<string, string> = {
   download: 'M8 2.6v7.2M4.8 7l3.2 3 3.2-3M3 13.4h10',
   upload: 'M8 10.4V3.2M4.8 6.2L8 3l3.2 3.2M3 13.4h10',
   copy: 'M5.8 5.8h7.4v7.4H5.8zM10.4 5.8V2.8H2.8v7.6h3',
+  // An eyedropper: take a value that applies elsewhere and write it here (not the clipboard's copy).
+  pipette: 'M1.4 14.6l.7-.7h2l6-6M2.1 13.9v-2l6-6M10 4l2.3-2.3a1.4 1.4 0 112 2L12 6l.3.3a1.4 1.4 0 11-2 2L7.7 5.7a1.4 1.4 0 112-2z',
   clipboard:
     'M6 2.8h4v1.8H6zM4.4 3.8H3.2v9.4h9.6V3.8h-1.2M5.6 8h4.8M5.6 10.6h3.2',
   // Two blades crossing above two finger loops: cut.

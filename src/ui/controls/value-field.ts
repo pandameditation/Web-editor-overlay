@@ -249,6 +249,11 @@ export class HeoValueField extends LitElement {
         background: var(--heo-hover);
         color: var(--heo-text);
       }
+      /* The eyedropper is the one strip control in the tab order (no key does what it does). */
+      .mini.sample:focus-visible {
+        outline: 2px solid var(--heo-focus-ring);
+        outline-offset: -1px;
+      }
 
       /* The !important tag, in the accent's text ink: readable as text in both themes. */
       .imp {
@@ -752,6 +757,15 @@ export class HeoValueField extends LitElement {
   /** Show the unit chip and enable scrubbing. Inferred from `kind` by default. */
   @property({ type: Boolean }) numeric = false;
   @property({ type: Boolean }) clearable = false;
+  /**
+   * A value to offer while the field is empty: an eyedropper at its end writes it, in one click.
+   *
+   * For the cascade menu's empty places, where the value that applies is shown as the
+   * placeholder and the usual wish is to write that same value here. Committed straight away
+   * rather than put in the box: filling and focusing the box opened its suggestion list, which
+   * moved under the eye every time a place was picked.
+   */
+  @property({ type: String }) sample = '';
   /**
    * The CSS property being edited, when there is one.
    *
@@ -1888,6 +1902,18 @@ export class HeoValueField extends LitElement {
                 ${icon('close', 11)}
               </button>`
         : nothing}
+          ${this.sample.trim() && !this.draft.trim()
+        ? html`<button
+                class="mini sample"
+                type="button"
+                title="Same value here"
+                aria-label=${`Same value here: ${this.sample.trim()}`}
+                @pointerdown=${(event: Event) => event.preventDefault()}
+                @click=${this.#takeSample}
+              >
+                ${icon('pipette', 12)}
+              </button>`
+        : nothing}
           ${this.#canToggle
         ? html`<button
                 class="mini"
@@ -2635,6 +2661,12 @@ export class HeoValueField extends LitElement {
     if (!parsed) return;
     const unit = nextUnit(parsed.unit, event.shiftKey ? -1 : 1);
     this.draft = formatLength(parsed.number, unit);
+    this.#commit();
+  }
+
+  /** Write the offered value. Focus stays where it was: no list opens, nothing moves. */
+  #takeSample(): void {
+    this.draft = this.sample.trim();
     this.#commit();
   }
 
