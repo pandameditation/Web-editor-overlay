@@ -240,7 +240,7 @@ export function hiddenNow(spec: RowSpec, shown: Contribution | undefined): Contr
 }
 
 /** What hides a value, as short as its pill allows: the size it is written at, else its rule. */
-function hiderName(hider: Contribution): string {
+export function hiderName(hider: Contribution): string {
   return hider.source.kind === 'rule' && hider.source.entry.media ? mediaLabel(hider.source.entry.media) : shortLabel(hider);
 }
 

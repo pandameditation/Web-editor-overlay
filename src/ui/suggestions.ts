@@ -1,6 +1,5 @@
 import { propertyMeta, type PropertyMeta } from '../core/css.js';
 import type { EditorEngine } from '../core/editor.js';
-import { EDITABLE_STATES } from '../core/breakpoints.js';
 import { normalizeMedia } from '../core/rules.js';
 import type { DesignToken, TokenGroup } from '../core/types.js';
 import { mediaApplies } from '../core/viewport.js';
@@ -336,12 +335,4 @@ export function mediaQuerySuggestions(
     for (const [value, hint] of items) add(value, `@media ${value}`, hint, group);
   }
   return out;
-}
-
-/** The pseudo-elements "+ Add pseudo-element" offers, with what each one styles; `present` left out. */
-export function pseudoElementSuggestions(present: readonly string[] = []): ValueSuggestion[] {
-  const skip = new Set(present);
-  return EDITABLE_STATES
-    .filter((one) => one.kind === 'pseudo-element' && !skip.has(one.name))
-    .map((one) => ({ value: one.name, label: one.name, hint: one.hint, icon: 'pseudo', group: 'Pseudo-elements' }));
 }

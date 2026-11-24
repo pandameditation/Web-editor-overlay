@@ -1,11 +1,14 @@
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { conditionContext, inactivePlaces, placeConditionKey, placeOutcome, type Place, type PlaceCondition } from '../../../core/cascade-places.js';
-import type { ElementModel } from '../../../core/cascade.js';
+import type { Contribution, ElementModel } from '../../../core/cascade.js';
 import { normalizeClassName } from '../../../core/classes.js';
 import { splitImportant } from '../../../core/declaration-list.js';
+import { mediaLabel } from '../../../core/breakpoints.js';
+import { leanBlockSelector } from '../../../core/block-rule-edit.js';
 import { shortLabel } from '../../../core/save-plan.js';
+import { renderUses } from '../class-editor.js';
 import { buildSuggestions, valueKindFor } from '../../suggestions.js';
-import { ladderStyles, renderLadder, renderResult } from './ladder.js';
+import { displayName, ladderStyles, renderLadder, renderResult } from './ladder.js';
 import { renderPromote } from './promote.js';
 import { conditionKey, conditionName } from './size-strip.js';
 import { readRow, rowIdOf, rowPlace, scopeOfCondition, shownValue, submitNewClassName, type RowSpec } from './property-row.js';
@@ -120,6 +123,61 @@ export function renderCascadePopover(
     },
   })}
     ${notes.map((note) => html`<p class="note">${note}</p>`)}
+  </div>`;
+}
+
+/**
+ * The cascade menu of a card's row: read-only, since the card writes one rule.
+ *
+ * The panel's ladder cut to what matters to that declaration: what the element renders with, down
+ * to it, strongest first. Above it, what overrides it; the winner carries "now" and the rest are
+ * struck, this one included when it loses. No radios and no fields, and no text: the ladder says it.
+ */
+export function renderReadonlyCascade(
+  state: Popover,
+  element: HTMLElement,
+  model: ElementModel,
+): TemplateResult {
+  const { property, rowId } = state;
+  const rule = state.readonly?.rule ?? null;
+  const applying = model.cascade(property).applying;
+  const mine = (one: Contribution): boolean =>
+    rule ? one.source.kind === 'rule' && one.source.entry.rule === rule : one.source.kind === 'inline';
+  const at = applying.findIndex(mine);
+  const shown = at === -1 ? [] : applying.slice(0, at + 1);
+  const rung = (one: Contribution, index: number): TemplateResult => {
+    const entry = one.source.kind === 'rule' ? one.source.entry : null;
+    const name = entry ? leanBlockSelector(entry.selector) : 'inline';
+    const me = index === at;
+    const tone = index === 0 ? 'win' : 'hid';
+    return html`<div class=${`lr ro ${tone}${me ? ' me' : ''}`} role="listitem" aria-current=${me ? 'true' : nothing}>
+      <span class="nm"><span class="pl" title=${name}>${displayName(name, 30)}</span>${entry?.media
+        ? html`<span class="sz">${mediaLabel(entry.media)}</span>`
+        : nothing}${renderUses(entry ? model.reach(entry.family) : 1)}${me ? html`<span class="mine">this card</span>` : nothing}</span>
+      <span class="cv" title=${`${one.value}${one.important ? ' !important' : ''}`}>${one.value}${one.important
+        ? html` <span class="imp" aria-label="!important">!</span>`
+        : nothing}</span>
+      ${index === 0 ? html`<span class="now" title="What the element renders with now">now</span>` : html`<span class="nowgap"></span>`}
+    </div>`;
+  };
+  return html`<div
+    class="pop"
+    role="dialog"
+    popover="manual"
+    tabindex="-1"
+    data-pop=${rowId}
+    data-readonly
+    aria-label=${`Cascade for ${property} on this element`}
+  >
+    <div class="cap">
+      <b>${property}</b>
+      <span>at ${model.width}px</span>
+    </div>
+    <div class="orderhint"><span>Strongest first</span><span>applies</span></div>
+    <div class="ladder" role="list" aria-label=${`What sets ${property} on this element, strongest first`}>
+      ${shown.map(rung)}
+    </div>
+    ${shown.length ? nothing : html`<p class="note">It does not apply on ${element.localName} now.</p>`}
   </div>`;
 }
 
@@ -291,6 +349,32 @@ export const popoverStyles: CSSResult[] = [ladderStyles, css`
     color: var(--heo-text-dim);
     font-size: 10.5px;
     line-height: 1.5;
+  }
+  /* A read-only rung: no radio, so the place starts it; this card's own is marked as picked is. */
+  .lr.ro {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    cursor: default;
+  }
+  .lr.ro:hover {
+    background: transparent;
+  }
+  .lr.ro.me {
+    background: var(--heo-accent-soft);
+    box-shadow: inset 0 0 0 1px var(--heo-accent-line);
+  }
+  .lr.ro.me.win {
+    box-shadow: inset 0 0 0 1px var(--heo-accent-line), inset 3px 0 0 var(--heo-success);
+  }
+  .lr.ro .mine {
+    flex: 0 0 auto;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--heo-accent) 30%, var(--heo-raised));
+    color: var(--heo-text);
+    font-family: var(--heo-font);
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 14px;
   }
   .pop .none code {
     color: var(--heo-text);

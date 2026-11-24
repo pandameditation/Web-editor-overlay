@@ -344,21 +344,55 @@ export const cardHeaderStyles: CSSResult = css`
  * The tag is a button here, because the row writes the very declaration it shows; removing the flag
  * from it is the same act as un-pressing the toggle beside it.
  */
+/**
+ * A row's way into the cascade, where a host has one (the Styles panel's cards): the name is the
+ * cascade menu's button, and a value beaten on the element is struck, with what beats it under the
+ * name, as the panel's own rows show it.
+ */
+export interface RowCascade {
+  /** The row's id, which its popover is anchored to. */
+  rowId: string;
+  /** What wins over this declaration on the element, short (`≥768px`), and in full; null when it applies. */
+  hiddenBy: { name: string; title: string } | null;
+  /** The name button's accessible name. */
+  label: string;
+  expanded: boolean;
+  onToggle(): void;
+}
+
 export function renderDeclarationRow(
   target: DeclarationTarget,
   property: string,
   host: ClassEditorHost,
-  options: { promote: boolean },
+  options: { promote: boolean; cascade?: RowCascade },
 ): TemplateResult {
   const { engine, element } = host;
   // Shown without the flag, which the tag carries. Typed into the field, `!important` still arrives
   // with the value and is written; retyping a value without it keeps what the declaration had.
   const value = splitImportant(target.declarations[property] ?? '').value;
   const important = target.important(property);
+  const cascade = options.cascade;
+  const name = cascade
+    ? html`<button
+        class="dots"
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded=${cascade.expanded ? 'true' : 'false'}
+        aria-label=${cascade.label}
+        title=${cascade.label}
+        @click=${() => cascade.onToggle()}
+      >
+        <span class="p">${property}</span>
+        ${cascade.hiddenBy
+        ? html`<span class="hidby" data-hidden-by title=${cascade.hiddenBy.title}>hidden by ${cascade.hiddenBy.name}</span>`
+        : nothing}
+      </button>`
+    : html`<span class="p" title=${property}>${property}</span>`;
   return html`<div
-    class=${`decl${options.promote ? ' promotable' : ''}`}
+    class=${`decl${options.promote ? ' promotable' : ''}${cascade?.hiddenBy ? ' hidden' : ''}`}
+    data-row=${cascade ? cascade.rowId : nothing}
   >
-    <span class="p" title=${property}>${property}</span>
+    ${name}
     <heo-value-field
       data-property=${property}
       .computed=${target.resolve?.(property) ?? resolvedValue(value, element)}
@@ -511,6 +545,49 @@ export const ClassEditor = {
       font-size: 10.5px;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    /* The name as the cascade menu's button, as on the Styles panel's rows. */
+    .cls .decl .dots {
+      display: grid;
+      justify-items: start;
+      min-width: 0;
+      min-height: 24px;
+      margin: 0 -2px;
+      padding: 1px 2px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      text-align: left;
+      cursor: pointer;
+    }
+    .cls .decl .dots:hover,
+    .cls .decl .dots[aria-expanded='true'] {
+      background: var(--heo-hover);
+    }
+    .cls .decl .dots:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 1px;
+    }
+    .cls .decl .dots .p {
+      max-width: 100%;
+    }
+    /* Beaten on the element: the panel's hollow pill under the name, and the value struck. */
+    .cls .decl .hidby {
+      max-width: 100%;
+      margin-top: 1px;
+      overflow: hidden;
+      padding: 0 5px;
+      border-radius: 999px;
+      box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+      color: var(--heo-text-dim);
+      font-family: var(--heo-font);
+      font-size: 9px;
+      line-height: 13px;
+      text-overflow: ellipsis;
+    }
+    .cls .decl.hidden heo-value-field:not(:focus-within) {
+      --heo-field-decoration: line-through;
+      --heo-field-ink: var(--heo-text-dim);
     }
 
     .cls .apply {

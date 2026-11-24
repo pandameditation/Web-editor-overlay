@@ -41,6 +41,11 @@ export interface StylesUiState {
     scope: RowScope;
     property: string;
     rowId: string;
+    /**
+     * Opened from a card's row: that card's declaration, read-only. The ladder shows what
+     * overrides it on the element, down to it; `rule` null is the element's own style.
+     */
+    readonly?: { rule: CSSStyleRule | null };
   } | null;
   /**
    * The element's cards opened over the panel from the header. `key` is what opened it: a class's family,

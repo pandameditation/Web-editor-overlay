@@ -6,6 +6,7 @@ import {
   isWidthQuery,
   mediaIcon,
   mediaShort,
+  needsGeneratedContent,
   slotForMedia,
 } from '../../../core/breakpoints.js';
 import type { Contribution, ElementModel, RuleEntry } from '../../../core/cascade.js';
@@ -32,10 +33,12 @@ import { bestRow, renderSearchField, renderSearchPopover } from './search-popove
  * though it were in effect, so a rule nobody is previewing still shows its values; pressing it
  * again goes back to Base. A condition that declares nothing has no button: "+" offers the states
  * and the page's media queries not on the bar, then "Add a media query…" for any other (the sizes
- * first), and picking one puts it on the bar, where the "+" was, to be filled. On a source card
- * pseudo-elements are not conditions: they stay blocks under whichever condition is picked. On the
- * Styles panel's own strip they are (`{ pseudo: 'condition' }`): picking `::before` there makes every
- * card read and write the pseudo-element, the way picking `:hover` does.
+ * first), and picking one puts it on the bar, where the "+" was, to be filled. A pseudo-element is
+ * a condition too, on the panel's strip and on every card alike: picking `::before` shows and writes
+ * what `::before` declares, the way picking `:hover` does. It is drawn whenever the element is, so
+ * its pill reads like Base's (the same outline, the yellow "on screen" marker) and picked takes
+ * Base's colour, as a tint; one that draws nothing (a `::before` with no `content`) is drawn
+ * disabled, as a size not on screen is.
  *
  * The panel's strip and every source card draw it, so picking looks and counts the same wherever it
  * is done. Every chip is a pill with its count as a small marker. A size on screen (its query holds
@@ -43,11 +46,6 @@ import { bestRow, renderSearchField, renderSearchPopover } from './search-popove
  * several sizes can be on screen at once, and one can be declared and beaten everywhere. A media
  * condition not in effect is drawn disabled (dimmed) but stays a choice: pressing it edits there.
  */
-
-/** How pseudo-elements are counted: blocks under a condition (cards), or conditions (the panel). */
-export interface ConditionOptions {
-  pseudo?: 'block' | 'condition';
-}
 
 /*
  * Condition keys.
@@ -71,12 +69,21 @@ export function conditionParts(key: string): { media: string; state: string } {
 }
 
 /**
- * The condition a rule declares under. A pseudo-element's rule is a block under its media, unless
- * pseudo-elements are conditions (the panel's strip), where it is `state:::before` like a state.
+ * The condition a rule declares under: its media, and its state or pseudo-element (`state:::before`
+ * like `state::hover`). One answer for the panel's strip and every card, so they count alike.
  */
-export function conditionOf(model: ElementModel, entry: RuleEntry, options: ConditionOptions = {}): string {
-  const media = model.slotOf(entry);
-  return isPseudoElement(entry.state) && options.pseudo !== 'condition' ? media : conditionKey(media, entry.state);
+export function conditionOf(model: ElementModel, entry: RuleEntry): string {
+  return conditionKey(model.slotOf(entry), entry.state);
+}
+
+/**
+ * Whether a pseudo-element draws anything on this element now. A `::before` or `::after` with no
+ * `content` is not drawn at all, whatever else it is given; any other is drawn with the element.
+ */
+export function pseudoDrawn(element: Element, state: string): boolean {
+  if (!needsGeneratedContent(state)) return true;
+  const content = getComputedStyle(element, state).content;
+  return content !== 'none' && content !== 'normal' && content !== '';
 }
 
 /** The media key a query lands on: its slot when it is one, else `other:<media>`. */
@@ -116,8 +123,8 @@ export interface BarChip {
   icon: string | null;
   /** Visible text beside the icon: a state's name, or a media query's short text (`≥768px`). */
   label: string;
-  /** `size` for a media condition, `state` for a state or pseudo-element (under a media or not). */
-  kind: 'size' | 'state';
+  /** `size` for a media condition, `state` for a state, `pseudo` for a pseudo-element (under a media or not). */
+  kind: 'size' | 'state' | 'pseudo';
   count: number;
   /** A media condition not in effect at the width the page renders at. */
   notNow: boolean;
@@ -126,8 +133,8 @@ export interface BarChip {
   live: boolean;
   /** Of `count`, how many win on screen now; the rest a later query beats. `count` when not live. */
   won: number;
-  /** Nothing for the element itself, only pseudo-element blocks: on the bar to reach them, at 0. */
-  pseudoOnly?: boolean;
+  /** A pseudo-element that draws nothing now (a `::before` with no `content`): drawn disabled. */
+  undrawn?: boolean;
 }
 
 /** The block a contribution is in: the style attribute, or its rule. */
@@ -160,8 +167,9 @@ function chipCount(chip: Pick<BarChip, 'count' | 'live' | 'won'>): TemplateResul
 
 /** What a chip on screen says about it, after its name. */
 function liveText(chip: BarChip): string {
+  if (chip.undrawn) return ' · not drawn: it has no content';
   if (!chip.live) return chip.notNow ? ' · not on screen' : '';
-  if (!chip.count) return chip.pseudoOnly ? ' · on screen' : ' · on screen, nothing written yet';
+  if (!chip.count) return ' · on screen, nothing written yet';
   return chip.won === chip.count ? ' · on screen' : ` · on screen: ${chip.won} of ${chip.count} win, ${chip.count - chip.won} hidden by a later query`;
 }
 
@@ -176,38 +184,24 @@ export function barConditions(
   entries: readonly RuleEntry[],
   previewWidth: number | null,
   extra: readonly string[] = [],
-  options: ConditionOptions & { offWidth?: 'hide' | 'dim' } = {},
+  options: { offWidth?: 'hide' | 'dim' } = {},
 ): { chips: BarChip[]; count(key: string): number; base: { count: number; won: number } } {
   const counts = new Map<string, number>();
   const under = new Map<string, RuleEntry[]>();
-  // Conditions holding only pseudo-element blocks (on a card, where those are blocks, not conditions).
-  const pseudoOnly = new Set<string>();
   for (const entry of entries) {
-    const key = conditionOf(model, entry, options);
-    /*
-     * A pseudo-element's block is not the condition's own count. On a card it sits under its media,
-     * and its declarations were added to that media's: a class whose only rule is a `::before` read
-     * Base 0/8, the eight being the pseudo-element's, and 0 because the element itself renders with
-     * none of them (they style the pseudo-element). It still keeps its media's chip on the bar,
-     * since that chip is how its block is reached.
-     */
-    if (isPseudoElement(entry.state) && options.pseudo !== 'condition') {
-      if (entry.declarations.length) pseudoOnly.add(key);
-      continue;
-    }
+    const key = conditionOf(model, entry);
     counts.set(key, (counts.get(key) ?? 0) + entry.declarations.length);
     under.set(key, [...(under.get(key) ?? []), entry]);
   }
   const count = (key: string): number => counts.get(key) ?? 0;
   const keys = new Set<string>();
   for (const [key, n] of counts) if (key !== 'base' && n > 0) keys.add(key);
-  for (const key of pseudoOnly) if (key !== 'base') keys.add(key);
   for (const key of extra) if (key !== 'base') keys.add(key);
   const visible = (key: string): boolean => {
     const media = slotMedia(model, key);
     return media === null || previewWidth === null || options.offWidth === 'dim' || mediaApplies(media, previewWidth);
   };
-  // Sizes in slot order, then other media, then states in the state list's order.
+  // Pseudo-elements, then sizes in slot order, then other media, then states, in the state list's order.
   const slotOrder = model.slots().map((one) => one.key);
   const stateOrder = (state: string): number => {
     const at = EDITABLE_STATES.findIndex((one) => one.name === state);
@@ -217,6 +211,8 @@ export function barConditions(
     const { media, state } = conditionParts(key);
     const slot = slotOrder.indexOf(media);
     const mediaRank = media === 'base' ? -1 : slot === -1 ? slotOrder.length : slot;
+    // Pseudo-elements first, beside Base: drawn whenever the element is, before what applies sometimes.
+    if (isPseudoElement(state)) return [-1, stateOrder(state) * 100 + mediaRank, key];
     return state ? [2, stateOrder(state) * 100 + mediaRank, key] : [mediaRank === slotOrder.length ? 1 : 0, mediaRank, key];
   };
   const sorted = [...keys].filter(visible).sort((a, b) => {
@@ -230,20 +226,24 @@ export function barConditions(
     const slot = model.slots().find((one) => one.key === mediaKey) ?? null;
     const n = count(key);
     const notNow = media !== null && !mediaApplies(media, null);
-    const live = media !== null && !state && !notNow;
+    const pseudo = isPseudoElement(state);
+    // A pseudo-element is on screen as Base is, while it draws: its media holds and it has content.
+    const undrawn = pseudo && !notNow && !pseudoDrawn(model.element, state);
+    const live = pseudo ? !notNow && !undrawn : media !== null && !state && !notNow;
     const name = conditionName(model, key);
     return {
       key,
       media,
       icon: media === null ? null : slot ? slot.icon : mediaIcon(media),
       label: state || (media === null ? '' : mediaShort(media)),
-      kind: state ? 'state' : 'size',
+      kind: pseudo ? 'pseudo' : state ? 'state' : 'size',
       count: n,
       notNow,
       live,
-      won: live ? Math.min(n, wonNow(model, under.get(key) ?? [])) : n,
-      pseudoOnly: !n && pseudoOnly.has(key),
-      title: `${slot && !state ? slot.name : name}${n ? ` — ${countText(n, 'declaration')}` : pseudoOnly.has(key) ? ' — pseudo-elements only' : ' — none yet'}` +
+      // The element's cascade does not hold a pseudo-element's declarations: they are all its own.
+      won: live && !pseudo ? Math.min(n, wonNow(model, under.get(key) ?? [])) : n,
+      ...(undrawn ? { undrawn } : {}),
+      title: `${slot && !state ? slot.name : name}${n ? ` — ${countText(n, 'declaration')}` : ' — none yet'}` +
         (notNow ? ` · not in effect ${isWidthQuery(media ?? '') ? `at ${model.width}px` : 'now'}` : ''),
     };
   });
@@ -252,25 +252,25 @@ export function barConditions(
   return { chips, count, base };
 }
 
-/** What "+" offers, by kind. `pseudos` only where pseudo-elements are conditions. */
+/** What "+" offers, by kind. */
 export interface RemainingConditions {
   media: Array<{ key: string; icon: string; label: string; note: string }>;
   states: Array<{ key: string; label: string; note: string }>;
-  pseudos?: Array<{ key: string; label: string; note: string }>;
+  pseudos: Array<{ key: string; label: string; note: string }>;
 }
 
 /**
  * What "+" offers: every condition not on the bar. Sizes not in effect at a previewed width are left
  * out, as they are from the bar (kept with `offWidth: 'dim'`, as the panel's strip keeps them).
  * States are offered under the picked condition's media, so a state added while a size is picked is
- * that size's state, as it was from the adder; pseudo-elements likewise, where they are conditions.
+ * that size's state, as it was from the adder; pseudo-elements likewise.
  */
 export function remainingConditions(
   model: ElementModel,
   onBar: readonly string[],
   previewWidth: number | null,
   picked = 'base',
-  options: ConditionOptions & { offWidth?: 'hide' | 'dim' } = {},
+  options: { offWidth?: 'hide' | 'dim' } = {},
 ): RemainingConditions {
   const taken = new Set(onBar);
   const fits = (media: string): boolean =>
@@ -284,7 +284,6 @@ export function remainingConditions(
   const states = EDITABLE_STATES
     .filter((one) => one.kind === 'state' && !taken.has(conditionKey(under, one.name)))
     .map((one) => ({ key: conditionKey(under, one.name), label: one.name, note: at }));
-  if (options.pseudo !== 'condition') return { media, states };
   const pseudos = EDITABLE_STATES
     .filter((one) => one.kind === 'pseudo-element' && !taken.has(conditionKey(under, one.name)))
     .map((one) => ({ key: conditionKey(under, one.name), label: one.name, note: at }));
@@ -345,17 +344,17 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
       type="button"
       aria-pressed=${spec.picked === 'base' ? 'true' : 'false'}
       title=${`${spec.alwaysTitle} · ${spec.always.won === spec.always.count
-        ? 'always on screen'
-        : `on screen: ${spec.always.won} of ${spec.always.count} win, ${spec.always.count - spec.always.won} hidden by a size or a rule`}`}
+      ? 'always on screen'
+      : `on screen: ${spec.always.won} of ${spec.always.count} win, ${spec.always.count - spec.always.won} hidden by a size or a rule`}`}
       @click=${() => spec.onPick('base')}
     >
       Base ${chipCount({ ...spec.always, live: true })}
     </button>
     ${spec.chips.map((chip) => {
-    const on = spec.picked === chip.key;
-    const name = chip.title.split(' — ')[0];
-    const pick = html`<button
-        class=${`${chip.kind}${chip.count ? '' : ' empty'}${chip.notNow ? ' notnow' : ''}${chip.live ? ' live' : ''}`}
+        const on = spec.picked === chip.key;
+        const name = chip.title.split(' — ')[0];
+        const pick = html`<button
+        class=${`${chip.kind}${chip.count ? '' : ' empty'}${chip.notNow || chip.undrawn ? ' notnow' : ''}${chip.live ? ' live' : ''}`}
         type="button"
         data-cond=${chip.key}
         data-slot=${chip.key}
@@ -366,10 +365,10 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
       >
         ${chip.icon ? icon(chip.icon, 11) : nothing}${chip.label ? html`<span class="n">${chip.label}</span>` : nothing}${chipCount(chip)}
       </button>`;
-    // The picked one carries its ×, as a class chip in the header does: the condition being read
-    // is the one it would take off.
-    return on
-      ? html`<span class=${`cchip-on ${chip.kind}`}>${pick}<button
+        // The picked one carries its ×, as a class chip in the header does: the condition being read
+        // is the one it would take off.
+        return on
+          ? html`<span class=${`cchip-on ${chip.kind}`}>${pick}<button
             class="ckill"
             type="button"
             aria-label=${`Remove ${name}`}
@@ -378,8 +377,8 @@ export function renderConditionBar(spec: ConditionBarSpec): TemplateResult {
           >
             ${icon('close', 9)}
           </button></span>`
-      : pick;
-  })}
+          : pick;
+      })}
     <!-- After the conditions, as "+" is after the classes in the header: what it adds lands here. -->
     <button
       class="add"
@@ -708,6 +707,18 @@ export const sizeStripStyles: CSSResult = css`
   .slots .cchip-on.state {
     background: var(--heo-state-bg);
     color: var(--heo-state);
+  }
+  /*
+   * A pseudo-element is drawn whenever the element is: unpicked it is outlined as Base is, and its
+   * marker is Base's yellow; picked it takes Base's colour, as a tint, so no hue is added for it.
+   */
+  .slots .pseudo[aria-pressed='true'],
+  .slots .cchip-on.pseudo {
+    background: var(--heo-accent-soft);
+    color: var(--heo-accent-text);
+  }
+  .slots .pseudo[aria-pressed='true'] {
+    box-shadow: inset 0 0 0 1px var(--heo-accent-line);
   }
   /* A state or a media query that is not a size reads by name; long ones are cut, the title has all. */
   .slots .n {

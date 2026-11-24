@@ -48,7 +48,7 @@ import {
   type CardView,
   type Popped,
 } from './styles/family-card.js';
-import { renderCascadePopover, popoverStyles } from './styles/cascade-popover.js';
+import { renderCascadePopover, renderReadonlyCascade, popoverStyles } from './styles/cascade-popover.js';
 import { headerStyles, renderElementHeader } from './styles/header.js';
 import { CREATE_CLASS_TITLE, createClassLabel } from '../create-offer.js';
 import {
@@ -352,8 +352,8 @@ const VIEWS: SegmentOption[] = [
 
 /** The panel's condition strip: its id, for its menu and the conditions added to it. */
 const PANEL_STRIP = 'panel';
-/** On the panel's strip, pseudo-elements are conditions and sizes off the previewed width stay, dimmed. */
-const STRIP_OPTIONS = { pseudo: 'condition', offWidth: 'dim' } as const;
+/** On the panel's strip, sizes off the previewed width stay, dimmed. */
+const STRIP_OPTIONS = { offWidth: 'dim' } as const;
 
 /**
  * The card a property shows in for this render: the first visible card listing it now, else
@@ -897,7 +897,7 @@ export class HeoStylesPanel extends HeoElement {
   #openers(): Array<{ layer: string; opener: string }> {
     const out: Array<{ layer: string; opener: string }> = [];
     const popover = this.ui.popover;
-    if (popover) out.push({ layer: '.pop:not(.cardpop):not(.finderpop)', opener: `.row[data-row="${CSS.escape(popover.rowId)}"] .dots` });
+    if (popover) out.push({ layer: '.pop:not(.cardpop):not(.finderpop)', opener: `[data-row="${CSS.escape(popover.rowId)}"] .dots` });
     if (this.ui.cardPop) out.push({ layer: '.cardpop', opener: this.ui.cardPop.anchor });
     if (this.ui.finderOpen) out.push({ layer: '.finderpop', opener: '.ident .cchip.add' });
     return out;
@@ -920,7 +920,7 @@ export class HeoStylesPanel extends HeoElement {
     const root = this.renderRoot;
     const popover = this.ui.popover;
     if (popover) {
-      const anchor = root.querySelector(`.row[data-row="${CSS.escape(popover.rowId)}"]`);
+      const anchor = root.querySelector(`[data-row="${CSS.escape(popover.rowId)}"]`);
       if (!anchor) this.ui = { ...this.ui, popover: null };
       else {
         placeLayer(root.querySelector<HTMLElement>('.pop:not(.cardpop):not(.finderpop)'), anchor, {
@@ -1133,12 +1133,14 @@ export class HeoStylesPanel extends HeoElement {
       ${this.ui.view === 'applied' ? this.#renderApplied(cards) : this.#renderCards(cards)}
       ${found === 0 ? this.#renderNoMatch() : nothing}
       ${popover
-        ? renderCascadePopover(
-          popover,
-          host,
-          popoverOn,
-          popoverOn === el ? model : this.editor.elementModel(popoverOn),
-        )
+        ? popover.readonly
+          ? renderReadonlyCascade(popover, el, model)
+          : renderCascadePopover(
+            popover,
+            host,
+            popoverOn,
+            popoverOn === el ? model : this.editor.elementModel(popoverOn),
+          )
         : nothing}
       ${this.ui.cardPop ? this.#renderCardPop(el, model, host) : nothing}
     `;
@@ -1206,7 +1208,6 @@ export class HeoStylesPanel extends HeoElement {
         owner: PANEL_STRIP,
         key,
         entries: model.entries,
-        pseudo: 'condition',
         onCleared: () => this.#patch({ cond: 'base' }),
       }),
     });
@@ -1724,14 +1725,14 @@ export class HeoStylesPanel extends HeoElement {
     if (popover) {
       // The cascade menu: the class finder and the card popovers are pops too.
       const layer = root.querySelector(CASCADE_POP);
-      const opener = root.querySelector(`.row[data-row="${CSS.escape(popover.rowId)}"] .dots`);
+      const opener = root.querySelector(`[data-row="${CSS.escape(popover.rowId)}"] .dots`);
       if ((layer && path.includes(layer)) || (opener && path[0] === opener)) {
         requestAnimationFrame(() => {
           if (this.ui.popover?.rowId !== popover.rowId) return;
           const active = deepActive();
           if (!active || active === document.body) return;
           const now = root.querySelector(CASCADE_POP);
-          const by = root.querySelector(`.row[data-row="${CSS.escape(popover.rowId)}"] .dots`);
+          const by = root.querySelector(`[data-row="${CSS.escape(popover.rowId)}"] .dots`);
           if ((now && composedContains(now, active)) || active === by) return;
           this.#patch({ popover: null });
         });
@@ -1792,14 +1793,15 @@ export class HeoStylesPanel extends HeoElement {
       path.some((node) => node instanceof Element && node.matches?.(selector));
     const next: Partial<StylesUiState> = {};
     const popover = this.ui.popover;
-    if (popover && !inside('.pop') && !inside(`.row[data-row="${CSS.escape(popover.rowId)}"] .dots`)) {
+    if (popover && !inside('.pop') && !inside(`[data-row="${CSS.escape(popover.rowId)}"] .dots`)) {
       next.popover = null;
     }
     // Its own menus, adders and value lists are inside it, so a press there keeps it.
     const cardPop = this.ui.cardPop;
     // A press on "Paste CSS…" keeps the card: the paste opens on its class, and the card shows
     // what landed in it.
-    if (cardPop && !inside('.cardpop') && !inside(cardPop.anchor) && !inside('[data-act="paste"]')) next.cardPop = null;
+    // A card row's cascade menu is drawn over the card: a press in it keeps the card too.
+    if (cardPop && !inside('.cardpop') && !inside(cardPop.anchor) && !inside('[data-act="paste"]') && !inside(CASCADE_POP)) next.cardPop = null;
     const menu = this.ui.menu;
     if (menu && !inside(`.menu[data-menu="${CSS.escape(menu.id)}"]`) && !inside(`[data-menu-anchor="${CSS.escape(menu.id)}"]`)) {
       next.menu = null;
@@ -1844,7 +1846,7 @@ export class HeoStylesPanel extends HeoElement {
     } else if (ui.popover) {
       const rowId = ui.popover.rowId;
       this.#patch({ popover: null });
-      this.#focusSelector(`.row[data-row="${CSS.escape(rowId)}"] .dots`);
+      this.#focusSelector(`[data-row="${CSS.escape(rowId)}"] .dots`);
     } else if (ui.cardPop) {
       const anchor = ui.cardPop.anchor;
       this.#patch({ cardPop: null });

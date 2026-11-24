@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <title>Previewing a viewport width in place</title>
@@ -9,34 +10,86 @@
     window.
   -->
   <style id="site">
-    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-    .card { padding: 12px 16px; margin: 0 0 12px; color: #1f2937; background-color: #ffffff; }
-    .featured { border: 1px solid #a5b4fc; }
-    .card.featured { background-color: #eef2ff; }
-    .promo .card { color: #3730a3 !important; }
-    section p { letter-spacing: 0.01em; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .card {
+      padding: 12px 16px;
+      margin: 0 0 12px;
+      color: #1f2937;
+      background-color: #ffffff;
+    }
+
+    .featured {
+      border: 1px solid #a5b4fc;
+    }
+
+    .card.featured {
+      background-color: #eef2ff;
+    }
+
+    .promo .card {
+      color: #3730a3 !important;
+    }
+
+    section p {
+      letter-spacing: 0.01em;
+    }
+
     @media (max-width: 767px) {
-      .cards { grid-template-columns: 1fr; }
-      .card { padding: 10px 12px; }
-      section p { word-spacing: 1px; }
+      .cards {
+        grid-template-columns: 1fr;
+      }
+
+      .card {
+        padding: 10px 12px;
+      }
+
+      section p {
+        word-spacing: 1px;
+      }
     }
+
     @media (min-width: 768px) {
-      .card { padding: 20px 28px; }
-      section p { word-spacing: 4px; }
+      .card {
+        padding: 20px 28px;
+      }
+
+      section p {
+        word-spacing: 4px;
+      }
     }
+
     @media print {
-      .card { color: #000000; }
+      .card {
+        color: #000000;
+      }
     }
-    .card:hover { background-color: #f9fafb; }
+
+    .card:hover {
+      background-color: #f9fafb;
+    }
+
     @media (min-width: 768px) {
-      .card:hover { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+      .card:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      }
     }
-    .featured::before { content: "★"; color: #f59e0b; }
+
+    .featured::before {
+      content: "★";
+      color: #f59e0b;
+    }
   </style>
   <!-- Bootstrap spells the phone bound 767.98px: it is still the phone slot. -->
   <style id="fraction">
     @media (max-width: 767.98px) {
-      .featured { text-indent: 2px; }
+      .featured {
+        text-indent: 2px;
+      }
     }
   </style>
   <!--
@@ -46,22 +99,60 @@
     inline value, and custom properties, var() shorthands and nesting must follow.
   -->
   <style id="fluid">
-    .fluid-title { font-size: clamp(12px, 5vw, 60px); }
-    .fluid-box { width: 50vw; padding: 0 2vw; }
-    .fluid-box.fixed { width: 100px; }
-    .fluid-gap { --gutter: 10vw; margin-left: var(--gutter); }
-    .fluid-pending { padding: var(--missing, 3vw) 1px; }
-    .fluid-strong { height: 7px !important; }
-    .fluid-nest { & .fluid-inner { width: 25vw; } }
+    .fluid-title {
+      font-size: clamp(12px, 5vw, 60px);
+    }
+
+    .fluid-box {
+      width: 50vw;
+      padding: 0 2vw;
+    }
+
+    .fluid-box.fixed {
+      width: 100px;
+    }
+
+    .fluid-gap {
+      --gutter: 10vw;
+      margin-left: var(--gutter);
+    }
+
+    .fluid-pending {
+      padding: var(--missing, 3vw) 1px;
+    }
+
+    .fluid-strong {
+      height: 7px !important;
+    }
+
+    .fluid-nest {
+      & .fluid-inner {
+        width: 25vw;
+      }
+    }
+
     /* For the wide preview: half the screen tall in a fitted 1440, and a box to drag by hand. */
-    .fluid-tall { height: 50vh; width: 10px; }
-    .fluid-moved { position: absolute; left: 40px; top: 2000px; width: 60px; height: 30px; }
+    .fluid-tall {
+      height: 50vh;
+      width: 10px;
+    }
+
+    .fluid-moved {
+      position: absolute;
+      left: 40px;
+      top: 2000px;
+      width: 60px;
+      height: 30px;
+    }
   </style>
   <!-- A sheet gated by its own media attribute: the attribute must never change. -->
   <style id="gated" media="(max-width: 767px)">
-    #target { outline-offset: 3px; }
+    #target {
+      outline-offset: 3px;
+    }
   </style>
 </head>
+
 <body>
   <section class="promo">
     <div class="cards">
@@ -79,7 +170,9 @@
     <div id="fluid-pending" class="fluid-pending">pending</div>
     <div id="fluid-inline" style="width: 20vw">inline</div>
     <div id="fluid-strong" class="fluid-strong" style="height: 5vw">strong</div>
-    <div class="fluid-nest"><div id="fluid-inner" class="fluid-inner">inner</div></div>
+    <div class="fluid-nest">
+      <div id="fluid-inner" class="fluid-inner">inner</div>
+    </div>
     <div id="fluid-tall" class="fluid-tall"></div>
     <div id="fluid-moved" class="fluid-moved">moved</div>
   </div>
@@ -1036,7 +1129,8 @@
         results.filter.barsShowOnlyMatchingConditions =
           inEffect(card('.card')).join(',') === 'phone,state::hover' &&
           slotsOf(card('.card')).includes('tablet') && Boolean(card('.card')?.querySelector('.slots [data-slot="tablet"].notnow')) &&
-          inEffect(root().querySelector('.cond')).join(',') === 'phone,state::hover,state:::before' &&
+          // Pseudo-elements lead the bar, beside Base: they are drawn whenever the element is.
+          inEffect(root().querySelector('.cond')).join(',') === 'state:::before,phone,state::hover' &&
           Boolean(root().querySelector('.cond .slots [data-slot="tablet"].notnow'));
         const hoverAt320 = inEffect(card('.card'));
         // One card is open at a time: the other class's, for the same question.
@@ -1072,4 +1166,5 @@
     })();
   </script>
 </body>
+
 </html>

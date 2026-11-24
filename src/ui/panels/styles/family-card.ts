@@ -1,8 +1,8 @@
 import { leanBlockSelector } from '../../../core/block-rule-edit.js';
 import { css, html, nothing, type CSSResult, type TemplateResult } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
-import { EDITABLE_STATES, isPseudoElement, isWidthQuery, mediaNow, mediaShort, needsGeneratedContent, pseudoElementNamed } from '../../../core/breakpoints.js';
-import { classFamily, withState, type Family, type RuleEntry, type WriteTarget } from '../../../core/cascade.js';
+import { EDITABLE_STATES, isPseudoElement, isWidthQuery, mediaNow, mediaShort, needsGeneratedContent } from '../../../core/breakpoints.js';
+import { classFamily, withState, type Contribution, type Family, type RuleEntry, type WriteTarget } from '../../../core/cascade.js';
 import type { Place } from '../../../core/cascade-places.js';
 import { simpleClassName } from '../../../core/classes.js';
 import { escapeRegExp } from '../../../core/css.js';
@@ -12,7 +12,7 @@ import {
   toRecord,
   type Declaration,
 } from '../../../core/declaration-list.js';
-import { countText, reachText } from '../../../core/save-plan.js';
+import { contributionLabel, countText, reachText } from '../../../core/save-plan.js';
 import { mediaApplies } from '../../../core/viewport.js';
 import { field } from '../../form-errors.js';
 import { icon } from '../../icons.js';
@@ -24,12 +24,10 @@ import {
   renderDeclarationRow,
   renderFamilies,
   type DeclarationTarget,
+  type RowCascade,
 } from '../class-editor.js';
 import { renderAdder, stylesDestination, valueStepDraft, type AdderDestination, type AdderPlaces } from './property-adder.js';
-import { bestRow, renderSearchField, renderSearchPopover } from './search-popover.js';
-import { pseudoElementSuggestions } from '../../suggestions.js';
-import type { HeoValueField } from '../../controls/value-field.js';
-import { previewSlot, submitNewClassName, withNewClassName } from './property-row.js';
+import { hiderName, previewSlot, submitNewClassName, withNewClassName } from './property-row.js';
 import { NEW_CLASS_FIELD } from './cascade-popover.js';
 import {
   barConditions,
@@ -43,7 +41,6 @@ import {
   slotMedia,
   slotName,
   type BarChip,
-  type ConditionOptions,
 } from './size-strip.js';
 import type { PendingState, StylesHost } from './types.js';
 import type { CssPasteOptions } from '../../../core/editor.js';
@@ -109,7 +106,7 @@ export function cardView(family: Family, host: StylesHost): CardView {
   const waiting = [
     ...(ui.otherSlots.get(family.key) ?? []),
     ...ui.pendingStates
-      .filter((one) => one.family === family.key && !isPseudoElement(one.state))
+      .filter((one) => one.family === family.key)
       .map((one) => conditionKey(one.slot, one.state)),
   ];
   /*
@@ -160,12 +157,60 @@ function writeTarget(
   };
 }
 
+/**
+ * A card row's way into the cascade: its name opens a read-only ladder of what overrides it on the
+ * element, and a value beaten there is struck with what beats it under the name. `own` is the
+ * block's rule, or `inline` for the element's own style.
+ *
+ * Only where the element's cascade decides: a rule in effect now, not a state or pseudo-element
+ * (the element is not hovered, and a pseudo-element's cascade is its own). Base read 8/9 with no way
+ * to tell which declaration lost, or to what: this is the same count, row by row.
+ */
+function rowCascade(own: RuleEntry | 'inline', listId: string, host: StylesHost): ((property: string) => RowCascade | undefined) | undefined {
+  const { model } = host;
+  if (own !== 'inline' && (own.state || !model.applies(own))) return undefined;
+  const mine = (one: Contribution): boolean =>
+    own === 'inline' ? one.source.kind === 'inline' : one.source.kind === 'rule' && one.source.entry.rule === own.rule;
+  return (property) => {
+    const applying = model.cascade(property).applying;
+    const at = applying.findIndex(mine);
+    if (at === -1) return undefined;
+    // A block can hold several rules (one per sheet): the rule's order keeps two rows apart.
+    const rowId = `card|${listId}|${own === 'inline' ? 'inline' : own.order}|${property}`;
+    const expanded = host.ui.popover?.rowId === rowId;
+    const top = applying[0]!;
+    const hidden = at > 0;
+    const label = `${property}: ${hidden ? `hidden on this element by ${contributionLabel(top)}` : 'applies on this element'}. Show cascade`;
+    return {
+      rowId,
+      hiddenBy: hidden
+        ? { name: hiderName(top), title: `Hidden on this element by ${contributionLabel(top)}: the cascade menu shows what wins` }
+        : null,
+      label,
+      expanded,
+      onToggle: () => {
+        host.patch({
+          popover: expanded ? null : { scope: { kind: 'element' }, property, rowId, readonly: { rule: own === 'inline' ? null : own.rule } },
+          menu: null,
+        });
+        if (expanded) host.focusSelector(`[data-row="${CSS.escape(rowId)}"] .dots`);
+      },
+    };
+  };
+}
+
 /** A card block's rows: shorthands and their sides as families, each row writing its own rule. */
-function renderRows(target: DeclarationTarget, list: readonly Declaration[], host: StylesHost): TemplateResult {
+function renderRows(
+  target: DeclarationTarget,
+  list: readonly Declaration[],
+  host: StylesHost,
+  own?: RuleEntry | 'inline',
+): TemplateResult {
   const rows = displayOrder(list, shorthandGroups(list));
+  const cascade = own ? rowCascade(own, target.id, host) : undefined;
   return renderFamilies(
     rows,
-    (property) => renderDeclarationRow(target, property, host, { promote: true }),
+    (property) => renderDeclarationRow(target, property, host, { promote: true, cascade: cascade?.(property) }),
     (property) => target.commit(property, target.declarations[property] ?? ''),
     target.label,
   );
@@ -358,7 +403,7 @@ export function renderFamilyCard(
         ? repeat(
           base,
           (entry) => entry.order,
-          (entry) => renderRows(entryTarget(entry, label, baseId, host), entry.declarations, host),
+          (entry) => renderRows(entryTarget(entry, label, baseId, host), entry.declarations, host, entry),
         )
         : html`<p class="hint" style="margin:0">
               ${slot === 'base'
@@ -371,14 +416,15 @@ export function renderFamilyCard(
     </div>`;
 
     /*
-     * The blocks under the pick. Always or a media condition: its pseudo-elements, as blocks under
-     * the base block. A state: that state's block alone, since a state is picked on the bar.
+     * The block under the pick: Base or a media condition, its own declarations; a state or a
+     * pseudo-element, that one's block alone, since each is picked on the bar (as on the panel's
+     * strip, where a pseudo-element was a condition while cards drew it as a block under Base).
      */
     const order = (state: string): number => {
       const at = EDITABLE_STATES.findIndex((one) => one.name === state);
       return at === -1 ? EDITABLE_STATES.length : at;
     };
-    const belongs = (state: string): boolean => (pickedState ? state === pickedState : isPseudoElement(state));
+    const belongs = (state: string): boolean => Boolean(pickedState) && state === pickedState;
     const states = [...new Set(inSlot.filter((entry) => entry.state && belongs(entry.state)).map((entry) => entry.state))];
     // Added with nothing written yet; dropped once its rule has a declaration, which makes it real.
     const pending = ui.pendingStates.filter((one) =>
@@ -391,7 +437,9 @@ export function renderFamilyCard(
      */
     const emptyPicked = pickedState && !ordered.length
       ? html`<div class="block pending" data-waiting=${pickedState}>
-          ${renderBlockHeader('cursor', pickedState, 'state', nothing)}
+          ${isPseudoElement(pickedState)
+        ? renderBlockHeader('pseudo', pickedState, 'pseudo-element', nothing)
+        : renderBlockHeader('cursor', pickedState, 'state', nothing)}
           <div class="decls"><p class="hint" style="margin:0">No declarations yet.</p></div>
           <div class="block-add">
             <button
@@ -437,7 +485,7 @@ export function renderFamilyCard(
           ${repeat(
         members,
         (entry) => entry.order,
-        (entry) => renderRows(entryTarget(entry, stateLabel, id, host), entry.declarations, host),
+        (entry) => renderRows(entryTarget(entry, stateLabel, id, host), entry.declarations, host, entry),
       )}
         </div>
         ${hintFor(id)}
@@ -451,29 +499,14 @@ export function renderFamilyCard(
       </div>`;
     });
 
-    /*
-     * "+ Add pseudo-element" (R24): the same search popover as the bar's "+", listing the
-     * pseudo-elements this card has no block for yet. Picking one adds its block, written as nothing
-     * until its first property. Not under a picked state: a pseudo-element is a block under Always
-     * or a media query, and one added there had no block to show in.
-     */
-    const stateAdder = pickedState
-      ? nothing
-      : renderPseudoAdder(host, {
-        id: `${key}|${slot}`,
-        existing: ordered.filter(isPseudoElement),
-        onPick: (named) => addState(named, slot),
-      });
-
     const pick = (next: string): void => {
       const picks = new Map(host.ui.cardPicks);
       picks.set(key, next);
       host.patch({ cardPicks: picks });
     };
     /*
-     * A state for this card, under `under`: written as nothing until its first property (§5.7). A
-     * state becomes the pick, on the bar; a pseudo-element is a block under the pick. The message
-     * when it is refused, else null.
+     * A state or pseudo-element for this card, under `under`: written as nothing until its first
+     * property (§5.7), and the pick, on the bar. The message when it is refused, else null.
      */
     const addState = (state: string, under: string): string | null => {
       const at = slotMedia(model, under);
@@ -491,12 +524,14 @@ export function renderFamilyCard(
       // Straight to its value, `""`, which Enter takes and typing replaces.
       const draft = result.kind === 'pending' && needsGeneratedContent(state) ? valueStepDraft('content', '""') : '';
       const picks = new Map(host.ui.cardPicks);
-      if (!isPseudoElement(state)) picks.set(key, conditionKey(under, state));
+      picks.set(key, conditionKey(under, state));
       host.form.reset();
       host.patch({ pendingStates, cardPicks: picks, adder: { id, draft, dest: '' }, menu: null });
       return null;
     };
-    const whenText = pickedState
+    const whenText = pickedState && isPseudoElement(pickedState)
+      ? html`The element's <b>${pickedState}</b>${short ? html`, ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} <b>${short}</b>` : nothing} — drawn with it${needsGeneratedContent(pickedState) ? ' once it has content' : ''}${uses > 1 ? `, for all ${uses} elements` : ''}.`
+      : pickedState
       ? html`Only on <b>${pickedState}</b>${short ? html`, ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} <b>${short}</b>` : nothing} — when it applies, over Base${uses > 1 ? `, for all ${uses} elements` : ''}.`
       : html`Only ${media !== null && !isWidthQuery(media) ? 'under' : 'at'} <b>${short}</b> — ${media === null ? '' : mediaNow(media, mediaApplies(media, null), model.width)}.
           Adds to or overrides Base there${uses > 1 ? `, for all ${uses} elements` : ''}.`;
@@ -547,7 +582,6 @@ export function renderFamilyCard(
       ${pickedState ? nothing : baseBlock}
       ${stateBlocks}
       ${emptyPicked}
-      ${stateAdder}
       ${renderCardActions(host, {
         paste: name
             ? { context: 'class', element: host.element, className: name }
@@ -571,73 +605,17 @@ export function renderFamilyCard(
   </div>`;
 }
 /**
- * "+ Add pseudo-element" (R24): the same search popover as the bar's "+", listing the
- * pseudo-elements not offered yet. Picking one hands it to `onPick`, which adds its block, written
- * as nothing until its first property, and says why when it refuses. Source cards draw it (the
- * panel's own strip offers pseudo-elements as conditions instead). Not under a picked state: a pseudo-element is a block under Always or a
- * media query, and one added there had no block to show in.
- */
-export function renderPseudoAdder(
-  host: StylesHost,
-  options: { id: string; existing: readonly string[]; onPick(state: string): string | null },
-): TemplateResult {
-  const menu = `pseudo-${options.id}`;
-  const fieldName = `pseudo-add-${options.id}`;
-  const open = host.ui.menu?.id === menu;
-  const submit = (text: string, fieldEl: HeoValueField | null): void => {
-    const named = pseudoElementNamed(text) ?? pseudoElementNamed(bestRow(text, fieldEl)?.value ?? '');
-    if (!named) {
-      host.form.fail(fieldName, text.trim()
-        ? `::${text.trim().replace(/^:+/, '')} is not a pseudo-element the editor knows.`
-        : 'Pick a pseudo-element, like ::before.');
-      return;
-    }
-    const refused = options.onPick(named);
-    if (refused) host.form.fail(fieldName, refused);
-  };
-  return html`<div class="block-add" data-menu-place=${menu}>
-      <button
-        class="add-prop"
-        type="button"
-        data-heo-part="adder"
-        aria-haspopup="dialog"
-        aria-expanded=${open ? 'true' : 'false'}
-        data-menu-anchor=${menu}
-        @click=${() => {
-    host.form.reset();
-    host.toggleMenu(menu, !open);
-  }}
-      >
-        ${icon('plus', 12)} Add pseudo-element
-      </button>
-    </div>
-    ${open
-    ? renderSearchPopover(
-      { id: menu, kind: 'pseudopop', label: 'Add a pseudo-element', onEscape: () => host.toggleMenu(menu, false) },
-      renderSearchField({
-        form: host.form,
-        name: fieldName,
-        fieldLabel: 'Search pseudo-elements',
-        placeholder: 'before, marker, placeholder…',
-        suggestions: pseudoElementSuggestions([...options.existing]),
-        emptyText: 'No pseudo-element by that name.',
-        onSubmit: submit,
-      }),
-    )
-    : nothing}`;
-}
-/**
  * Take a condition off a bar (its ×): what is written under it goes, as one undo entry, after
  * asking when there is anything; one added from "+" and never written just leaves the bar. Rules
  * the editor cannot write (another origin's sheet) stay, and the question says so.
  */
 export function removeCondition(
   host: StylesHost,
-  options: { owner: string; key: string; entries: readonly RuleEntry[]; onCleared(): void } & ConditionOptions,
+  options: { owner: string; key: string; entries: readonly RuleEntry[]; onCleared(): void },
 ): void {
   const { engine, model } = host;
   const { owner, key } = options;
-  const under = options.entries.filter((entry) => conditionOf(model, entry, options) === key && entry.declarations.length);
+  const under = options.entries.filter((entry) => conditionOf(model, entry) === key && entry.declarations.length);
   const writable = under.filter((entry) => entry.target.kind !== 'readonly');
   const name = conditionName(model, key);
   const clear = (): void => {
@@ -928,7 +906,7 @@ export function renderInlineCard(
           <div class="block" data-block="base">
             <div class="decls" data-declarations=${INLINE_LIST_ID}>
               ${all.length
-          ? renderRows(writeTarget(target, all, '', 'inline style', INLINE_LIST_ID, host), all, host)
+          ? renderRows(writeTarget(target, all, '', 'inline style', INLINE_LIST_ID, host), all, host, 'inline')
           : html`<p class="hint" style="margin:0">Nothing is written on the element itself.</p>`}
             </div>
             ${renderBlockAdder(

@@ -4,8 +4,8 @@ import { field, type FormErrors } from '../../form-errors.js';
 import { HeoValueField, type ValueSuggestion } from '../../controls/value-field.js';
 
 /**
- * A search and its list in one popover: what the conditions bar's "+" and "+ Add pseudo-element"
- * open, so the two look and behave as one thing.
+ * A search and its list in one popover: what the conditions bar's "+" opens, and the other
+ * searches built the same way, so they look and behave as one thing.
  *
  * The field has focus and its list is showing as it appears, like the header's class finder; the
  * list narrows by words as it is typed, a pick or Enter answers it, and Escape steps back or

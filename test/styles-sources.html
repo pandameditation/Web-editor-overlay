@@ -775,8 +775,17 @@
           /* Card bodies. */
           await pop('.featured');
           const featuredBlocks = blocks('.featured').map((one) => one.dataset.block).join(',');
-          const featuredPseudo = textOf(block('.featured', '::before')?.querySelector('.kindtxt'));
           const featuredFocus = Boolean(card('.featured')?.querySelector('.slots [data-cond="state::focus-within"]'));
+          // A pseudo-element is a pill on the card's bar, as on the panel's strip; picked, its block alone.
+          const beforePill = () => card('.featured')?.querySelector('.slots [data-cond="state:::before"]');
+          const pillIsAPseudo = beforePill()?.classList.contains('pseudo') && !beforePill()?.classList.contains('state');
+          beforePill()?.click();
+          await settle(150);
+          const pickedBlocks = blocks('.featured').map((one) => one.dataset.block).join(',');
+          const featuredPseudo = textOf(block('.featured', '::before')?.querySelector('.kindtxt'));
+          const pseudoHint = textOf(body('.featured')?.querySelector('.slot-hint'));
+          card('.featured')?.querySelector('.slots .base')?.click();
+          await settle(150);
           await pop('.card');
           const cardBody = body('.card');
           results.cardBody = {
@@ -786,11 +795,69 @@
               cardBody?.children[1]?.matches('.block[data-block="base"]') &&
               cardBody?.children[1]?.firstElementChild?.matches('.decls') &&
               !cardBody?.children[1]?.querySelector('.blabel'),
-            // Under Always: the base block and its pseudo-elements; a state is a button on the bar.
-            pseudoElementsFollowTheBaseAndStatesAreOnTheBar:
+            /*
+             * Under Base: the base block alone. States and pseudo-elements are pills on the bar, as on
+             * the panel's strip; cards used to draw a pseudo-element as a block under Base instead.
+             */
+            pseudoElementsAndStatesArePillsOnTheBar:
               blocks('.card').map((one) => one.dataset.block).join(',') === 'base' &&
-              featuredBlocks === 'base,::before' && featuredPseudo === 'pseudo-element' && featuredFocus,
+              featuredBlocks === 'base' && featuredFocus && Boolean(pillIsAPseudo),
+            pickingAPseudoElementShowsItsBlockAlone:
+              pickedBlocks === '::before' && featuredPseudo === 'pseudo-element' &&
+              /^The element's ::before — drawn with it once it has content/.test(pseudoHint),
+            noSeparatePseudoElementAdder: !sroot().querySelector('.cls .add-prop') ||
+              !Array.from(sroot().querySelectorAll('.cls .add-prop')).some((one) => /pseudo-element/i.test(textOf(one))),
           };
+          /*
+           * A card's rows on the element's cascade. Base read 7/11 and nothing said which four lost,
+           * or to what: each beaten row is struck with the panel's "hidden by" pill under its name,
+           * and its name opens a read-only ladder from what wins down to this card's declaration.
+           */
+          {
+            const baseCount = textOf(card('.card')?.querySelector('[data-heo-part="strip"] .base .c'));
+            const [won, all] = baseCount.split('/').map(Number);
+            const hiddenRows = () => Array.from(block('.card', 'base')?.querySelectorAll('.decl.hidden') ?? []);
+            const nameOf = (row) => row?.querySelector('.p')?.textContent.trim();
+            const padRow = () => hiddenRows().find((row) => nameOf(row) === 'padding');
+            const live = innerWidth >= 768 ? '≥768px' : '≤767px';
+            const struckInput = (row) => getComputedStyle(row.querySelector('heo-value-field').shadowRoot.querySelector('input')).textDecorationLine === 'line-through';
+            const oneLinePerLoser =
+              Number.isFinite(won) && hiddenRows().length === all - won && hiddenRows().length > 0 &&
+              hiddenRows().every((row) => /^hidden by /.test(textOf(row.querySelector('.hidby'))) && struckInput(row)) &&
+              textOf(padRow()?.querySelector('.hidby')) === `hidden by ${live}`;
+            padRow()?.querySelector('.dots')?.click();
+            await settle(200);
+            const ro = () => sroot().querySelector('.pop[data-readonly]');
+            const rungs = Array.from(ro()?.querySelectorAll('.ladder > .lr') ?? []);
+            const struck = (one) => getComputedStyle(one.querySelector('.cv')).textDecorationLine.includes('line-through');
+            const ladder =
+              ro()?.matches(':popover-open') === true && rungs.length === 2 &&
+              rungs[0].classList.contains('win') && Boolean(rungs[0].querySelector('.now')) &&
+              textOf(rungs[0].querySelector('.sz')) === live && !struck(rungs[0]) &&
+              rungs[1].classList.contains('me') && textOf(rungs[1].querySelector('.mine')) === 'this card' && struck(rungs[1]);
+            // Read-only, and nothing but the ladder: no radios, fields, result line or note.
+            const onlyTheLadder = Boolean(ro()) &&
+              !ro().querySelector('[role="radio"], heo-value-field, .res, .note, .open') &&
+              Boolean(card('.card'));
+            key(ro(), 'Escape');
+            await settle(200);
+            const escapeBack = !ro() && Boolean(card('.card')) && sroot().activeElement === padRow()?.querySelector('.dots');
+            // A row that applies: plain, and its ladder is its own rung, winning.
+            const winner = Array.from(block('.card', 'base')?.querySelectorAll('.decl:not(.hidden)') ?? [])
+              .find((row) => nameOf(row) === 'font-weight');
+            winner?.querySelector('.dots')?.click();
+            await settle(200);
+            const alone = Array.from(ro()?.querySelectorAll('.ladder > .lr') ?? []);
+            const applies = Boolean(winner) && !winner.querySelector('.hidby') && alone.length === 1 &&
+              alone[0].classList.contains('me') && alone[0].classList.contains('win') && Boolean(alone[0].querySelector('.now'));
+            key(ro(), 'Escape');
+            await settle(200);
+            results.cardBody.aBeatenRowIsStruckWithWhatBeatsIt = oneLinePerLoser;
+            results.cardBody.itsNameOpensTheLadderDownToIt = ladder;
+            results.cardBody.theCardsLadderIsReadOnly = onlyTheLadder;
+            results.cardBody.escapeClosesItBackToTheName = escapeBack;
+            results.cardBody.aRowThatAppliesIsItsOwnWinningRung = applies;
+          }
           // Picking a size says where it applies and how far it reaches.
           card('.card')?.querySelector('.slots [data-slot="tablet"]')?.click();
           await settle(150);
@@ -838,7 +905,10 @@
           await settle(150);
           /* Card rows write their own declaration. */
           results.cardRows = {
-            noDots: !sroot().querySelector('.cardpop .cls .dots, .cardpop .cls .moon'),
+            // The row's name is its one way into the cascade, as on the panel: no dot or moon beside it.
+            nameIsTheOnlyCascadeControl: !sroot().querySelector('.cardpop .cls .moon') &&
+              Array.from(sroot().querySelectorAll('.cardpop .cls .dots')).every((one) =>
+                one.matches('button[aria-haspopup="dialog"]') && Boolean(one.querySelector(':scope > .p'))),
           };
           await pop('.promo .card');
           before = engine.history.size;
@@ -1205,9 +1275,9 @@
             emptySizesAreNotOnTheBar: !slotButton('.card', 'laptop') && !slotButton('.card', 'desktop'),
           };
           /*
-           * A pseudo-element's block is not its media's count. On a card it sits under its media,
-           * and its declarations were added to Base's: .featured::before's two made Base read 0/3
-           * for a class whose one Base declaration is the element's own.
+           * A pseudo-element is not its media's count. Cards drew it as a block under its media and
+           * added its declarations to Base's: .featured::before's two made Base read 0/3 for a
+           * class whose one Base declaration is the element's own.
            */
           {
             await pop('.featured');
@@ -1218,6 +1288,53 @@
               pseudoHasTwo && Boolean(strip('.featured')) &&
               countIs(strip('.featured')?.querySelector('.base'), own) &&
               !new RegExp(`/?${own + 2}$`).test(textOf(strip('.featured')?.querySelector('.base .c')));
+            /*
+             * Drawn whenever the element is, so it reads like Base: unpicked, the same outline and ink
+             * as Base unpicked, with Base's yellow "on screen" marker; picked, Base's colour as a tint
+             * (no hue of its own, and not the state violet).
+             */
+            const pill = (cond) => strip('.featured')?.querySelector(`[data-cond="${cond}"]`);
+            const baseOf = () => strip('.featured')?.querySelector('.base');
+            pill('state::focus-within')?.click();
+            await settle(150);
+            const look = (el) => el ? `${getComputedStyle(el).boxShadow}|${getComputedStyle(el).color}` : 'missing';
+            const outlinedAsBase = look(pill('state:::before')) === look(baseOf()) &&
+              Boolean(pill('state:::before')?.querySelector('.c.live'));
+            pill('state:::before')?.click();
+            await settle(150);
+            const probe = document.createElement('span');
+            probe.style.cssText = 'background: var(--heo-accent-soft); color: var(--heo-accent-text)';
+            sroot().append(probe);
+            const tint = getComputedStyle(probe);
+            const picked = pill('state:::before');
+            // Picked, it is drawn with its ×, as one pill: the tint is on that pill.
+            const pickedPill = picked?.closest('.cchip-on') ?? picked;
+            const pickedInBaseColour = Boolean(picked) && picked.getAttribute('aria-pressed') === 'true' &&
+              getComputedStyle(pickedPill).backgroundColor === tint.backgroundColor &&
+              getComputedStyle(picked).color === tint.color;
+            probe.remove();
+            baseOf()?.click();
+            await settle(150);
+            results.strip.aPseudoElementIsOutlinedAsBaseWithItsMarker = outlinedAsBase;
+            results.strip.aPickedPseudoElementTakesBasesColour = pickedInBaseColour;
+            // A ::after with no content draws nothing: drawn disabled, as a size not on screen.
+            const sheet = document.createElement('style');
+            sheet.textContent = '.featured::after { color: red; }';
+            document.head.append(sheet);
+            api.select(item);
+            await settle(250);
+            api.select(target);
+            await settle(300);
+            await pop('.featured');
+            const after = pill('state:::after');
+            results.strip.aPseudoElementThatDrawsNothingIsDrawnDisabled =
+              Boolean(after) && after.classList.contains('notnow') && !after.querySelector('.c.live') &&
+              /not drawn/.test(after.title) && Boolean(pill('state:::before')?.querySelector('.c.live'));
+            sheet.remove();
+            api.select(item);
+            await settle(250);
+            api.select(target);
+            await settle(300);
             await pop('.card');
           }
           const notNow = innerWidth < 768 ? slotButton('.card', 'tablet') : slotButton('.card', 'phone');
@@ -1340,13 +1457,17 @@
             addButton(block('.card', 'base')),
           ].map(ringOn);
           await pop('.featured');
+          card('.featured')?.querySelector('.slots [data-cond="state:::before"]')?.click();
+          await settle(150);
           rings.push(ringOn(block('.featured', '::before')?.querySelector('.blabel .kill')));
+          card('.featured')?.querySelector('.slots .base')?.click();
+          await settle(150);
           results.keys.focusRingOnEveryControl = Boolean(ring) && rings.every((one) => one === true);
           if (!results.keys.focusRingOnEveryControl) results.keys.rings = rings;
           sroot().activeElement?.blur();
           /* ---------------------------------------------------------------- *
-           * States from the bar's "+", pseudo-elements from "+ Add pseudo-element"
-           * (R24, §5.7, §15 M1): nothing is written until the first property lands.
+           * States and pseudo-elements from the bar's "+" (R24, §5.7, §15 M1): nothing is
+           * written until the first property lands.
            * ---------------------------------------------------------------- */
           /*
            * A size added to a class card, empty: its chip has no count, and a property the class sets
@@ -1389,21 +1510,10 @@
           }
           progress.textContent = 'addState';
           const managed = () => document.getElementById('heo-design-rules')?.textContent ?? '';
-          const stateAdd = (k) => body(k)?.querySelector(':scope > .block-add .add-prop');
-          // "+ Add pseudo-element" opens the same search popover as the bar's "+".
-          const stateAdder = () => sroot().querySelector('.menu.searchpop.pseudopop');
-          const pseudoField = () => stateAdder()?.querySelector('heo-value-field');
-          const pseudoInput = () => pseudoField()?.shadowRoot?.querySelector('input');
+          const condField = (k) => sroot().querySelector(`.menu.condpop[data-menu="strip-${k}"] heo-value-field`);
+          const condInput = (k) => condField(k)?.shadowRoot?.querySelector('input');
           const openAdderOf = (scope) => scope?.querySelector('.property-adder');
           const addState = async (k, state) => {
-            if (state.startsWith('::')) {
-              stateAdd(k)?.click();
-              await settle(250);
-              await typeInto(pseudoInput(), state);
-              key(pseudoInput(), 'Enter');
-              await settle(250);
-              return;
-            }
             // Picked already, with nothing under it: its empty block's "+ Add property".
             const waitingBlock = body(k)?.querySelector(`.block[data-waiting="${CSS.escape(state)}"] .add-prop`);
             if (waitingBlock) {
@@ -1411,9 +1521,15 @@
               await settle(250);
               return;
             }
-            // A state is a condition: added from the bar's "+", under the condition picked.
+            // A state or pseudo-element is a condition: added from the bar's "+", under the condition picked.
             strip(k)?.querySelector('.add')?.click();
             await settle(200);
+            if (state.startsWith('::')) {
+              await typeInto(condInput(k), state);
+              key(condInput(k), 'Enter');
+              await settle(250);
+              return;
+            }
             Array.from(sroot().querySelector(`.menu[data-menu="strip-${k}"] heo-value-field`)?.shadowRoot?.querySelectorAll('.option') ?? [])
               .find((one) => one.querySelector('.label, span')?.textContent.trim() === state || textOf(one).split(' ')[0] === state)?.click();
             await settle(250);
@@ -1438,60 +1554,23 @@
           results.addState = {};
           await pop('.card');
           {
-            // "+ Add pseudo-element": pseudo-elements only, offered in a list with what each styles,
-            // narrowed as it is typed, and anything else refused with R24's two messages.
-            const label = textOf(stateAdd('.card'));
-            stateAdd('.card')?.click();
+            /*
+             * The bar's "+" offers pseudo-elements on a card, as on the panel's strip: one popover for
+             * states, sizes and pseudo-elements, and no "+ Add pseudo-element" of its own (R24).
+             */
+            const plus = strip('.card')?.querySelector('.add');
+            const plusLabel = plus?.getAttribute('aria-label') ?? '';
+            plus?.click();
             await settle(250);
-            const options = () => Array.from(pseudoField()?.shadowRoot?.querySelectorAll('.option') ?? [])
+            const offered = Array.from(condField('.card')?.shadowRoot?.querySelectorAll('.option') ?? [])
               .map((one) => one.textContent.replace(/\s+/g, ' ').trim());
-            const offered = options();
-            const focusedOnOpen = sroot().activeElement === pseudoField();
-            // The shared box's height, or what this window has room for when that is less.
-            const fullHeight = (el) => Math.abs(el.getBoundingClientRect().height -
-              Math.min(318, Number.parseFloat(el.style.maxHeight) || Infinity)) <= 1;
-            const pseudoBox = stateAdder()?.getBoundingClientRect();
-            const pseudoFull = Boolean(stateAdder()) && fullHeight(stateAdder());
-            // Typing narrows the list: it did not, because the field was handed back each keystroke.
-            await typeInto(pseudoInput(), 'mar');
-            const narrowed = options();
-            await typeInto(pseudoInput(), 'bullet');
-            const byWhatItStyles = options();
-            await typeInto(pseudoInput(), '');
-            key(pseudoInput(), 'Enter');
-            await settle(120);
-            const emptyMessage = textOf(stateAdder()?.querySelector('.field-error'));
-            await typeInto(pseudoInput(), ':hover');
-            const noneText = textOf(pseudoField()?.shadowRoot?.querySelector('.none'));
-            key(pseudoInput(), 'Enter');
-            await settle(120);
-            const unknown = textOf(stateAdder()?.querySelector('.field-error'));
-            key(pseudoInput(), 'Escape');
+            key(condInput('.card'), 'Escape');
             await settle(150);
-            const focusBack = sroot().activeElement === stateAdd('.card');
-            // The same box as the bar's "+": its class, its width and its height.
-            strip('.card')?.querySelector('.add')?.click();
-            await settle(250);
-            const conditionPop = sroot().querySelector('.menu.searchpop.condpop');
-            const conditionBox = conditionPop?.getBoundingClientRect();
-            const conditionFull = Boolean(conditionPop) && fullHeight(conditionPop);
-            key(sroot().querySelector('.menu.searchpop.condpop heo-value-field')?.shadowRoot?.querySelector('input'), 'Escape');
-            await settle(150);
-            results.addState.pseudoElementsUseTheConditionsPopover =
-              focusedOnOpen && focusBack && Boolean(pseudoBox && conditionBox) && pseudoFull && conditionFull &&
-              Math.abs(pseudoBox.width - conditionBox.width) <= 1 && Math.abs(pseudoBox.left - conditionBox.left) <= 1;
-            results.addState.typingNarrowsThePseudoElements =
-              narrowed.length === 1 && narrowed[0].startsWith('::marker') &&
-              byWhatItStyles.length === 1 && byWhatItStyles[0].startsWith('::marker') &&
-              noneText === 'No pseudo-element by that name.';
-            results.addState.rejectsUnknownNames =
-              label === 'Add pseudo-element' &&
-              emptyMessage === 'Pick a pseudo-element, like ::before.' &&
-              unknown === '::hover is not a pseudo-element the editor knows.' &&
-              offered.length === 9 && offered.some((one) => one.startsWith('::marker')) &&
-              offered.some((one) => /::before.*generated content/.test(one)) &&
-              !offered.some((one) => /^:[a-z]/.test(one)) &&
-              !stateAdder();
+            results.addState.theBarsPlusOffersPseudoElements =
+              /pseudo-element/.test(plusLabel) &&
+              offered.some((one) => one.startsWith('::marker')) &&
+              offered.some((one) => one.startsWith('::after')) &&
+              offered.some((one) => one.startsWith(':active'));
           }
           {
             // A state with no rule: a block with its adder open, and nothing on the page yet.
@@ -1518,12 +1597,6 @@
               Boolean(pendingBlock()) && !pendingBlock().classList.contains('pending') &&
               Boolean(rowIn(pendingBlock(), 'opacity'));
             engine.undo();
-            await settle(200);
-            // Not under a picked state: a pseudo-element is a block under Always or a media query.
-            slotButton('.card', 'state::hover')?.click();
-            await settle(200);
-            results.addState.noPseudoElementAdderUnderAState = !stateAdd('.card');
-            card('.card')?.querySelector('.slots .base')?.click();
             await settle(200);
             // A state that already declares something is a button on the bar, not in "+".
             strip('.card')?.querySelector('.add')?.click();
@@ -1635,6 +1708,8 @@
               engine.history.size === history + 1 && /content:\s*""/.test(after) && /color/.test(after);
             engine.undo();
             await settle(250);
+            card('.card')?.querySelector('.slots .base')?.click();
+            await settle(200);
           }
           {
             // ::marker: nothing written until a property, and never `content` (it hides the bullet).
