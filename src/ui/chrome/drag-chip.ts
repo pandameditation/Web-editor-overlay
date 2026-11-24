@@ -106,7 +106,7 @@ export class HeoDragChip extends HeoElement {
 
     return html`<div class="chip surface">
       <span class="glyph">${icon(drag.willCancel ? 'close' : 'grip', 13)}</span>
-      <span class="what">${labelFor(drag.element)}</span>
+      <span class="what">${drag.label ?? labelFor(drag.element)}</span>
       <span class="hint">${drag.hint}</span>
       ${drag.willCancel ? nothing : html`<kbd>Esc</kbd>`}
     </div>`;

@@ -102,6 +102,7 @@
     "check:textdrag": "node scripts/browser-check.mjs test/text-drag.html 45000",
     "check:splitmodes": "node scripts/browser-check.mjs test/split-save-modes.html 45000",
     "check:edgescroll": "node scripts/browser-check.mjs test/edge-scroll.html 150000",
+    "check:librarydrag": "node scripts/browser-check.mjs test/library-drag.html 60000",
     "check:paste": "node scripts/browser-check.mjs test/paste-html.html 45000",
     "check:csspaste": "node scripts/browser-check.mjs test/css-paste.html 45000",
     "check:capturepaste": "node scripts/browser-check.mjs test/capture-paste.html 60000",

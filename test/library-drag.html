@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Dragging a block from the library onto the page</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; }
+    /* Clear of the page panel on the left and of the floating toolbar on top. */
+    #page { margin-left: 360px; padding: 140px 16px 16px; }
+    #page > section { height: 120px; margin: 0 0 8px; background: #eef; }
+  </style>
+</head>
+<body>
+  <main id="page">
+    <section id="a"><p>First <span id="word">word</span></p></section>
+    <section id="b">Second</section>
+    <section id="c">Third</section>
+  </main>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + String(event.reason)));
+      const progress = document.getElementById('progress');
+      const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      try {
+        const api = window.HtmlEditorOverlay.mount({ theme: 'dark', detectScriptContent: false });
+        const engine = api.engine;
+        api.setEditing(true);
+        await engine.whenReady();
+        engine.setDockTab('library');
+        await wait(400);
+        const panel = () => deep('heo-library-panel')?.shadowRoot;
+        const cards = () => Array.from(panel()?.querySelectorAll('.card') ?? []);
+        const card = cards().find((one) => one.querySelector('.name')?.textContent.trim());
+        const blockName = card?.querySelector('.name')?.textContent.trim() ?? '';
+        const kids = () => Array.from(document.getElementById('page').children);
+        const ids = () => kids().map((one) => one.id || (one.hasAttribute('data-heo-block-stand-in') ? 'STAND-IN' : 'NEW'));
+        const standIns = () => document.querySelectorAll('[data-heo-block-stand-in]').length;
+        const centre = (el) => {
+          const box = el.getBoundingClientRect();
+          return { x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2) };
+        };
+        const pointer = (type, at, target = window) => target.dispatchEvent(new PointerEvent(type, {
+          clientX: at.x, clientY: at.y, bubbles: true, composed: true, cancelable: true, button: 0, buttons: type === 'pointerup' ? 0 : 1, pointerId: 1, isPrimary: true,
+        }));
+        /** Press the card, travel to `to` in steps, and hold there long enough for the dwell. */
+        const dragTo = async (to, { release = true } = {}) => {
+          const from = centre(card);
+          pointer('pointerdown', from, card);
+          const steps = 8;
+          for (let i = 1; i <= steps; i += 1) {
+            pointer('pointermove', { x: from.x + ((to.x - from.x) * i) / steps, y: from.y + ((to.y - from.y) * i) / steps });
+            await wait(30);
+          }
+          for (let i = 0; i < 6; i += 1) {
+            pointer('pointermove', to);
+            await wait(60);
+          }
+          if (release) {
+            pointer('pointerup', to);
+            await wait(300);
+          }
+        };
+        const a = document.getElementById('a');
+        const b = document.getElementById('b');
+        const lowerHalf = (el) => {
+          const box = el.getBoundingClientRect();
+          return { x: Math.round(box.left + box.width / 2), y: Math.round(box.bottom - 20) };
+        };
+
+        progress.textContent = 'drop';
+        const history = engine.history.size;
+        await dragTo(lowerHalf(a), { release: false });
+        // While held: the stand-in opens the gap where the block will go, named for it.
+        const holding = {
+          order: ids().join(','),
+          named: document.querySelector('[data-heo-block-stand-in]')?.textContent.trim() === blockName,
+          hint: engine.store.value.drag?.hint ?? '',
+          label: engine.store.value.drag?.label ?? '',
+        };
+        pointer('pointerup', lowerHalf(a));
+        await wait(400);
+        const order = ids();
+        const dropped = kids()[1];
+        results.drop = {
+          hasABlockToDrag: Boolean(card) && blockName.length > 0,
+          theStandInOpensTheGapBetweenTwoElements: holding.order === 'a,STAND-IN,b,c' && holding.named,
+          // The chip names the block, and says where it goes, as an element's move does.
+          theDragChipNamesTheBlockAndWhere: holding.label === blockName && /section#a/.test(holding.hint),
+          releasingInsertsTheBlockThere: order.join(',') === 'a,NEW,b,c' && !dropped?.id,
+          andNoStandInIsLeft: standIns() === 0,
+          asOneUndoStep: engine.history.size === history + 1,
+          theReleaseDoesNotAlsoClickTheCard: ids().filter((one) => one === 'NEW').length === 1,
+        };
+        engine.undo();
+        await wait(200);
+        results.drop.undoTakesItOut = ids().join(',') === 'a,b,c';
+
+        // Over a word inside a paragraph, the block goes beside the paragraph, never into its text.
+        progress.textContent = 'text';
+        const words = document.querySelector('#a p').innerHTML;
+        const countBefore = document.querySelectorAll('#page *').length;
+        const wordAt = centre(document.getElementById('word'));
+        await dragTo(wordAt, { release: false });
+        pointer('pointerup', wordAt);
+        await wait(400);
+        results.text = {
+          aWordStandsForItsParagraph: document.querySelector('#a p').innerHTML === words &&
+            document.querySelectorAll('#page *').length > countBefore && standIns() === 0,
+        };
+        engine.undo();
+        await wait(200);
+
+        // Abandoned: out of the window, or with Escape, nothing is written and nothing is left.
+        progress.textContent = 'cancel';
+        const before = engine.history.size;
+        await dragTo(lowerHalf(a), { release: false });
+        pointer('pointermove', { x: 600, y: innerHeight + 60 });
+        await wait(100);
+        const willCancel = engine.store.value.drag?.willCancel === true;
+        pointer('pointerup', { x: 600, y: innerHeight + 60 });
+        await wait(300);
+        const outside = ids().join(',') === 'a,b,c' && standIns() === 0 && engine.history.size === before;
+        await dragTo(lowerHalf(a), { release: false });
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        await wait(200);
+        const escaped = ids().join(',') === 'a,b,c' && standIns() === 0 && !engine.store.value.drag;
+        pointer('pointerup', lowerHalf(a));
+        await wait(300);
+        results.cancel = {
+          leavingTheWindowCancels: willCancel && outside,
+          escapeCancels: escaped && ids().join(',') === 'a,b,c' && engine.history.size === before,
+        };
+
+        // A drag that never reaches the page does nothing; a plain click still inserts at the selection.
+        progress.textContent = 'click';
+        const inPanel = centre(card);
+        await dragTo({ x: inPanel.x + 20, y: inPanel.y + 30 });
+        const stayedInPanel = ids().join(',') === 'a,b,c' && standIns() === 0 && engine.history.size === before;
+        api.select(b);
+        await frames();
+        const hasProps = Boolean(panel()?.querySelector('.configure'));
+        card.click();
+        await wait(300);
+        const configured = panel()?.querySelector('.configure .btn.primary');
+        if (configured) {
+          configured.click();
+          await wait(300);
+        }
+        results.click = {
+          aDragThatStaysInThePanelDoesNothing: stayedInPanel && !hasProps,
+          aClickStillInsertsAtTheSelection: ids().filter((one) => one === 'NEW').length === 1,
+        };
+        engine.undo();
+        await wait(200);
+
+        const failed = Object.entries(results)
+          .filter(([, group]) => group && typeof group === 'object')
+          .filter(([, group]) => Object.values(group).some((value) => value === false))
+          .map(([name]) => name);
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ ...results, holding, errors, failed }, null, 2) + ':END';
+      } catch (e) {
+        document.getElementById('out').textContent =
+          'RESULTS:' + JSON.stringify({ threw: String((e && e.stack) || e), errors, failed: ['threw'] }, null, 2) + ':END';
+      }
+    })();
+  </script>
+</body>
+</html>

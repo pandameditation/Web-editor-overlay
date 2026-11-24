@@ -516,6 +516,8 @@ export interface SavePayload {
 /** Live drag state while a reorder is in flight. */
 export interface DragState {
   element: HTMLElement;
+  /** What the drag chip names, when it is not the element: a library block being placed. */
+  label?: string;
   /**
    * Where the element started, so cancelling can put it back exactly.
    *

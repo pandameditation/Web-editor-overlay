@@ -42,6 +42,7 @@ export const FIXTURES = [
 
   /* Genuinely slow: drives pointer gestures through real rAF-driven acceleration. */
   { page: 'test/edge-scroll.html', budget: 150000, weight: 28500 },
+  { page: 'test/library-drag.html', budget: 60000, weight: 6000 },
   { page: 'test/popover-settle.html', budget: 60000, weight: 16800 },
   { page: 'test/reveal.html', budget: 60000, weight: 13800 },
   { page: 'test/arrow-nav.html', budget: 30000 },

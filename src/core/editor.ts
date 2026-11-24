@@ -9545,6 +9545,10 @@ export class EditorEngine {
   endDrag(): void {
     const drag = this.store.value.drag;
     if (!drag) return;
+    if (drag.element === this.#blockDrag?.placeholder) {
+      void this.endBlockDrag();
+      return;
+    }
     this.#clearDragTimer();
     // The gesture is over, so nothing should still be scrolling on its behalf.
     this.#stopEdgeScroll?.();
@@ -9586,6 +9590,10 @@ export class EditorEngine {
   cancelDrag(): void {
     const drag = this.store.value.drag;
     if (!drag) return;
+    if (drag.element === this.#blockDrag?.placeholder) {
+      this.cancelBlockDrag();
+      return;
+    }
     this.#clearDragTimer();
     // The gesture is over, so nothing should still be scrolling on its behalf.
     this.#stopEdgeScroll?.();
@@ -9601,6 +9609,138 @@ export class EditorEngine {
     settleDrop(drag.element);
     this.store.patch({ drag: null });
     this.#bumpGeometry();
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Dragging a block in from the library                                   */
+  /* ---------------------------------------------------------------------- */
+  /**
+   * A block being dragged from the library, and the stand-in that rides the drag for it.
+   *
+   * The stand-in is what the reorder drag moves: an element the size of a short block, named
+   * for it, put into the page where the pointer first lands. So a block finds its place exactly
+   * as an element being moved does — the same planning, the same dwell, the same neighbours
+   * stepping aside, the same edge scrolling — and on release the real block is inserted where
+   * the stand-in ended up, as one undo step, and the stand-in goes. It is never recorded: it is
+   * put in and taken out with the page's observers and the journal looking away.
+   */
+  #blockDrag: { block: LibraryBlock; props: Record<string, unknown>; placeholder: HTMLElement | null } | null = null;
+
+  /** Whether the drag in flight is a block coming in from the library, rather than a move. */
+  get draggingBlock(): boolean {
+    return Boolean(this.#blockDrag);
+  }
+
+  /** Begin dragging `block` from the library. Nothing changes until the pointer is over the page. */
+  startBlockDrag(block: LibraryBlock, props: Record<string, unknown> = this.library.defaultProps(block)): void {
+    if (this.store.value.drag) this.cancelDrag();
+    this.#blockDrag = { block, props, placeholder: null };
+  }
+
+  /**
+   * The block's drag moved. Over the overlay, or before it has reached the page, nothing happens;
+   * the first time it is over the page, the stand-in goes in beside what is under the pointer and
+   * the reorder drag takes over from there.
+   */
+  updateBlockDrag(x: number, y: number): void {
+    const pending = this.#blockDrag;
+    if (!pending) return;
+    if (pending.placeholder && this.store.value.drag?.element === pending.placeholder) {
+      this.updateDrag(x, y);
+      return;
+    }
+    const at = this.#pageElementAt(x, y);
+    if (!at) return;
+    const placeholder = blockStandIn(pending.block);
+    const box = at.getBoundingClientRect();
+    // Beside what is under the pointer, on the side the pointer is on; at the end of the body
+    // when that is all there is.
+    const parent = at === document.body ? document.body : at.parentNode;
+    const before = at === document.body ? null : y < box.top + box.height / 2 ? at : at.nextSibling;
+    if (!parent) return;
+    withoutProvenance(() => domRecorder.ignore(() => parent.insertBefore(placeholder, before)));
+    pending.placeholder = placeholder;
+    this.startDrag(placeholder, x, y);
+    if (this.store.value.drag?.element !== placeholder) {
+      withoutProvenance(() => domRecorder.ignore(() => placeholder.remove()));
+      pending.placeholder = null;
+      return;
+    }
+    // The chip names the block, not its stand-in; where it goes is the drag's own hint.
+    const started = this.store.value.drag;
+    if (started) this.store.patch({ drag: { ...started, label: pending.block.name } });
+    this.updateDrag(x, y);
+  }
+
+  /** Released: insert the block where the stand-in is, or nothing when the drag was abandoned. */
+  async endBlockDrag(): Promise<HTMLElement | null> {
+    const pending = this.#blockDrag;
+    if (!pending) return null;
+    const placeholder = pending.placeholder;
+    const drag = this.store.value.drag;
+    if (!placeholder || !drag || drag.element !== placeholder) {
+      // Released before it ever reached the page: there is nothing to insert, or to undo.
+      this.#blockDrag = null;
+      return null;
+    }
+    if (drag.willCancel) {
+      this.cancelBlockDrag();
+      this.notify('Insert cancelled.', 'info');
+      return null;
+    }
+    const anchor = standInAnchor(placeholder);
+    this.#finishBlockDrag();
+    return anchor ? this.insertBlock(pending.block, pending.props, anchor) : null;
+  }
+
+  /** Abandon the block's drag: the stand-in goes, and nothing was ever written. */
+  cancelBlockDrag(): void {
+    if (!this.#blockDrag) return;
+    this.#finishBlockDrag();
+  }
+
+  /** The drag's own cleanup, then the stand-in out of the page, unrecorded. */
+  #finishBlockDrag(): void {
+    const pending = this.#blockDrag;
+    this.#blockDrag = null;
+    this.#clearDragTimer();
+    this.#stopEdgeScroll?.();
+    this.#stopEdgeScroll = null;
+    this.#dragPending = null;
+    this.#dragLeftHomeAt = null;
+    this.#dragDwell = null;
+    this.#dragJournal?.cancel();
+    this.#dragJournal = null;
+    const placeholder = pending?.placeholder;
+    if (placeholder) withoutProvenance(() => domRecorder.ignore(() => placeholder.remove()));
+    if (this.store.value.drag) this.store.patch({ drag: null });
+    this.#bumpGeometry();
+  }
+
+  /** The page element under a point: none over the overlay, or outside the window. */
+  #pageElementAt(x: number, y: number): HTMLElement | null {
+    if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return null;
+    const top = document.elementFromPoint(x, y);
+    if (!top || isOverlayNode(top)) return null;
+    for (let el: Element | null = top; el; el = el.parentElement) {
+      /*
+       * The body's own margin is a gap between things, not a place: crossing it on the way from
+       * the panel put the block at the top level of the page, before everything, when the
+       * pointer was on its way into the content. Only an empty page lands there.
+       */
+      if (el === document.body) {
+        const empty = !Array.from(document.body.children).some((one) => one instanceof HTMLElement && !isOverlayNode(one) && isMutable(one));
+        return empty ? document.body : null;
+      }
+      if (!(el instanceof HTMLElement) || !isMutable(el)) continue;
+      // A block goes beside a block, never into a run of text: a word or a link inside a
+      // paragraph stands for the paragraph.
+      const parent = el.parentElement;
+      if (parent && parent !== document.body && TEXT_FLOW.test(parent.localName)) continue;
+      if (getComputedStyle(el).display.startsWith('inline') && parent && parent !== document.body) continue;
+      return el;
+    }
+    return null;
   }
 
   /**
@@ -13128,4 +13268,47 @@ function describeImport(result: ImportResult): string {
   return result.aiSets
     ? `Imported ${listed}. Providers arrive without their API keys, so add one to use them.`
     : `Imported ${listed}.`;
+}
+
+/** Elements whose children are a run of text: a block dropped there goes beside them instead. */
+const TEXT_FLOW = /^(p|h[1-6]|a|span|em|strong|b|i|u|small|label|button|code|q|cite|figcaption|blockquote|dt|dd)$/;
+
+/**
+ * The stand-in a library block's drag moves around the page: as wide as its slot, short, and
+ * named for the block, so the gap the neighbours open says what is coming. Never saved: it is in
+ * the page only for the length of the gesture, unrecorded.
+ */
+function blockStandIn(block: LibraryBlock): HTMLElement {
+  const el = document.createElement('div');
+  el.setAttribute('data-heo-block-stand-in', block.id);
+  el.textContent = block.name;
+  el.style.cssText = [
+    'box-sizing: border-box',
+    'display: flex',
+    'align-items: center',
+    'justify-content: center',
+    'min-height: 44px',
+    'margin: 4px 0',
+    'padding: 6px 10px',
+    'border: 2px dashed #6366f1',
+    'border-radius: 8px',
+    'background: rgba(99, 102, 241, 0.08)',
+    'color: #4338ca',
+    'font: 600 12px/1.3 system-ui, sans-serif',
+  ].join('; ');
+  return el;
+}
+
+/** Where a stand-in sits, as an insert anchor: before the next element, else after the last, else inside. */
+function standInAnchor(placeholder: HTMLElement): InsertAnchor | null {
+  // The overlay's own host sits at the end of the body, and is not somewhere to insert beside.
+  const usable = (el: Element | null): el is HTMLElement => el instanceof HTMLElement && !isOverlayNode(el) && isMutable(el);
+  let next = placeholder.nextElementSibling;
+  while (next && !usable(next)) next = next.nextElementSibling;
+  if (usable(next)) return { reference: next, position: 'before' };
+  let previous = placeholder.previousElementSibling;
+  while (previous && !usable(previous)) previous = previous.previousElementSibling;
+  if (usable(previous)) return { reference: previous, position: 'after' };
+  const parent = placeholder.parentElement;
+  return parent ? { reference: parent, position: 'lastChild' } : null;
 }

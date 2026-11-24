@@ -251,8 +251,9 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
 
   if (state.drag && key === 'Escape') {
     event.preventDefault();
+    const inserting = engine.draggingBlock;
     engine.cancelDrag();
-    engine.notify('Move cancelled.', 'info');
+    engine.notify(inserting ? 'Insert cancelled.' : 'Move cancelled.', 'info');
     return;
   }
 

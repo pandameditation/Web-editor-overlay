@@ -3,6 +3,7 @@ import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { acceptsChildren, isMutable, labelFor } from '../../core/dom.js';
 import { INSERT_POSITION_LABELS, type InsertPosition } from '../../core/mutations.js';
+import { listen, unlisten } from '../../core/shield.js';
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import type { BlockKind, LibraryBlock } from '../../core/types.js';
 import { CREATE_BLOCK_ICON, CREATE_BLOCK_TITLE, createBlockLabel } from '../create-offer.js';
@@ -490,7 +491,8 @@ export class HeoLibraryPanel extends HeoElement {
       class="card"
       type="button"
       data-actions=${String(actions)}
-      title=${block.description ?? block.name}
+      title=${`${block.description ?? block.name} · Drag it onto the page to place it`}
+      @pointerdown=${(event: PointerEvent) => this.#onCardDown(event, block)}
       @click=${() => this.#pick(block)}
     >
       <span class="glyph">${icon(block.icon ?? (block.kind === 'container' ? 'wrap' : 'blocks'), 15)}</span>
@@ -644,6 +646,62 @@ export class HeoLibraryPanel extends HeoElement {
     >
       ${icon(CREATE_BLOCK_ICON, 12)} ${this.#createLabel()}
     </button>`;
+  }
+
+  /**
+   * A card pressed: dragged past a few pixels, the block is dragged onto the page and placed
+   * between two elements as an element being moved is (`startBlockDrag`); anything less is a
+   * click, which inserts at the selection as before.
+   *
+   * By distance, as the element thumb tells a drag from a click, so a deliberate click is never
+   * taken for a drag. Dropped, a block with props goes in with its defaults: there is no form on
+   * the way, and its props are the selection's to edit once it is placed.
+   */
+  #onCardDown(event: PointerEvent, block: LibraryBlock): void {
+    if (event.button !== 0) return;
+    // The card's own actions (update, edit, delete) are presses, not drags.
+    if ((event.target as Element | null)?.closest?.('.kill')) return;
+    const start = { x: event.clientX, y: event.clientY };
+    let started = false;
+    // Held, so a release outside the window still ends the gesture here.
+    try {
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    } catch {
+      /* a synthetic or released pointer: the window listeners carry the gesture anyway */
+    }
+    const move = (moveEvent: PointerEvent): void => {
+      if (!started) {
+        if (Math.hypot(moveEvent.clientX - start.x, moveEvent.clientY - start.y) < 4) return;
+        started = true;
+        this.editor.startBlockDrag(block);
+      }
+      moveEvent.preventDefault();
+      this.editor.updateBlockDrag(moveEvent.clientX, moveEvent.clientY);
+    };
+    const up = (): void => {
+      detach();
+      if (!started) return;
+      // The release would otherwise click the card, inserting a second copy at the selection.
+      const swallow = (clickEvent: MouseEvent): void => {
+        clickEvent.preventDefault();
+        clickEvent.stopImmediatePropagation();
+      };
+      listen(window, 'click', swallow, true);
+      requestAnimationFrame(() => unlisten(window, 'click', swallow, true));
+      void this.editor.endBlockDrag();
+    };
+    const cancel = (): void => {
+      detach();
+      if (started) this.editor.cancelBlockDrag();
+    };
+    const detach = (): void => {
+      unlisten(window, 'pointermove', move, true);
+      unlisten(window, 'pointerup', up, true);
+      unlisten(window, 'pointercancel', cancel, true);
+    };
+    listen(window, 'pointermove', move, true);
+    listen(window, 'pointerup', up, true);
+    listen(window, 'pointercancel', cancel, true);
   }
 
   #visibleBlocks(): LibraryBlock[] {
