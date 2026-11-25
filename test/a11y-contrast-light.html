@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Contrast of disabled, destructive and clear/remove controls, light theme</title>
+  <style>
+    :root {
+      --brand: #335;
+    }
+
+    body {
+      margin: 0;
+      padding: 40px 60px;
+      font-family: system-ui, sans-serif;
+    }
+
+    #guards span {
+      display: inline-block;
+      padding: 2px;
+    }
+  </style>
+</head>
+
+<body>
+  <!-- The light passes of the contrast check; test/a11y-contrast-dark.html runs the dark ones. -->
+  <!-- What it measures and how: test/a11y-contrast.js. -->
+  <main id="page">
+    <!--
+      A phone-size rule on #a, so the Styles panel's conditions bars have a count to show, and a
+      tablet one, not in effect in this 756px window, for the bar's dashed "not now" button: a size
+      that declares nothing has no button any more.
+    -->
+    <style>
+      @media (min-width: 768px) {
+        #a {
+          margin-top: 1px;
+        }
+      }
+
+      @media (max-width: 767px) {
+        #a {
+          padding-top: 2px;
+        }
+      }
+    </style>
+    <p id="a" class="card" style="color: rgb(200, 30, 30)">A paragraph</p>
+    <section id="mix">
+      <p id="q1">A paragraph</p>
+      <h2 id="q2">A heading</h2>
+    </section>
+    <p id="b">Text with <a id="lnk" href="#nowhere">a link</a> in it.</p>
+  </main>
+  <div id="guards">
+    <span id="g-bw" style="color: #000; background: #fff">black on white</span>
+    <span id="g-low" style="color: #777; background: #888">low contrast</span>
+    <span id="g-opacity-wrap" style="opacity: 0.5; display: inline-block"><span id="g-opacity"
+        style="color: #000; background: #fff">half</span></span>
+    <span id="g-oklch" style="color: oklch(0% 0 0); background: oklch(100% 0 0)">oklch</span>
+    <span id="g-shadow"></span>
+  </div>
+
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script src="sections.js"></script>
+  <script src="a11y-contrast.js"></script>
+  <script>
+    runA11yContrast({ passes: [['light', 'white'], ['light', 'black']] }).then((results) => {
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify(results, null, 1) + ':END';
+    }).catch((e) => {
+      document.getElementById('out').textContent =
+        'RESULTS:{"ok":false,"__errors":["' + String(e && e.message) + '"]}:END';
+    });
+  </script>
+</body>
+
+</html>

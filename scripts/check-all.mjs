@@ -26,7 +26,11 @@
  * **Scheduled by measured time.** Each run saves every finished page's time to the timings cache
  * (`scripts/timings.mjs`, under `node_modules/.cache/`), and the next run starts the longest
  * first by those times, falling back to the manifest's `weight`; a page with neither starts
- * first. Delete the cache to fall back to `weight` alone.
+ * first. Delete the cache to fall back to `weight` alone. With it, the full suite's fixture phase
+ * is about 200 s for 108 pages; the fast tier's about 13 s for 31.
+ *
+ * The suite always runs whole pages. A payload carrying `partialRun` (a page run with an
+ * `?only=` section filter, `test/sections.js`) fails, so a filtered page can never pass here.
  *
  * `browser-check.mjs` is untouched and still the right tool for one page: it takes screenshots,
  * it pauses a stuck renderer to print the call stack, and a single failure is much easier to read
@@ -273,6 +277,10 @@ class Browser {
     } catch {
       /* already gone */
     }
+    // Chrome's helper processes can hold its stderr pipe open for a minute or more after the
+    // browser is killed, and an open pipe keeps this script alive after the summary has printed.
+    this.#process?.stderr?.destroy();
+    this.#process?.unref();
     try {
       rmSync(this.profile, { recursive: true, force: true });
     } catch {

@@ -8,7 +8,10 @@
  * fast tier all read it.
  *
  * The per-fixture `check:*` scripts stay, because they run one page with `browser-check.mjs` and
- * that is still the right tool for looking at a single failure or taking a screenshot.
+ * that is still the right tool for looking at a single failure or taking a screenshot. The large
+ * editor pages also declare sections (`test/sections.js`), so `browser-check.mjs … --only <name>`
+ * runs part of one; a filtered run reports `partialRun` and never counts as a pass. A page too
+ * long to pack well that splits cleanly is split instead (a11y-contrast, by theme).
  *
  * Fields:
  *
@@ -63,8 +66,13 @@ export const FIXTURES = [
   { page: 'test/block-css-scope.html', budget: 90000, weight: 16000 },
   { page: 'test/multi-select.html', budget: 60000, weight: 8100 },
   { page: 'test/multi-clipboard.html', budget: 60000, weight: 7900 },
-  /* About 122 s in the suite: some 540 rows, each settled, over two themes and two page colours. */
-  { page: 'test/a11y-contrast.html', budget: 180000, weight: 122400 },
+  /*
+   * Some 820 rows, each settled, over two themes and two page colours: 122 s as one page, so it
+   * is split by theme over one harness (test/a11y-contrast.js), each page one theme's two passes
+   * and about 58 s in the suite.
+   */
+  { page: 'test/a11y-contrast-dark.html', budget: 120000, weight: 61000 },
+  { page: 'test/a11y-contrast-light.html', budget: 120000, weight: 61000 },
   { page: 'test/css-paste.html', budget: 45000, weight: 20100 },
   { page: 'test/capture-paste.html', budget: 60000, weight: 2500, fast: true },
   { page: 'test/capture-roundtrip.html', budget: 60000, weight: 1400 },

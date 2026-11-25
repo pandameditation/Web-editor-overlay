@@ -1,0 +1,1363 @@
+/*
+ * Measures, in a real browser, the contrast of every disabled control, the red Delete, and every
+ * kill, clear and remove control, over a white and a black page, in the dark and light themes.
+ *
+ * The overlay is glass over whatever page it sits on, so its real background depends on the page;
+ * white and black bound every page colour. Colours are never parsed: each row paints the computed
+ * backgrounds of the element's shadow-including ancestors on a 1x1 canvas, from the outermost in,
+ * honouring opacity groups, then paints the ink on top, and reads the two pixels back. Hover and
+ * focus are emulated by copying every :hover and :focus-visible rule to a forcing class.
+ *
+ * One harness, two pages: test/a11y-contrast-dark.html runs the dark passes and
+ * test/a11y-contrast-light.html the light ones, so the two halves run in parallel slots.
+ * `passes` lists the [theme, page colour] pairs a page runs; each pass is a section of
+ * test/sections.js (`?only=dark-black`). Every assertion is an aggregate over the rows of the
+ * passes that ran, so the two pages together assert exactly what one page with all four did.
+ * Returns `results`; the page writes #out.
+ */
+window.runA11yContrast = async ({ passes }) => {
+  const errors = [];
+  window.addEventListener('error', (e) => errors.push('error: ' + e.message));
+  window.addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
+
+  const results = {};
+  const rows = [];
+  const missing = [];
+  const notes = [];
+  const named = [];
+  const settledExportChoices = [];
+  const progress = document.getElementById('progress');
+  const step = (name) => { progress.textContent = name; };
+  const raf = () => new Promise((r) => requestAnimationFrame(r));
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const byId = (id) => document.getElementById(id);
+
+  // A shadow root of the fixture's own, for the settle guard.
+  byId('g-shadow').attachShadow({ mode: 'open' }).innerHTML =
+    '<style>.t { color: rgb(255, 0, 0); transition: color 400ms linear; } .t.heo-force-hover { color: rgb(0, 0, 255); }</style><span class="t">t</span>';
+
+  const api = window.HtmlEditorOverlay.mount({ theme: 'dark' });
+  const engine = api.engine;
+  api.setEditing(true);
+  await engine.whenReady();
+  await raf();
+
+  // An in-memory project, so the save dialog has somewhere to write and offers destinations.
+  const directory = decodeURIComponent(location.pathname).replace(/[^/]*$/, '');
+  const disk = new Map();
+  await engine.attachProject({
+    kind: 'directory',
+    label: 'memory',
+    resolve(url) {
+      const path = decodeURIComponent(new URL(url, location.href).pathname);
+      return path.startsWith(directory) ? path.slice(directory.length) : null;
+    },
+    read: async (path) => {
+      if (disk.has(path)) return disk.get(path);
+      try {
+        const text = await (await fetch('./' + path)).text();
+        disk.set(path, text);
+        return text;
+      } catch { return null; }
+    },
+    write: async (path, text) => { disk.set(path, text); },
+    ensureWritable: async () => true,
+    release: async () => { },
+  }, { quiet: true });
+  await raf();
+
+  /* ---------------------------------------------------------------- *
+   * Settling.
+   *
+   * Two frames so a style change is computed and any transition has started, then every
+   * finite animation in the document and in every shadow root, walked recursively and
+   * re-walked each call so newly mounted roots count. document.getAnimations() alone returned
+   * 0 while a shadow root held a running transition (plan probe 5), so a settle that read only
+   * the document waited for nothing and a hover row read the start colour.
+   * ---------------------------------------------------------------- */
+  const shadowRoots = () => {
+    const out = [];
+    const visit = (root) => {
+      for (const el of root.querySelectorAll('*')) {
+        if (el.shadowRoot) {
+          out.push(el.shadowRoot);
+          visit(el.shadowRoot);
+        }
+      }
+    };
+    visit(document);
+    return out;
+  };
+  const settle = async () => {
+    await raf();
+    await raf();
+    const animations = [document, ...shadowRoots()]
+      .flatMap((root) => (root.getAnimations ? root.getAnimations() : []))
+      .filter((a) => Number.isFinite(a.effect?.getComputedTiming?.().endTime ?? Infinity))
+      // The Styles cards' Motion picture plays for ~5s whenever its tile is drawn; it changes
+      // no colour measured here, and waiting on it made this fixture overrun its time limit.
+      .filter((a) => !(a.animationName ?? '').startsWith('heo-art-'));
+    await Promise.race([Promise.all(animations.map((a) => a.finished.catch(() => { }))), wait(2000)]);
+    await raf();
+  };
+
+  /* ---------------------------------------------------------------- *
+   * Hover and focus without real input: every :hover and :focus-visible rule is copied, right
+   * after itself, with the pseudo-class swapped for a forcing class. Lit shares one sheet per
+   * css result across components, so a sheet is handled once. :host(:hover)-style rules cannot
+   * be expressed that way and are listed instead of silently missed.
+   * ---------------------------------------------------------------- */
+  const handledSheets = new WeakSet();
+  const skippedRules = new Set();
+  const rewriteList = (list, owner) => {
+    for (let i = list.cssRules.length - 1; i >= 0; i--) {
+      const rule = list.cssRules[i];
+      if (rule instanceof CSSStyleRule) {
+        const selector = rule.selectorText;
+        if (!/:hover|:focus-visible/.test(selector)) continue;
+        if (/:host(-context)?\([^)]*:(hover|focus-visible)/.test(selector)) {
+          skippedRules.add(`${owner}: ${selector}`);
+          continue;
+        }
+        const copy = selector.replace(/:hover/g, '.heo-force-hover').replace(/:focus-visible/g, '.heo-force-focus');
+        try {
+          list.insertRule(`${copy} { ${rule.style.cssText} }`, i + 1);
+        } catch (error) {
+          skippedRules.add(`${owner}: ${selector} (${error.message})`);
+        }
+      } else if (rule.cssRules && typeof rule.insertRule === 'function') {
+        rewriteList(rule, owner);
+      }
+    }
+  };
+  const installForcedStates = () => {
+    for (const root of shadowRoots()) {
+      const owner = root.host.localName;
+      const sheets = [...(root.adoptedStyleSheets ?? []), ...Array.from(root.querySelectorAll('style')).map((s) => s.sheet)];
+      for (const sheet of sheets) {
+        if (!sheet || handledSheets.has(sheet)) continue;
+        handledSheets.add(sheet);
+        try { rewriteList(sheet, owner); } catch (error) { skippedRules.add(`${owner}: sheet (${error.message})`); }
+      }
+    }
+  };
+
+  /* ---------------------------------------------------------------- *
+   * Compositing. A 1x1 canvas does every colour-space conversion and every alpha: Chrome reports
+   * the tokens as oklch(), and color-mix results as oklab() or color(srgb ...), which a regex
+   * reads as NaN.
+   * ---------------------------------------------------------------- */
+  let pageColour = '#ffffff';
+  const pixel = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    return canvas;
+  };
+  const up = (node) => {
+    if (node.assignedSlot) return node.assignedSlot;
+    const parent = node.parentNode;
+    if (!parent) return null;
+    if (parent instanceof ShadowRoot) return parent.host;
+    return parent.nodeType === Node.ELEMENT_NODE ? parent : null;
+  };
+  /** Shadow-including ancestors, outermost first, with or without the element itself. */
+  const chainOf = (el, withSelf = true) => {
+    const chain = [];
+    for (let node = withSelf ? el : up(el); node; node = up(node)) chain.push(node);
+    return chain.reverse();
+  };
+  const unparsed = [];
+  const fill = (ctx, colour, what) => {
+    ctx.fillStyle = '#010203';
+    ctx.fillStyle = colour;
+    if (ctx.fillStyle === '#010203' && colour !== '#010203') unparsed.push(`${what}: ${colour}`);
+    ctx.fillRect(0, 0, 1, 1);
+  };
+  /*
+   * Paint the page colour, then each ancestor's background inwards. A node with opacity < 1
+   * starts a group painted on its own transparent canvas and composited at that opacity. The
+   * ink, when given, is painted last, inside the innermost group, because that is where the
+   * text is drawn.
+   */
+  const composite = (chain, ink) => {
+    const root = pixel();
+    const rootCtx = root.getContext('2d', { willReadFrequently: true });
+    fill(rootCtx, pageColour, 'page');
+    const stack = [{ canvas: root, ctx: rootCtx, opacity: 1 }];
+    for (const node of chain) {
+      const style = getComputedStyle(node);
+      const opacity = parseFloat(style.opacity);
+      if (opacity < 1) {
+        const canvas = pixel();
+        stack.push({ canvas, ctx: canvas.getContext('2d'), opacity });
+      }
+      const background = style.backgroundColor;
+      if (background && background !== 'transparent' && background !== 'rgba(0, 0, 0, 0)') {
+        fill(stack[stack.length - 1].ctx, background, `${node.localName} background`);
+      }
+    }
+    if (ink) fill(stack[stack.length - 1].ctx, ink, 'ink');
+    while (stack.length > 1) {
+      const group = stack.pop();
+      const parent = stack[stack.length - 1];
+      parent.ctx.globalAlpha = group.opacity;
+      parent.ctx.drawImage(group.canvas, 0, 0);
+      parent.ctx.globalAlpha = 1;
+    }
+    return Array.from(rootCtx.getImageData(0, 0, 1, 1).data.slice(0, 3));
+  };
+  const luminance = ([r, g, b]) => {
+    const lin = (v) => {
+      const c = v / 255;
+      return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    };
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  };
+  const ratio = (f, b) => {
+    const [hi, lo] = [luminance(f), luminance(b)].sort((x, y) => y - x);
+    return Math.round(((hi + 0.05) / (lo + 0.05)) * 100) / 100;
+  };
+
+  /* ---------------------------------------------------------------- *
+   * Finding controls. Re-queried on every use: the components re-render on every state change.
+   * ---------------------------------------------------------------- */
+  const overlayHost = () => document.querySelector('html-editor-overlay > heo-overlay');
+  const deepAll = (predicate, root = overlayHost()?.shadowRoot) => {
+    const out = [];
+    const visit = (r) => {
+      if (!r) return;
+      for (const el of r.querySelectorAll('*')) {
+        if (predicate(el)) out.push(el);
+        if (el.shadowRoot) visit(el.shadowRoot);
+      }
+    };
+    visit(root);
+    return out;
+  };
+  const deep = (predicate, root) => deepAll(predicate, root)[0] ?? null;
+  const inside = (tag) => (el) => {
+    for (let n = el; n; n = up(n)) if (n.localName === tag) return true;
+    return false;
+  };
+  const button = (cls, label, within) => () =>
+    deep((el) => el.localName === 'button' && el.matches(cls) && (label == null || el.getAttribute('aria-label') === label || el.getAttribute('title') === label || el.textContent.trim().startsWith(label)) && (!within || inside(within)(el)));
+  const menuItem = (id) => () => deep((el) => el.matches?.(`.item[data-id="${id}"]`) && inside('heo-quick-menu')(el));
+  const partOf = (host, selector) => () => host()?.querySelector(selector) ?? null;
+
+  /* ---------------------------------------------------------------- *
+   * Measuring. One spec per row family:
+   *   { name, component, file, cat, kind: 'text'|'icon'|'focus'|'border', min, host, part }
+   * host receives the forcing class; part is what is measured (defaults to host).
+   * ---------------------------------------------------------------- */
+  let theme = 'dark';
+  let page = 'white';
+  const measureOne = (spec, state, extra = {}) => {
+    const host = spec.host();
+    const part = spec.part ? spec.part() : host;
+    if (!host || !part) {
+      missing.push(`${spec.name} [${state}] ${theme}/${page}`);
+      return null;
+    }
+    const own = getComputedStyle(part);
+    const hostStyle = getComputedStyle(host);
+    let ink, chain;
+    if (spec.kind === 'focus') {
+      ink = hostStyle.outlineColor;
+      chain = chainOf(host, false);
+    } else if (spec.kind === 'border') {
+      ink = hostStyle.borderTopColor;
+      chain = chainOf(host, true);
+    } else if (spec.inkOf) {
+      // A mark drawn as a fill or a ring rather than as text (the cascade dot): its own
+      // background is the ink, so it is not also painted as the backdrop.
+      ink = spec.inkOf(part);
+      chain = chainOf(part, false);
+    } else {
+      ink = own.color;
+      chain = chainOf(part, true);
+    }
+    // An element outside the flat tree (unslotted, in a collapsed section) has no computed
+    // colour, and would read as 1:1 for a reason that has nothing to do with contrast.
+    if (!ink) {
+      missing.push(`${spec.name} [${state}] ${theme}/${page}: not rendered`);
+      return null;
+    }
+    const B = composite(chain);
+    const F = composite(chain, ink);
+    let value = ratio(F, B);
+    if (spec.kind === 'focus' && (hostStyle.outlineStyle === 'none' || parseFloat(hostStyle.outlineWidth) === 0)) value = 1;
+    if (spec.kind === 'border' && (hostStyle.borderTopStyle === 'none' || parseFloat(hostStyle.borderTopWidth) === 0)) value = 1;
+    const row = {
+      name: spec.name, component: spec.component, file: spec.file, cat: spec.cat, variant: spec.variant,
+      control: spec.control ?? spec.name, state, theme, page, kind: spec.kind, ratio: value, min: spec.min,
+      ink, F, B, ...extra,
+    };
+    if (spec.cat === 'btn' || spec.kind === 'border') {
+      row.borderStyle = hostStyle.borderTopStyle;
+      row.borderWidth = parseFloat(hostStyle.borderTopWidth);
+      row.ownB = composite(chainOf(host, true));
+      row.parentB = composite(chainOf(host, false));
+    }
+    if (spec.label) {
+      const label = (host.getAttribute('aria-label') || host.getAttribute('title') || '').trim();
+      // A string, not a boolean: it is data for the audit, and a false here would read as a failure.
+      named.push({ name: spec.name, accessibleName: label, reach: host.getAttribute('tabindex') === '-1' ? 'pointer only (tabindex=-1)' : 'tab stop' });
+    }
+    rows.push(row);
+    return row;
+  };
+  /** Measure a list of specs in one state, forcing hover or focus on all their hosts at once. */
+  const measure = async (specs, state) => {
+    const forcing = state === 'hover' ? 'heo-force-hover' : state === 'focus' ? 'heo-force-focus' : null;
+    if (forcing) for (const spec of specs) spec.host()?.classList.add(forcing);
+    await settle();
+    const out = specs.map((spec) => measureOne(spec, state));
+    if (forcing) for (const spec of specs) spec.host()?.classList.remove(forcing);
+    return out;
+  };
+  /** Default, hover and focus, plus a focus-ring row for each host. */
+  const measureInteractive = async (specs) => {
+    await measure(specs, 'default');
+    await measure(specs, 'hover');
+    await measure(specs, 'focus');
+    const rings = specs.filter((s) => s.ring !== false && !s.part).map((s) => ({
+      ...s, name: `${s.name}.ring`, cat: 'focus', kind: 'focus', min: 3, label: false,
+    }));
+    if (rings.length) await measure(rings, 'focus');
+  };
+
+  const ui = async (patch) => {
+    if (patch) patch();
+    await settle();
+    installForcedStates();
+    await settle();
+  };
+
+  /* ---------------------------------------------------------------- *
+   * Scenarios. Each sets up its own UI and leaves the page and the history as it found them.
+   * ---------------------------------------------------------------- */
+  const scenarios = [];
+  const scenario = (name, run) => scenarios.push({ name, run });
+
+  // The group menu over a paragraph and a heading: Merge is disabled (different types).
+  scenario('quickMenuGroup', async () => {
+    await ui(() => {
+      engine.select(byId('q1'));
+      engine.toggleSelection(byId('q2'));
+      engine.setQuickMenu(true);
+    });
+    const merge = menuItem('group-merge');
+    const paste = menuItem('paste-below');
+    const wrap = menuItem('group-wrap');
+    const del = menuItem('group-delete');
+    const C = 'quick-menu', F = 'src/ui/chrome/quick-menu.ts';
+    await measure([
+      { name: 'menu.group.merge.label', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: merge, part: partOf(merge, '.text') },
+      { name: 'menu.group.merge.reason', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: merge, part: partOf(merge, '.desc') },
+      { name: 'menu.group.merge.glyph', component: C, file: F, cat: 'menu-disabled', kind: 'icon', min: 3, host: merge, part: partOf(merge, '.glyph') },
+      { name: 'menu.group.pasteBelow.label', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: paste, part: partOf(paste, '.text') },
+      { name: 'menu.group.pasteBelow.reason', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: paste, part: partOf(paste, '.desc') },
+      { name: 'menu.group.pasteBelow.hint', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: paste, part: partOf(paste, '.hint') },
+      { name: 'menu.group.pasteBelow.glyph', component: C, file: F, cat: 'menu-disabled', kind: 'icon', min: 3, host: paste, part: partOf(paste, '.glyph') },
+    ], 'disabled');
+    await measure([
+      { name: 'menu.group.wrap.label', component: C, file: F, cat: 'menu-enabled', kind: 'text', min: 4.5, host: wrap, part: partOf(wrap, '.text') },
+      { name: 'menu.group.wrap.glyph', component: C, file: F, cat: 'menu-enabled', kind: 'icon', min: 3, host: wrap, part: partOf(wrap, '.glyph') },
+      ...[0, 1, 2].map((i) => ({
+        name: `menu.group.heading.${i}`, component: C, file: F, cat: 'menu-heading', kind: 'text', min: 4.5,
+        host: () => deepAll((el) => el.classList?.contains('group') && inside('heo-quick-menu')(el))[i] ?? null,
+      })),
+      { name: 'menu.group.duplicate.hint', component: C, file: F, cat: 'menu-heading', kind: 'text', min: 4.5, host: menuItem('duplicate'), part: partOf(menuItem('duplicate'), '.hint') },
+    ], 'enabled');
+    const deleteSpecs = [
+      { name: 'menu.group.delete.label', component: C, file: F, cat: 'menu-delete', kind: 'text', min: 4.5, host: del, part: partOf(del, '.text') },
+      { name: 'menu.group.delete.glyph', component: C, file: F, cat: 'menu-delete', kind: 'icon', min: 3, host: del, part: partOf(del, '.glyph') },
+      { name: 'menu.group.delete.hint', component: C, file: F, cat: 'menu-delete', kind: 'text', min: 4.5, host: del, part: partOf(del, '.hint') },
+    ];
+    await measure(deleteSpecs, 'default');
+    await measure(deleteSpecs, 'hover');
+    await measure(deleteSpecs, 'focus');
+    await measure([{ name: 'menu.group.delete.ring', component: C, file: F, cat: 'focus', kind: 'focus', min: 3, host: del }], 'focus');
+    engine.setQuickMenu(false);
+    engine.select(null);
+  });
+
+  // The single menu on a paragraph: Delete in every state, an enabled glyph and hint, Paste disabled.
+  scenario('quickMenuSingle', async () => {
+    await ui(() => {
+      engine.select(byId('a'));
+      engine.setQuickMenu(true);
+    });
+    const C = 'quick-menu', F = 'src/ui/chrome/quick-menu.ts';
+    const del = menuItem('delete');
+    const dup = menuItem('duplicate');
+    const paste = menuItem('paste-below');
+    const deleteSpecs = [
+      { name: 'menu.single.delete.label', component: C, file: F, cat: 'menu-delete', kind: 'text', min: 4.5, host: del, part: partOf(del, '.text') },
+      { name: 'menu.single.delete.glyph', component: C, file: F, cat: 'menu-delete', kind: 'icon', min: 3, host: del, part: partOf(del, '.glyph') },
+      { name: 'menu.single.delete.hint', component: C, file: F, cat: 'menu-delete', kind: 'text', min: 4.5, host: del, part: partOf(del, '.hint') },
+    ];
+    await measure(deleteSpecs, 'default');
+    await measure(deleteSpecs, 'hover');
+    await measure(deleteSpecs, 'focus');
+    await measure([
+      { name: 'menu.single.delete.ring', component: C, file: F, cat: 'focus', kind: 'focus', min: 3, host: del },
+      { name: 'menu.single.item.ring', component: C, file: F, cat: 'focus', kind: 'focus', min: 3, host: dup },
+    ], 'focus');
+    await measure([
+      { name: 'menu.single.duplicate.label', component: C, file: F, cat: 'menu-enabled', kind: 'text', min: 4.5, host: dup, part: partOf(dup, '.text') },
+      { name: 'menu.single.duplicate.glyph', component: C, file: F, cat: 'menu-enabled', kind: 'icon', min: 3, host: dup, part: partOf(dup, '.glyph') },
+      { name: 'menu.single.duplicate.hint', component: C, file: F, cat: 'menu-heading', kind: 'text', min: 4.5, host: dup, part: partOf(dup, '.hint') },
+    ], 'enabled');
+    await measure([
+      { name: 'menu.single.pasteBelow.label', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: paste, part: partOf(paste, '.text') },
+      { name: 'menu.single.pasteBelow.reason', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: paste, part: partOf(paste, '.desc') },
+      { name: 'menu.single.pasteBelow.hint', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: paste, part: partOf(paste, '.hint') },
+      { name: 'menu.single.pasteBelow.glyph', component: C, file: F, cat: 'menu-disabled', kind: 'icon', min: 3, host: paste, part: partOf(paste, '.glyph') },
+    ], 'disabled');
+    engine.setQuickMenu(false);
+    engine.select(null);
+  });
+
+  // The single menu on the body, where Delete is disabled.
+  let focusReveal = null;
+  scenario('quickMenuBody', async () => {
+    await ui(() => {
+      engine.select(document.body);
+      engine.setQuickMenu(true);
+    });
+    const C = 'quick-menu', F = 'src/ui/chrome/quick-menu.ts';
+    const del = menuItem('delete');
+    await measure([
+      { name: 'menu.body.delete.label', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: del, part: partOf(del, '.text') },
+      { name: 'menu.body.delete.glyph', component: C, file: F, cat: 'menu-disabled', kind: 'icon', min: 3, host: del, part: partOf(del, '.glyph') },
+      { name: 'menu.body.delete.hint', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: del, part: partOf(del, '.hint') },
+    ], 'disabled');
+    // Measured on the focused state too: the reason is revealed there and is text.
+    await measure([
+      { name: 'menu.body.delete.revealedReason', component: C, file: F, cat: 'menu-disabled', kind: 'text', min: 4.5, host: del, part: partOf(del, '.desc') },
+    ], 'focus');
+    if (!focusReveal) {
+      const width = () => del()?.querySelector('.desc')?.getBoundingClientRect().width ?? -1;
+      del()?.classList.add('heo-force-focus');
+      await settle();
+      const shown = width();
+      del()?.classList.remove('heo-force-focus');
+      await settle();
+      focusReveal = { shown, hidden: width() };
+    }
+    engine.setQuickMenu(false);
+    engine.select(null);
+  });
+
+  /*
+   * .btn rows measure the enabled state first and keep its ink, so the disabled row can lay
+   * both inks over the disabled state's own backdrop.
+   */
+  const enabledInk = new Map();
+  const btnRows = async (spec, state) => {
+    // The state is checked, not assumed: a stale undo stack once left a "disabled" Undo enabled.
+    const host = spec.host();
+    if (host && host.disabled !== (state === 'disabled')) {
+      missing.push(`${spec.name} [${state}] ${theme}/${page}: the control is not ${state}`);
+      return;
+    }
+    const [row] = await measure([spec], state);
+    if (!row) return;
+    const key = `${spec.control}|${theme}|${page}`;
+    if (state === 'enabled') enabledInk.set(key, row.ink);
+    if (state === 'disabled' && enabledInk.has(key)) {
+      const chain = chainOf(spec.part ? spec.part() : spec.host(), true);
+      row.enabledInkOverDisabledB = ratio(composite(chain, enabledInk.get(key)), composite(chain));
+    }
+    await measure([{ ...spec, name: `${spec.name}.border`, kind: 'border', min: 1.3, label: false }], state);
+  };
+
+  // Toolbar Undo and Redo: ghost icon buttons.
+  scenario('toolbarUndoRedo', async () => {
+    const C = 'toolbar', F = 'src/ui/chrome/toolbar.ts:286/296';
+    const undo = button('.btn', 'Undo', 'heo-toolbar');
+    const redo = button('.btn', 'Redo', 'heo-toolbar');
+    const undoSpec = { name: 'toolbar.undo', control: 'toolbar.undo', component: C, file: F, cat: 'btn', variant: 'ghost', kind: 'icon', min: 3, host: undo };
+    const redoSpec = { name: 'toolbar.redo', control: 'toolbar.redo', component: C, file: F, cat: 'btn', variant: 'ghost', kind: 'icon', min: 3, host: redo };
+    const size = engine.history.size;
+    await ui(() => engine.duplicate(byId('a')));
+    await btnRows(undoSpec, 'enabled');
+    await ui(() => engine.undo());
+    await btnRows(undoSpec, 'disabled');
+    await btnRows(redoSpec, 'enabled');
+    await ui(() => engine.redo());
+    await btnRows(redoSpec, 'disabled');
+    engine.undo();
+    engine.select(null);
+    if (engine.history.size !== size) notes.push('toolbarUndoRedo left the history changed');
+  });
+
+  // The Tree panel's "Parent", a default filled .btn, and the filter's clear button.
+  scenario('treePanel', async () => {
+    const C = 'tree-panel', F = 'src/ui/panels/tree-panel.ts';
+    const parent = button('.btn.sm', 'Parent', 'heo-tree-panel');
+    const spec = { name: 'tree.parent', control: 'tree.parent', component: C, file: `${F}:440`, cat: 'btn', variant: 'default', kind: 'text', min: 4.5, host: parent };
+    await ui(() => {
+      engine.select(byId('a'));
+      engine.setDockTab('tree');
+    });
+    await btnRows(spec, 'enabled');
+    await ui(() => engine.select(null));
+    await btnRows(spec, 'disabled');
+    // The filter: typing shows a Clear filter button.
+    const input = deep((el) => el.localName === 'input' && inside('heo-tree-panel')(el) && /Filter/.test(el.placeholder ?? ''));
+    if (input) {
+      input.value = 'p';
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await ui();
+      await measureInteractive([
+        { name: 'tree.clearFilter', component: C, file: `${F}:283`, cat: 'kill', kind: 'icon', min: 3, label: true, host: button('.btn', 'Clear filter', 'heo-tree-panel') },
+      ]);
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    } else missing.push('tree filter input');
+    engine.setDock(false);
+  });
+
+  // The Code panel: Apply (primary), the undo button (default), the tab strip ring, the find bar.
+  scenario('codePanel', async () => {
+    const C = 'code-panel', F = 'src/ui/panels/code-panel.ts';
+    await ui(() => {
+      engine.select(byId('a'));
+      engine.setDockTab('code');
+    });
+    await wait(150);
+    await ui();
+    const apply = button('.btn.primary', 'Apply', 'heo-code-panel');
+    const undoApply = button('.btn', 'Undo the markup you just applied', 'heo-code-panel');
+    const applySpec = { name: 'code.apply', control: 'code.apply', component: C, file: `${F}:279`, cat: 'btn', variant: 'primary', kind: 'text', min: 4.5, host: apply };
+    await btnRows(applySpec, 'disabled');
+    await btnRows({ name: 'code.undoApply', control: 'code.undoApply', component: C, file: `${F}:306`, cat: 'btn', variant: 'default', kind: 'text', min: 4.5, host: undoApply }, 'disabled');
+    await measure([
+      { name: 'codeTabs.strip.ring', component: 'code-tabs', file: 'src/ui/panels/code-tabs.ts:75', cat: 'focus', kind: 'focus', min: 3, host: () => deep((el) => el.localName === 'button' && el.parentElement?.classList.contains('strip') && inside('heo-code-tabs')(el)) },
+    ], 'focus');
+
+    // Dirty the buffer through the editor's own input path, which runs the panel's onInput.
+    const textarea = deep((el) => el.localName === 'textarea' && inside('heo-code-panel')(el));
+    if (textarea) {
+      textarea.value = textarea.value + ' ';
+      textarea.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await ui();
+      await btnRows(applySpec, 'enabled');
+      // White on the primary fill, hovered: the hover used to mix towards white.
+      await measure([{ ...applySpec, name: 'code.apply.hover', control: 'code.apply.hover' }], 'hover');
+      // Re-measured disabled after enabled, so the fill comparison has both.
+    } else missing.push('code panel textarea');
+    engine.setDock(false);
+    engine.select(null);
+  });
+
+  // The Styles panel on an element with a class and an inline colour.
+  scenario('stylesPanel', async () => {
+    const C = 'styles-panel', F = 'src/ui/panels/styles-panel.ts';
+    await ui(() => {
+      engine.select(byId('a'));
+      engine.setDockTab('styles');
+    });
+    await measureInteractive([
+      { name: 'styles.classChip.kill', component: C, file: `${F}:1470`, cat: 'kill', kind: 'icon', min: 3, label: true, host: () => deep((el) => el.localName === 'button' && el.classList.contains('kill') && inside('heo-styles-panel')(el)) },
+    ]);
+    // Disabled states the panel reaches only mid-edit: the component's own :disabled rule,
+    // measured on the real control by setting disabled on it.
+    const disabledOn = async (specs) => {
+      const hosts = specs.map((s) => s.host());
+      const was = hosts.map((h) => h?.disabled);
+      hosts.forEach((h) => { if (h) h.disabled = true; });
+      await measure(specs, 'disabled');
+      hosts.forEach((h, i) => { if (h) h.disabled = was[i]; });
+    };
+    // The adder waits behind "+ Add property" in Styles (R23), in the Other card, which starts
+    // closed; open both to reach its way on.
+    await ui(() => {
+      deep((el) => el.localName === 'heo-section' && el.dataset.card === 'other' && inside('heo-styles-panel')(el))
+        ?.shadowRoot?.querySelector('.tile')?.click();
+    });
+    await ui(() => {
+      deep((el) => el.localName === 'button' && el.classList.contains('add-prop') && inside('heo-styles-panel')(el))?.click();
+    });
+    await disabledOn([
+      { name: 'styles.adder.confirm', component: C, file: `${F}:627`, cat: 'control-disabled', kind: 'icon', min: 3, host: () => deep((el) => el.localName === 'button' && el.classList.contains('action') && inside('heo-value-field')(el) && inside('heo-styles-panel')(el)) },
+      { name: 'searchField.go', component: 'search-field', file: 'src/ui/controls/search-field.ts:167', cat: 'control-disabled', kind: 'icon', min: 3, host: () => deep((el) => el.localName === 'button' && el.classList.contains('go') && inside('heo-search-field')(el) && inside('heo-styles-panel')(el)) },
+    ]);
+    /*
+     * The shorthand side control and the value field's !important tag, on a class card (M8).
+     * The class gets a shorthand with one of its sides, so the card shows a family, and an
+     * important colour, so its row shows the tag as the button that removes it.
+     */
+    engine.classes.upsert({ name: 'card', declarations: { padding: '4px', 'padding-left': '0px', color: 'rgb(1, 2, 3) !important' }, origin: 'user' });
+    await ui(() => {
+      const chip = deep((el) => el.localName === 'button' && el.classList.contains('name') && el.textContent.trim() === '.card' && inside('heo-styles-panel')(el));
+      if (chip && chip.getAttribute('aria-expanded') !== 'true') chip.click();
+    });
+    // On screen only: a closed card of the panel still holds its rows, undrawn.
+    const inStyles = (test) => () => deep((el) => el.localName === 'button' && test(el) && el.getClientRects().length > 0 && inside('heo-styles-panel')(el));
+    await measureInteractive([
+      { name: 'styles.sideWin', component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'icon', min: 3, host: inStyles((el) => el.matches('.side-win:not(.on)')) },
+      { name: 'styles.importantTag', component: 'value-field', file: 'src/ui/controls/value-field.ts', cat: 'styles', kind: 'text', min: 4.5, host: inStyles((el) => el.classList.contains('imp') && inside('heo-value-field')(el)) },
+    ]);
+    // Pressed is disabled (pressing the winner again would mean nothing), so it has no hover.
+    await measure([
+      { name: 'styles.sideWinOn', component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'icon', min: 3, host: inStyles((el) => el.matches('.side-win.on')) },
+    ], 'default');
+    /*
+     * The reworked panel's own marks and controls (R31, §6.12). A session edit to #a gives its
+     * row a reset; every section is opened so an undeclared row (its dot drawn only as a ring
+     * on hover) is rendered. Only what is on screen counts: a control in a closed section has
+     * no computed ink and would read as missing rather than as a contrast.
+     */
+    const historyBefore = engine.history.size;
+    await ui(() => {
+      engine.setStyle('letter-spacing', '1px', byId('a'));
+      // A second element wearing .card, so a row editing the class shows its reach chip (2×).
+      byId('b').classList.add('card');
+      for (const section of deepAll((el) => el.localName === 'heo-section' && inside('heo-styles-panel')(el))) section.open = true;
+    });
+    const shown = (el) => el.getClientRects().length > 0;
+    const inPanel = (test) => () => deep((el) => test(el) && shown(el) && inside('heo-styles-panel')(el));
+    const SP = 'src/ui/panels/styles';
+    const firstOf = (selector) => inPanel((el) => el.matches(selector));
+    const undeclaredRow = inPanel((el) => el.matches('.prow') && Boolean(el.querySelector('.row:not(.set) .dots .pn')));
+    const stripCounted = firstOf('.slots button[data-slot]:not(.empty)');
+    await measureInteractive([
+      // The !important toggle at rest (it is always visible, never revealed on hover) and pressed.
+      { name: 'styles.promote', component: 'promote', file: `${SP}/promote.ts`, cat: 'styles', kind: 'icon', min: 3, host: firstOf('.cls .promote[aria-pressed="false"]') },
+      { name: 'styles.promotePressed', component: 'promote', file: `${SP}/promote.ts`, cat: 'styles', kind: 'icon', min: 3, host: firstOf('.cls .promote[aria-pressed="true"]') },
+      // A card row's trash: dim at rest, the danger ink on hover (styles.trashHover).
+      { name: 'styles.trash', component: 'kill', file: 'src/ui/kill.ts', cat: 'styles', kind: 'icon', min: 3, label: true, host: firstOf('.cls button.kill') },
+      // The reset was the faint ink (F8); it now rests on dim like every other icon button.
+      { name: 'styles.reset', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'icon', min: 3, label: true, host: firstOf('.prow .reset') },
+      // The header chip's ×, also faint before (F8).
+      { name: 'styles.chipKill', component: 'header', file: `${SP}/header.ts`, cat: 'styles', kind: 'icon', min: 3, label: true, host: firstOf('.cchip button.kill') },
+      // The id chip's name, on its tint.
+      { name: 'styles.idChip', component: 'header', file: `${SP}/header.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.ident .cchip.id .name') },
+      // "N rules", folded: dim ink in a dashed outline.
+      { name: 'styles.rulesChip', component: 'header', file: `${SP}/header.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.ident .cchip.rules') },
+      // A strip size's count, and a size not in effect at this width: dashed, its ink kept.
+      { name: 'styles.stripCount', component: 'size-strip', file: `${SP}/size-strip.ts`, cat: 'styles', kind: 'text', min: 4.5, host: stripCounted, part: () => stripCounted()?.querySelector('.c') ?? null },
+      { name: 'styles.notNowStrip', component: 'size-strip', file: `${SP}/size-strip.ts`, cat: 'styles', kind: 'icon', min: 3, host: firstOf('.slots button.notnow:not([aria-pressed="true"])') },
+    ]);
+    // A rule's chip, once "N rules" has been pressed: its selector in the darker orange ink.
+    await ui(() => firstOf('.ident .cchip.rules')()?.click());
+    await measure([
+      { name: 'styles.ruleChip', component: 'header', file: `${SP}/header.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.ident .cchip.rule .name') },
+    ], 'default');
+    await measure([
+      // The reach chip on a row's name: where an edit would change more than this element.
+      { name: 'styles.reachChip', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.row .dots .uses') },
+      // The source under a row's name, in the accent at 9.5px: read without opening the cascade.
+      { name: 'styles.rowSource', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.row .dots .from:not(.inline)') },
+      // The card's "N rules • N×" was the faint ink; the reach is what the card is read for.
+      { name: 'styles.cardMeta', component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.cls > header .meta') },
+    ], 'default');
+    // L8: an undeclared row's name is the dim ink, and stays readable on the hover tint that says it opens the cascade.
+    await measure([
+      { name: 'styles.unsetNameOnHover', component: 'property-row', file: `${SP}/property-row.ts`, cat: 'styles', kind: 'text', min: 4.5, host: () => undeclaredRow()?.querySelector('.dots') ?? null, part: () => undeclaredRow()?.querySelector('.dots .pn') ?? null },
+    ], 'hover');
+    engine.undo();
+    /*
+     * The cascade menu's ladder: the result line under the picked rung (what a value there does),
+     * the "now" badge on the winning rung and a rung's reach chip. Small text, so the 4.5:1 a
+     * reading needs, on the popover's raised surface and the picked rung's tint.
+     */
+    const colourName = () => deep((el) => el.localName === 'button' && el.classList.contains('dots') && Boolean(el.closest('[data-declarations="typography"] .row[data-property="color"]')) && inside('heo-styles-panel')(el));
+    await ui(() => colourName()?.click());
+    await measure([
+      { name: 'styles.ladderResult', component: 'ladder', file: `${SP}/ladder.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.pop .open .res .ok, .pop .open .res .ko') },
+      { name: 'styles.ladderResultLine', component: 'ladder', file: `${SP}/ladder.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.pop .open .res') },
+      { name: 'styles.nowBadge', component: 'ladder', file: `${SP}/ladder.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.pop .lr .now') },
+      { name: 'styles.ladderReach', component: 'ladder', file: `${SP}/ladder.ts`, cat: 'styles', kind: 'text', min: 4.5, host: firstOf('.pop .lr .uses') },
+    ], 'default');
+    await ui(() => colourName()?.click());
+    await ui(() => engine.setPreviewWidth(null));
+    if (engine.history.size !== historyBefore) notes.push(`stylesPanel left the history changed (${historyBefore} → ${engine.history.size})`);
+    engine.classes.remove('card');
+    byId('b').classList.remove('card');
+    engine.setDock(false);
+    engine.select(null);
+  });
+
+  // The design system panel: token kill, the selector field's controls, the seed checkboxes.
+  scenario('tokensPanel', async () => {
+    const C = 'tokens-panel', F = 'src/ui/panels/tokens-panel.ts';
+    await ui(() => {
+      engine.select(byId('a'));
+      engine.setDockTab('tokens');
+    });
+    // Collapsed sections do not slot their content, so open every one.
+    await ui(() => {
+      for (const section of deepAll((el) => el.localName === 'heo-section' && inside('heo-tokens-panel')(el))) section.open = true;
+    });
+    await measureInteractive([
+      { name: 'tokens.kill', component: C, file: 'src/ui/kill.ts', cat: 'kill', kind: 'icon', min: 3, label: true, host: () => deep((el) => el.localName === 'button' && el.classList.contains('kill') && inside('heo-tokens-panel')(el)) },
+    ]);
+    // The card header's uses pill, in its three tones: none, one element, several. A rule
+    // matching nothing is written for the grey one and taken away after.
+    await ui(() => engine.createDesignRule('.heo-contrast-unused', { color: 'red' }));
+    const uses = (tone) => () => deep((el) => el.classList?.contains('uses') && el.classList.contains(tone) && inside('heo-tokens-panel')(el));
+    await measure(['none', 'one', 'many'].map((tone) => (
+      { name: `cardHeader.uses.${tone}`, component: 'class-editor', file: 'src/ui/panels/class-editor.ts', cat: 'styles', kind: 'text', min: 4.5, host: uses(tone) }
+    )), 'default');
+    await ui(() => engine.removeDesignRule('.heo-contrast-unused'));
+    const combo = () => deep((el) => el.localName === 'button' && el.classList.contains('combo') && el.disabled && inside('heo-selector-field')(el));
+    await measure([
+      { name: 'selectorField.combo', component: 'selector-field', file: 'src/ui/controls/selector-field.ts:253', cat: 'control-disabled', kind: 'text', min: 4.5, host: combo },
+      { name: 'designTransfer.checkboxLabel', component: 'design-transfer', file: 'src/ui/panels/design-transfer.ts:530', cat: 'control-disabled', kind: 'text', min: 4.5, host: () => deep((el) => el.localName === 'input' && el.type === 'checkbox' && el.disabled && inside('heo-tokens-panel')(el))?.parentElement?.querySelector('span') ?? null },
+    ], 'disabled');
+    const go = () => deep((el) => el.localName === 'button' && el.classList.contains('go') && inside('heo-selector-field')(el) && inside('heo-tokens-panel')(el));
+    const was = go()?.disabled;
+    if (go()) go().disabled = true;
+    await measure([
+      { name: 'selectorField.go', component: 'selector-field', file: 'src/ui/controls/selector-field.ts:211', cat: 'control-disabled', kind: 'icon', min: 3, host: go },
+    ], 'disabled');
+    if (go()) go().disabled = was;
+    engine.setDock(false);
+    engine.select(null);
+  });
+
+  /*
+   * Controls with no cheap UI path, instantiated as their owning custom elements inside the
+   * overlay's shadow root, on a glass backdrop like the dock's, and measured inside their own
+   * shadow roots. Never a hand-built copy of their markup: their styles are component-local.
+   */
+  scenario('bench', async () => {
+    const root = overlayHost().shadowRoot;
+    const bench = document.createElement('div');
+    bench.id = 'heo-bench';
+    bench.setAttribute('style', 'position:fixed;left:20px;top:80px;width:320px;padding:10px;display:grid;gap:8px;pointer-events:auto;background:var(--heo-bg-glass);border-radius:10px');
+    const segmented = document.createElement('heo-segmented');
+    segmented.options = [{ value: 'block', label: 'Block' }, { value: 'flex', label: 'Flex' }];
+    segmented.value = 'block';
+    segmented.label = 'Display';
+    segmented.removable = true;
+    const selector = document.createElement('heo-selector-field');
+    selector.setAttribute('clearable', '');
+    selector.value = '.card';
+    const search = document.createElement('heo-search-field');
+    search.label = 'Blocks';
+    search.action = 'Create';
+    search.actionDisabled = true;
+    const action = document.createElement('heo-value-field');
+    action.action = 'Add';
+    action.value = '10px';
+    bench.append(segmented, selector, search, action);
+    root.append(bench);
+    await ui();
+    await measureInteractive([
+      { name: 'segmented.remove', component: 'segmented', file: 'src/ui/controls/segmented.ts:121', cat: 'kill', kind: 'icon', min: 3, label: true, host: () => segmented.shadowRoot?.querySelector('button.remove') ?? null },
+      { name: 'selectorField.clear', component: 'selector-field', file: 'src/ui/controls/selector-field.ts:507', cat: 'kill', kind: 'icon', min: 3, label: true, host: () => selector.shadowRoot?.querySelector('button.mini[aria-label="Clear CSS selector"]') ?? null },
+    ]);
+    await measure([
+      { name: 'searchField.goWithText', component: 'search-field', file: 'src/ui/controls/search-field.ts:433', cat: 'control-disabled', kind: 'text', min: 4.5, host: () => search.shadowRoot?.querySelector('button.go') ?? null },
+    ], 'disabled');
+    const actionButton = () => action.shadowRoot?.querySelector('button.action') ?? null;
+    if (actionButton()) actionButton().disabled = true;
+    await measure([
+      { name: 'valueField.action', component: 'value-field', file: 'src/ui/controls/value-field.ts:226', cat: 'control-disabled', kind: 'icon', min: 3, host: actionButton },
+    ], 'disabled');
+    bench.remove();
+  });
+
+  // The confirmation dialog's destructive button.
+  scenario('confirmDialog', async () => {
+    await ui(() => engine.askToConfirm({ title: 'Delete this?', message: 'It goes.', confirmLabel: 'Delete', tone: 'danger', run: () => { } }));
+    await measureInteractive([
+      { name: 'confirm.danger', component: 'confirm-dialog', file: 'src/ui/chrome/confirm-dialog.ts:180', cat: 'danger', kind: 'text', min: 4.5, host: button('.btn.danger', 'Delete', 'heo-confirm-dialog') },
+    ]);
+    // The dialog's danger glyph, a danger ink on a danger tint: the danger token changed under it.
+    await measure([
+      { name: 'confirm.glyph', component: 'confirm-dialog', file: 'src/ui/chrome/confirm-dialog.ts:67', cat: 'danger', kind: 'icon', min: 3, host: () => deep((el) => el.matches?.('.g.danger') && inside('heo-confirm-dialog')(el)) },
+    ], 'default');
+    engine.cancelConfirm();
+  });
+
+  // The class and rule dialogs: their Remove buttons, the class adder's confirm, the ring.
+  scenario('styleDialogs', async () => {
+    engine.classes.upsert({ name: 'card', declarations: { padding: '4px' }, origin: 'user' });
+    await ui(() => engine.openStyleEditor('class', 'card'));
+    await measureInteractive([
+      { name: 'classEditor.remove', component: 'class-editor', file: 'src/ui/panels/class-editor.ts:573', cat: 'danger', kind: 'text', min: 4.5, host: () => deep((el) => el.localName === 'button' && el.matches('.btn.danger') && inside('heo-style-dialog')(el)) },
+    ]);
+    // The adder's way on, the name field's arrow: what used to be its confirm button.
+    const confirm = () => deep((el) => el.localName === 'button' && el.classList.contains('action') && inside('heo-value-field')(el) && inside('heo-style-dialog')(el));
+    const was = confirm()?.disabled;
+    if (confirm()) confirm().disabled = true;
+    await measure([
+      { name: 'classEditor.confirm', component: 'class-editor', file: 'src/ui/panels/class-editor.ts:463', cat: 'control-disabled', kind: 'icon', min: 3, host: confirm },
+    ], 'disabled');
+    if (confirm()) confirm().disabled = was;
+    engine.closeStyleEditor();
+    const selector = engine.createDesignRule('#mix p', { color: 'rgb(1, 2, 3)' });
+    if (selector) {
+      await ui(() => engine.openStyleEditor('rule', selector));
+      await measureInteractive([
+        { name: 'ruleEditor.remove', component: 'rule-editor', file: 'src/ui/panels/rule-editor.ts:296', cat: 'danger', kind: 'text', min: 4.5, host: () => deep((el) => el.localName === 'button' && el.matches('.btn.danger') && inside('heo-style-dialog')(el)) },
+      ]);
+      engine.closeStyleEditor();
+    } else missing.push('design rule for the rule editor');
+    engine.classes.remove('card');
+  });
+
+  // The text toolbar's Remove link and Clear formatting, ghost icon buttons.
+  scenario('textToolbar', async () => {
+    await ui(() => {
+      engine.select(byId('b'));
+      engine.beginTextEdit(byId('b'));
+    });
+    await measureInteractive([
+      { name: 'textToolbar.removeLink', component: 'text-toolbar', file: 'src/ui/chrome/text-toolbar.ts:146', cat: 'kill', kind: 'icon', min: 3, label: true, host: button('.btn', 'Remove link', 'heo-text-toolbar') },
+      { name: 'textToolbar.clearFormatting', component: 'text-toolbar', file: 'src/ui/chrome/text-toolbar.ts:156', cat: 'kill', kind: 'icon', min: 3, label: true, host: button('.btn', 'Clear formatting', 'heo-text-toolbar') },
+    ]);
+    engine.endTextEdit(false);
+    engine.select(null);
+  });
+
+  // The save dialog's focus rings.
+  scenario('saveDialog', async () => {
+    const size = engine.history.size;
+    engine.duplicate(byId('a'));
+    engine.select(null);
+    await ui(() => engine.previewSave());
+    await wait(200);
+    await ui();
+    await measure([
+      { name: 'saveDialog.pick.ring', component: 'save-dialog', file: 'src/ui/chrome/save-dialog.ts:196', cat: 'focus', kind: 'focus', min: 3, host: () => deep((el) => el.matches?.('.change .pick') && inside('heo-save-dialog')(el)) },
+    ], 'focus');
+    engine.closeSavePreview();
+    await ui(() => engine.previewSave('files'));
+    await wait(200);
+    await ui();
+    // The card's destination select renders only when the save offers style targets.
+    if (deep((el) => el.matches?.('.cardhead select') && inside('heo-save-dialog')(el))) {
+      await measure([
+        { name: 'saveDialog.cardSelect.ring', component: 'save-dialog', file: 'src/ui/chrome/save-dialog.ts:385', cat: 'focus', kind: 'focus', min: 3, host: () => deep((el) => el.matches?.('.cardhead select') && inside('heo-save-dialog')(el)) },
+      ], 'focus');
+    } else if (theme === 'dark' && page === 'white') notes.push('save-dialog.ts:385 .cardhead select not rendered: this page offers no style destination');
+    engine.closeSavePreview();
+
+    // The export step's settled choice: a kind of asset this page has none of, so its
+    // checkbox is disabled by the component itself (count 0), not forced by the fixture.
+    // It used to fade the whole label to 62% opacity, which the token pass never saw
+    // because the files view this scenario visited does not render it.
+    await ui(() => engine.previewSave());
+    await wait(200);
+    const htmlEntry = () => deep((el) => el.localName === 'button' && el.matches('footer .btn') && /^Save as HTML/.test(el.textContent.replace(/\s+/g, ' ').trim()) && inside('heo-save-dialog')(el));
+    htmlEntry()?.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+    await wait(200);
+    await ui();
+    const settledChoice = () => deep((el) => el.localName === 'label' && el.matches('.choice.settled') && inside('heo-save-dialog')(el));
+    const settledBox = () => settledChoice()?.querySelector('input[type="checkbox"]') ?? null;
+    const settledName = () => settledChoice()?.querySelector('.name') ?? null;
+    await measure([
+      { name: 'saveDialog.settledChoiceName', component: 'save-dialog', file: 'src/ui/chrome/save-dialog.ts:2032', cat: 'control-disabled', kind: 'text', min: 4.5, host: settledName },
+    ], 'disabled');
+    settledExportChoices.push({
+      pass: `${theme}/${page}`,
+      rendered: Boolean(settledChoice()),
+      disabled: settledBox()?.disabled ?? null,
+      opacity: settledChoice() ? getComputedStyle(settledChoice()).opacity : null,
+      nameInk: settledName() ? getComputedStyle(settledName()).color : null,
+      openNameInk: (() => {
+        const open = deep((el) => el.localName === 'label' && el.matches('.choice:not(.settled)') && inside('heo-save-dialog')(el));
+        const name = open?.querySelector('.name');
+        return name ? getComputedStyle(name).color : null;
+      })(),
+    });
+    engine.closeSavePreview();
+    while (engine.history.size > size) engine.undo();
+  });
+
+  // The block instance's "In sync" button, which has its own disabled look.
+  scenario('propsSync', async () => {
+    const block = engine.library.list().find((one) => one.kind !== 'container') ?? engine.library.list()[0];
+    const size = engine.history.size;
+    const placed = block ? await engine.insertBlock(block, {}, { reference: byId('b'), position: 'after' }) : null;
+    if (placed) {
+      await ui(() => {
+        engine.select(placed);
+        engine.setDockTab('props');
+      });
+      await measure([
+        { name: 'props.sync', component: 'props-panel', file: 'src/ui/panels/props-panel.ts:214', cat: 'control-disabled', kind: 'text', min: 4.5, host: () => deep((el) => el.localName === 'button' && el.classList.contains('sync') && el.disabled && inside('heo-props-panel')(el)) },
+      ], 'disabled');
+      engine.setDock(false);
+    } else missing.push('a library block to place for props sync');
+    engine.select(null);
+    while (engine.history.size > size) engine.undo();
+  });
+
+  /*
+   * Secondary text that used the faint ink (2.5:1 on dark glass over a white page): source
+   * labels, ledes, hints, the library's target caption, tree row text and breadcrumbs. The
+   * hint-like ones now share one style, so their computed look is recorded per pass too.
+   */
+  const sharedHintLooks = [];
+  const glassValues = [];
+  scenario('secondaryText', async () => {
+    glassValues.push({ theme, value: getComputedStyle(overlayHost()).getPropertyValue('--heo-bg-glass').trim() });
+    const inPanel = (tag, selector) => () => deep((el) => el.matches?.(selector) && inside(tag)(el));
+    const look = (el) => el ? { color: getComputedStyle(el).color, fontSize: getComputedStyle(el).fontSize } : null;
+    const text = (name, file, host, min = 4.5) => ({ name, component: name.split('.')[0], file, cat: 'secondary', kind: 'text', min, host });
+
+    // Code panel with nothing selected: the whole-file source note.
+    await ui(() => { engine.select(null); engine.setDockTab('code'); });
+    await wait(150);
+    await ui();
+    await measure([text('code.src', 'src/ui/panels/code-panel.ts:216', inPanel('heo-code-panel', 'span.src'))], 'default');
+
+    // Props panel: the source location (no instrumentation here, so its fallback note).
+    await ui(() => { engine.select(byId('a')); engine.setDockTab('props'); });
+    await measure([text('props.src', 'src/ui/panels/props-panel.ts:306', inPanel('heo-props-panel', 'span.src'))], 'default');
+
+    // Styles panel: a hint. (Its old .rule .src rule matched no markup and was removed.)
+    await ui(() => { engine.select(byId('g-bw')); engine.setDockTab('styles'); });
+    await ui(() => {
+      for (const section of deepAll((el) => el.localName === 'heo-section' && inside('heo-styles-panel')(el))) section.open = true;
+    });
+    await measure([
+      text('styles.hint', 'src/ui/panels/styles-panel.ts:1001', inPanel('heo-styles-panel', 'p.hint')),
+    ], 'default');
+    const stylesHint = look(inPanel('heo-styles-panel', 'p.hint')());
+
+    // Library panel with nothing selected: the "appended to body" caption.
+    await ui(() => { engine.select(null); engine.setDockTab('library'); });
+    await measure([text('library.target', 'src/ui/panels/library-panel.ts:441', inPanel('heo-library-panel', 'p.target'))], 'default');
+    const libraryTarget = inPanel('heo-library-panel', 'p.target')();
+    const libraryLook = look(libraryTarget);
+    const libraryUsesHint = Boolean(libraryTarget?.classList.contains('hint'));
+
+    // SEO form: its lede, a field hint and a field label.
+    await ui(() => engine.setDockTab('seo'));
+    await measure([
+      text('seo.lede', 'src/ui/panels/seo-form.ts:284', inPanel('heo-seo-form', 'p.lede')),
+      text('seo.hint', 'src/ui/panels/seo-form.ts:363', inPanel('heo-seo-form', 'p.hint')),
+      text('seo.label', 'src/ui/panels/seo-form.ts:349', inPanel('heo-seo-form', '.label')),
+    ], 'default');
+    sharedHintLooks.push({
+      pass: `${theme}/${page}`, libraryUsesHint,
+      looks: { seoLede: look(inPanel('heo-seo-form', 'p.lede')()), seoHint: look(inPanel('heo-seo-form', 'p.hint')()), library: libraryLook, styles: stylesHint },
+    });
+
+    // Tree panel: row text, and the breadcrumb in default, hover, focus and current.
+    await ui(() => { engine.select(byId('a')); engine.setDockTab('tree'); });
+    const crumb = inPanel('heo-tree-panel', 'button.crumb:not(.current)');
+    const comfortable = 5;
+    // An unselected row with a text preview, in default and hover, and the selected row.
+    const rowHost = (selectedRow) => () => deep((el) => el.matches?.(`.row[aria-selected="${selectedRow}"]`) && el.querySelector('span.text')?.textContent.trim() && inside('heo-tree-panel')(el));
+    const rowSpec = (selectedRow) => ({ ...text('tree.rowText', 'src/ui/panels/tree-panel.ts:184', rowHost(selectedRow), comfortable), part: () => rowHost(selectedRow)()?.querySelector('span.text') ?? null });
+    await measure([rowSpec(false)], 'default');
+    await measure([rowSpec(false)], 'hover');
+    await measure([rowSpec(true)], 'selected');
+    const crumbSpec = text('tree.crumb', 'src/ui/panels/tree-panel.ts:84', crumb, comfortable);
+    await measure([crumbSpec], 'default');
+    await measure([crumbSpec], 'hover');
+    await measure([crumbSpec], 'focus');
+    await measure([{ ...crumbSpec, name: 'tree.crumb.ring', cat: 'focus', kind: 'focus', min: 3 }], 'focus');
+    await measure([text('tree.crumb', 'src/ui/panels/tree-panel.ts:100', inPanel('heo-tree-panel', 'button.crumb.current'), comfortable)], 'current');
+    // The filter's empty state.
+    const input = deep((el) => el.localName === 'input' && inside('heo-tree-panel')(el) && /Filter/.test(el.placeholder ?? ''));
+    if (input) {
+      input.value = 'zzzz-no-such-element';
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      await ui();
+      await measure([text('tree.empty', 'src/ui/panels/tree-panel.ts:298', inPanel('heo-tree-panel', '.empty'))], 'default');
+      input.value = '';
+      input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+    } else missing.push('tree filter input for the empty state');
+    engine.setDock(false);
+
+    // A dialog's body text on the same glass as the menus.
+    await ui(() => engine.askToConfirm({ title: 'Delete this?', message: 'It goes.', confirmLabel: 'Delete', tone: 'danger', run: () => { } }));
+    await measure([
+      text('confirm.undoable', 'src/ui/chrome/confirm-dialog.ts:162', () => deep((el) => el.matches?.('p.undoable') && inside('heo-confirm-dialog')(el))),
+    ], 'default');
+    engine.cancelConfirm();
+    engine.select(null);
+  });
+
+  // The AI menu's quick-action chips (disabled with no provider) and a scope switch.
+  // A provider with no key: the menu renders its quick actions, disabled until a key is set.
+  const TEST_SET = { id: 'heo-contrast-test', label: 'Contrast test', transport: 'in-page', provider: 'openai', model: 'test-model' };
+  scenario('aiMenu', async () => {
+    engine.ai.upsert(TEST_SET);
+    await ui(() => {
+      engine.select(byId('a'));
+      engine.setAiMenu(true);
+    });
+    const scope = () => deep((el) => el.localName === 'button' && el.classList.contains('scope') && inside('heo-ai-menu')(el));
+    const was = scope()?.disabled;
+    if (scope()) scope().disabled = true;
+    await measure([
+      { name: 'aiMenu.chip', component: 'ai-menu', file: 'src/ui/chrome/ai-menu.ts:179', cat: 'control-disabled', kind: 'text', min: 4.5, host: () => deep((el) => el.localName === 'button' && el.classList.contains('chip') && el.disabled && inside('heo-ai-menu')(el)) },
+      { name: 'aiMenu.scope', component: 'ai-menu', file: 'src/ui/chrome/ai-menu.ts:219', cat: 'control-disabled', kind: 'text', min: 4.5, host: scope },
+    ], 'disabled');
+    if (scope()) scope().disabled = was;
+    engine.setAiMenu(false);
+
+    // The provider settings: Remove (danger) and the "Remember on this machine" checkbox.
+    await ui(() => {
+      engine.setAiMenu(true);
+      engine.setAiSettings(true);
+    });
+    await measureInteractive([
+      { name: 'aiSettings.remove', component: 'ai-settings', file: 'src/ui/chrome/ai-settings.ts:868', cat: 'danger', kind: 'text', min: 4.5, host: () => deep((el) => el.localName === 'button' && el.matches('.btn.danger') && (el.getAttribute('title') ?? '').startsWith('Remove') && inside('heo-ai-settings')(el)) },
+    ]);
+    const remember = () => deep((el) => el.localName === 'input' && el.type === 'checkbox' && el.parentElement?.classList.contains('verdict') && inside('heo-ai-settings')(el));
+    const rememberWas = remember()?.disabled;
+    if (remember()) remember().disabled = true;
+    await measure([
+      { name: 'aiSettings.rememberLabel', component: 'ai-settings', file: 'src/ui/chrome/ai-settings.ts:1075', cat: 'control-disabled', kind: 'text', min: 4.5, host: () => remember()?.parentElement ?? null },
+    ], 'disabled');
+    if (remember()) remember().disabled = rememberWas;
+    engine.setAiSettings(false);
+    engine.setAiMenu(false);
+    engine.ai.remove(TEST_SET.id);
+    engine.select(null);
+  });
+
+  // The expanded code workspace's tab ring.
+  scenario('codeWorkspace', async () => {
+    await ui(() => {
+      engine.select(byId('a'));
+      engine.openCodeWorkspace();
+    });
+    await wait(150);
+    await ui();
+    await measure([
+      { name: 'codeWorkspace.tab.ring', component: 'code-workspace', file: 'src/ui/chrome/code-workspace.ts:108', cat: 'focus', kind: 'focus', min: 3, host: () => deep((el) => el.localName === 'button' && el.parentElement?.classList.contains('tabs') && inside('heo-code-workspace')(el)) },
+    ], 'focus');
+    // The find bar exists only where the editor has room for it: the expanded workspace.
+    // The find bar, its match steppers (ghost, disabled until something matches) and its clear.
+    const findOpen = deep((el) => el.localName === 'button' && inside('heo-code-workspace')(el) && /find/i.test(el.getAttribute('aria-label') ?? el.getAttribute('title') ?? ''));
+    if (findOpen) {
+      findOpen.click();
+      await ui();
+      const previous = button('.btn', 'Previous match', 'heo-code-editor');
+      const stepSpec = { name: 'codeEditor.previousMatch', control: 'codeEditor.previousMatch', component: 'code-editor', file: 'src/ui/controls/code-editor.ts:903', cat: 'btn', variant: 'ghost', kind: 'icon', min: 3, host: previous };
+      const field = deep((el) => el.localName === 'input' && inside('heo-search-field')(el) && inside('heo-code-editor')(el));
+      if (field) {
+        field.value = 'p';
+        field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await ui();
+        await btnRows(stepSpec, 'enabled');
+        await measureInteractive([
+          { name: 'searchField.clear', component: 'search-field', file: 'src/ui/controls/search-field.ts:398', cat: 'kill', kind: 'icon', min: 3, label: true, host: () => deep((el) => el.localName === 'button' && el.classList.contains('mini') && (el.getAttribute('aria-label') ?? '').startsWith('Clear') && inside('heo-search-field')(el) && inside('heo-code-editor')(el)) },
+        ]);
+        field.value = 'zzzz-no-match';
+        field.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await ui();
+        await btnRows(stepSpec, 'disabled');
+      } else missing.push('code editor find field');
+    } else missing.push('code editor find button');
+
+    engine.closeCodeWorkspace();
+    engine.select(null);
+  });
+
+  /* ---------------------------------------------------------------- *
+   * Run every scenario in each pass this page runs: a theme over a page colour.
+   * ---------------------------------------------------------------- */
+  const sections = HeoSections.create({ names: passes.map(([t, p]) => `${t}-${p}`) });
+  const scenarioErrors = [];
+  const passesRun = [];
+  for (const [t, p] of passes) {
+    if (!sections.run(`${t}-${p}`)) continue;
+    passesRun.push([t, p]);
+    theme = t;
+    page = p;
+    pageColour = p === 'white' ? '#ffffff' : '#000000';
+    document.documentElement.style.background = pageColour;
+    document.body.style.background = pageColour;
+    engine.store.patch({ theme: t });
+    await settle();
+    for (const { name, run } of scenarios) {
+      step(`${t}/${p} ${name}`);
+      // Every scenario leaves the undo stack as it found it, so the next one starts the same.
+      const size = engine.history.size;
+      try {
+        await run();
+      } catch (error) {
+        scenarioErrors.push(`${t}/${p} ${name}: ${String(error && error.stack || error).slice(0, 300)}`);
+      }
+      while (engine.history.size > size) engine.undo();
+      await settle();
+    }
+  }
+  engine.store.patch({ theme: 'dark' });
+
+  /* ---------------------------------------------------------------- *
+   * Harness guards: the pipeline reads what it claims to read.
+   * ---------------------------------------------------------------- */
+  step('guards');
+  pageColour = '#ffffff';
+  document.documentElement.style.background = '';
+  document.body.style.background = '#ffffff';
+  await settle();
+  const guardRatio = (el) => {
+    const chain = chainOf(el, true);
+    return ratio(composite(chain, getComputedStyle(el).color), composite(chain));
+  };
+  const shadowSpan = byId('g-shadow').shadowRoot.querySelector('.t');
+  shadowSpan.classList.add('heo-force-hover');
+  await settle();
+  const settledColour = getComputedStyle(shadowSpan).color;
+  shadowSpan.classList.remove('heo-force-hover');
+  const opacityRatio = guardRatio(byId('g-opacity'));
+  const themesRun = [...new Set(passesRun.map(([t]) => t))];
+  const pick = (name, state, t = passesRun[0]?.[0], p = passesRun[0]?.[1]) => rows.find((r) => r.name === name && r.state === state && r.theme === t && r.page === p);
+  const differs = (x, y) => Boolean(x && y) && x.some((v, i) => Math.abs(v - y[i]) > 10);
+  results.harness = {
+    theHarnessReadsBlackOnWhiteAsTwentyOne: guardRatio(byId('g-bw')) >= 20.9,
+    theHarnessCatchesALowContrastPair: guardRatio(byId('g-low')) < 1.5,
+    theHarnessHonoursAnOpacityGroup: opacityRatio >= 3.8 && opacityRatio <= 4.1,
+    theHarnessReadsAnOklchColour: guardRatio(byId('g-oklch')) > 20,
+    theHarnessSeesTheHoverState:
+      differs(pick('tokens.kill', 'default')?.F, pick('tokens.kill', 'hover')?.F) &&
+      differs(pick('confirm.danger', 'default')?.B, pick('confirm.danger', 'hover')?.B),
+    theSettleWaitsForAShadowTransition: settledColour === 'rgb(0, 0, 255)',
+    everyColourWasParsed: unparsed.length === 0,
+    everyScenarioRan: scenarioErrors.length === 0,
+    // A target that was not found would leave its assertion passing on fewer rows.
+    everyTargetWasFound: missing.length === 0,
+  };
+
+  /* ---------------------------------------------------------------- *
+   * Assertions, each computed from rows, each listing its failing rows.
+   * ---------------------------------------------------------------- */
+  const label = (r) => `${r.name} [${r.state}] ${r.theme}/${r.page}: ${r.ratio} < ${r.min}`;
+  const verdict = (selected, test = (r) => r.ratio >= r.min) => {
+    const failing = selected.filter((r) => !test(r)).map(label);
+    return { pass: selected.length > 0 && failing.length === 0, rows: selected.length, failing };
+  };
+  const menuRows = (cat, kind, state) => rows.filter((r) => r.cat === cat && (!kind || r.kind === kind) && (!state || r.state === state));
+  results.disabledMenuItemTextMeetsFourAndAHalf = verdict(menuRows('menu-disabled', 'text'));
+  results.disabledMenuItemGlyphsMeetThree = verdict(menuRows('menu-disabled', 'icon'));
+  const perPass = (fn) => passesRun.map(([t, p]) => fn(t, p));
+  {
+    const pairs = perPass((t, p) => ({ t, p, on: pick('menu.group.wrap.label', 'enabled', t, p), off: pick('menu.group.merge.label', 'disabled', t, p) }));
+    const failing = pairs.filter(({ on, off }) => !(on && off && on.ratio / off.ratio >= 1.5)).map(({ t, p, on, off }) => `${t}/${p}: ${on?.ratio} / ${off?.ratio}`);
+    results.aDisabledLabelIsVisiblyDimmerThanAnEnabledOne = { pass: failing.length === 0, failing };
+  }
+  {
+    const pairs = perPass((t, p) => ({ t, p, on: pick('menu.group.wrap.glyph', 'enabled', t, p), off: pick('menu.group.merge.glyph', 'disabled', t, p) }));
+    const failing = pairs.filter(({ on, off }) => !(on && off && off.ratio <= on.ratio + 0.05)).map(({ t, p, on, off }) => `${t}/${p}: disabled ${off?.ratio} vs enabled ${on?.ratio}`);
+    results.aDisabledGlyphIsNoMoreProminentThanAnEnabledOne = { pass: failing.length === 0, failing };
+  }
+  const btnDisabledInk = rows.filter((r) => r.cat === 'btn' && r.state === 'disabled' && r.kind !== 'border');
+  const btnDisabledBorder = rows.filter((r) => r.cat === 'btn' && r.state === 'disabled' && r.kind === 'border');
+  results.aDisabledButtonShowsAVisibleDashedBorder = verdict(btnDisabledBorder, (r) => r.borderStyle === 'dashed' && r.borderWidth >= 1 && r.ratio >= 1.3);
+  results.aDisabledButtonInkIsNeverBrighterThanItsEnabledInk = verdict(
+    btnDisabledInk.filter((r) => r.variant !== 'primary' && r.enabledInkOverDisabledB != null),
+    (r) => r.ratio <= r.enabledInkOverDisabledB + 0.3,
+  );
+  {
+    const failing = [];
+    let checked = 0;
+    for (const [t, p] of passesRun) {
+      const off = pick('code.apply', 'disabled', t, p);
+      const on = pick('code.apply', 'enabled', t, p);
+      if (!off || !on) { failing.push(`${t}/${p}: missing`); continue; }
+      checked++;
+      const noFill = off.ownB.every((v, i) => Math.abs(v - off.parentB[i]) <= 1);
+      const filled = ratio(on.ownB, on.parentB) >= 2;
+      if (!noFill || !filled) failing.push(`${t}/${p}: disabled fill ${off.ownB} vs ${off.parentB}; enabled fill ${ratio(on.ownB, on.parentB)}`);
+    }
+    results.aDisabledPrimaryDropsItsFill = { pass: checked > 0 && failing.length === 0, failing };
+  }
+  results.theDeleteItemTextMeetsFourAndAHalfInEveryState = verdict(rows.filter((r) => /^menu\.(single|group|body)\.delete\.(label|hint)$/.test(r.name)));
+  results.theDeleteItemGlyphMeetsThreeInEveryState = verdict(rows.filter((r) => /^menu\.(single|group|body)\.delete\.glyph$/.test(r.name)));
+  results.theFocusRingMeetsThree = verdict(rows.filter((r) => r.kind === 'focus'));
+  results.dangerButtonsMeetFourAndAHalfInEveryState = verdict(rows.filter((r) => r.cat === 'danger' && r.kind !== 'focus'));
+  results.disabledButtonsMeetTheirThresholds = verdict(btnDisabledInk);
+  results.clearAndRemoveControlsMeetTheirThresholds = verdict(rows.filter((r) => r.cat === 'kill' && r.kind !== 'focus'));
+  results.controlDisabledStatesMeetTheirThresholds = verdict(rows.filter((r) => r.cat === 'control-disabled'));
+  results.menuHeadingsAndHintsMeetFourAndAHalf = verdict(menuRows('menu-heading'));
+  {
+    // The Styles panel's own controls, each in every state measured, in dark and in light.
+    const inBothThemes = (name) => {
+      const selected = rows.filter((r) => r.name === name);
+      const v = verdict(selected);
+      return { pass: v.pass && themesRun.every((t) => selected.some((r) => r.theme === t)), failing: v.failing };
+    };
+    const sideWin = inBothThemes('styles.sideWin');
+    const sideWinOn = inBothThemes('styles.sideWinOn');
+    const importantTag = inBothThemes('styles.importantTag');
+    // Measured in the given state only, in both themes.
+    const inBothThemesWhen = (name, state) => {
+      const selected = rows.filter((r) => r.name === name && r.state === state);
+      const v = verdict(selected);
+      return { pass: v.pass && themesRun.every((t) => selected.some((r) => r.theme === t)), failing: v.failing };
+    };
+    const checks = {
+      sideWin,
+      sideWinOn,
+      importantTag,
+      promote: inBothThemes('styles.promote'),
+      promotePressed: inBothThemes('styles.promotePressed'),
+      trash: inBothThemes('styles.trash'),
+      // Removal is the one destructive thing in a row, so its hover is the danger ink, still readable.
+      trashHover: inBothThemesWhen('styles.trash', 'hover'),
+      reset: inBothThemes('styles.reset'),
+      chipKill: inBothThemes('styles.chipKill'),
+      reachChip: inBothThemes('styles.reachChip'),
+      unsetNameOnHover: inBothThemesWhen('styles.unsetNameOnHover', 'hover'),
+      stripCount: inBothThemes('styles.stripCount'),
+      notNowStrip: inBothThemes('styles.notNowStrip'),
+      cardMeta: inBothThemes('styles.cardMeta'),
+      ladderResult: inBothThemes('styles.ladderResult'),
+      ladderResultLine: inBothThemes('styles.ladderResultLine'),
+      nowBadge: inBothThemes('styles.nowBadge'),
+      ladderReach: inBothThemes('styles.ladderReach'),
+      // Every new Styles control's focus ring, measured on the control's own outline.
+      focusRing: (() => {
+        const selected = rows.filter((r) => r.name.startsWith('styles.') && r.kind === 'focus');
+        const v = verdict(selected);
+        return { pass: v.pass && themesRun.every((t) => selected.some((r) => r.theme === t)), failing: v.failing };
+      })(),
+    };
+    results.styles = {
+      ...Object.fromEntries(Object.entries(checks).map(([name, check]) => [name, check.pass])),
+      failing: Object.values(checks).flatMap((check) => check.failing),
+    };
+  }
+
+  /*
+   * The contrast polish: the shared glass a little darker (dark) or more opaque (light), the
+   * faint ink lifted, secondary text on one shared hint style, tree text and crumbs on dim.
+   */
+  const secondary = (name, state) => rows.filter((r) => r.name === name && (!state || r.state === state));
+  const glassOf = (t) => glassValues.find((g) => g.theme === t)?.value ?? '';
+  const glassParts = (v) => (v.match(/oklch\(([\d.]+)%\s+[\d.]+\s+[\d.]+\s*\/\s*([\d.]+)%\)/) ?? []).slice(1).map(Number);
+  {
+    const [darkL, darkA] = glassParts(glassOf('dark'));
+    const [lightL, lightA] = glassParts(glassOf('light'));
+    // Each theme's check only where that theme ran: the dark and light pages assert one each.
+    results.theMenuSurface = {};
+    // Was oklch(19% ... / 82%): darker and a touch more opaque, still translucent for the blur.
+    if (themesRun.includes('dark')) results.theMenuSurface.isDarkerInTheDarkTheme = darkL < 19 && darkA > 82 && darkA < 100;
+    // Was oklch(99% ... / 86%): darkening light glass would lower dark-ink contrast, so it is more opaque.
+    if (themesRun.includes('light')) results.theMenuSurface.isMoreOpaqueInTheLightTheme = lightL >= 99 && lightA > 86 && lightA < 100;
+    results.theMenuSurface.values = glassValues;
+  }
+  results.menuItemTextOnTheSurfaceMeetsFourAndAHalf = verdict(rows.filter((r) => r.cat === 'menu-enabled' && r.kind === 'text'));
+  results.dialogBodyTextOnTheSurfaceMeetsFourAndAHalf = verdict(secondary('confirm.undoable'));
+  results.codeSourceLabelReadsAtTextContrast = verdict(secondary('code.src'));
+  results.propsSourceLabelReadsAtTextContrast = verdict(secondary('props.src'));
+  results.seoLedeReadsAtTextContrast = verdict(secondary('seo.lede'));
+  results.seoFieldHintReadsAtTextContrast = verdict(secondary('seo.hint'));
+  results.panelHintReadsAtTextContrast = verdict(secondary('styles.hint'));
+  results.libraryTargetCaptionReadsAtTextContrast = verdict(secondary('library.target'));
+  results.faintTextNowClearsTextContrast = verdict([...secondary('seo.label'), ...secondary('tree.empty')]);
+  results.treeRowTextClearsTextContrastComfortably = verdict(secondary('tree.rowText', 'default'));
+  results.treeRowTextOnHoverClears = verdict(secondary('tree.rowText', 'hover'));
+  results.treeRowTextOnTheSelectedRowClears = verdict(secondary('tree.rowText', 'selected'));
+  results.crumbClearsTextContrastComfortably = verdict(secondary('tree.crumb', 'default'));
+  results.crumbHoverClears = verdict(secondary('tree.crumb', 'hover'));
+  results.crumbFocusClears = verdict(secondary('tree.crumb', 'focus'));
+  results.crumbCurrentClears = verdict(secondary('tree.crumb', 'current'));
+  results.crumbFocusRingClears3to1 = verdict(secondary('tree.crumb.ring'));
+  results.whiteOnPrimaryClearsTextContrast = verdict(secondary('code.apply', 'enabled'));
+  results.primaryHoverClears = verdict(secondary('code.apply.hover', 'hover'));
+  {
+    // One shared style: the seo lede and hint, the library caption and a styles hint used to be
+    // four local rules at 10 to 11px. Same computed colour and size, per pass.
+    const same = (looks) => {
+      const all = Object.values(looks);
+      return all.every(Boolean) && all.every((l) => l.color === all[0].color && l.fontSize === all[0].fontSize);
+    };
+    results.theSharedHintStyle = {
+      libraryTargetUsesTheSharedHintStyle: sharedHintLooks.length === passesRun.length && sharedHintLooks.every((h) => h.libraryUsesHint),
+      hintAndLedeShareOneComputedStyle: sharedHintLooks.length === passesRun.length && sharedHintLooks.every((h) => same(h.looks)),
+      measured: sharedHintLooks,
+    };
+  }
+  // The save dialog's settled export choice faded its whole label to 62% opacity, the
+  // fade-by-opacity pattern this pass removes everywhere else. It keeps looking settled,
+  // through the disabled ink on its name instead.
+  results.theSettledExportChoice = {
+    isRenderedInEveryPass: settledExportChoices.length === passesRun.length && settledExportChoices.every((c) => c.rendered),
+    hasItsCheckboxDisabledByTheDialog: settledExportChoices.length > 0 && settledExportChoices.every((c) => c.disabled === true),
+    isNoLongerFadedByOpacity: settledExportChoices.length > 0 && settledExportChoices.every((c) => c.opacity === '1'),
+    stillLooksDimmerThanAnOpenChoice: settledExportChoices.length > 0 && settledExportChoices.every((c) => c.nameInk && c.openNameInk && c.nameInk !== c.openNameInk),
+    measured: settledExportChoices,
+  };
+  results.aFocusedDisabledItemShowsItsReason = {
+    pass: Boolean(focusReveal) && focusReveal.shown > 20 && focusReveal.hidden >= 0 && focusReveal.hidden <= 1,
+    measured: focusReveal,
+  };
+  {
+    const seen = new Map();
+    for (const entry of named) if (!seen.has(entry.name)) seen.set(entry.name, entry);
+    const failing = [...seen.values()].filter((e) => !e.accessibleName).map((e) => e.name);
+    results.everyKillClearAndRemoveControlHasAnAccessibleName = { pass: seen.size > 0 && failing.length === 0, failing, names: [...seen.values()] };
+  }
+
+  /* ---------------------------------------------------------------- *
+   * Every ?disabled= binding under src/ui, decided (plan task 7).
+   * ---------------------------------------------------------------- */
+  results.__sites = [
+    'panels/styles-panel.ts:2333 → covered: toolbar.undo (ghost .btn, glass backdrop; the panel sets no colour, background, border or opacity on it)',
+    'panels/design-transfer.ts:530 → row: designTransfer.checkboxLabel',
+    'panels/tree-panel.ts:440 → row: tree.parent',
+    'panels/tree-panel.ts:448 → covered: tree.parent (same .pad .btn)',
+    'panels/tree-panel.ts:456 → covered: tree.parent (same .pad .btn)',
+    'panels/tree-panel.ts:464 → covered: tree.parent (same .pad .btn)',
+    'panels/code-panel.ts:279 → row: code.apply',
+    'panels/code-panel.ts:306 → row: code.undoApply',
+    'panels/css-panel.ts:264 → covered: code.apply (primary .btn, same dock backdrop)',
+    'panels/css-panel.ts:388 → covered: code.undoApply (default .btn, same dock backdrop)',
+    'panels/class-editor.ts:163 → exempt: .side-win is disabled exactly while .on, so its disabled state is the pressed state, announced by aria-pressed (row: styles.sideWinOn)',
+    'panels/styles/promote.ts:32 → exempt: .promote is disabled only for a read-only target, and its title gives the reason',
+    'panels/js-panel.ts:285 → covered: tree.parent (default .btn)',
+    'panels/js-panel.ts:293 → covered: code.apply (primary .btn)',
+    'panels/js-panel.ts:411 → covered: code.undoApply (default .btn)',
+    'panels/props-panel.ts:455 → row: props.sync (its own .sub .sync:disabled rule)',
+    'panels/props-panel.ts:1017 → covered: toolbar.undo (ghost .btn)',
+    'controls/search-field.ts:433 → row: searchField.goWithText',
+    'controls/code-editor.ts:903 → row: codeEditor.previousMatch',
+    'controls/code-editor.ts:913 → covered: codeEditor.previousMatch (same rule)',
+    'controls/selector-field.ts:572 → row: selectorField.combo',
+    'chrome/source-dialog.ts:298 → covered: code.apply (primary .btn; footer .actions > .btn sets only flex)',
+    'chrome/extract-dialog.ts:1384 → not measurable: an option in a native select, drawn by the browser outside the page',
+    'chrome/toolbar.ts:286 → row: toolbar.undo',
+    'chrome/toolbar.ts:296 → row: toolbar.redo',
+    'chrome/toolbar.ts:324 → covered: code.apply (primary .btn on the toolbar glass)',
+    'chrome/save-dialog.ts:1056 → covered: tree.parent (default .btn)',
+    'chrome/save-dialog.ts:1495 → covered: code.apply (primary .btn; footer .actions > .btn sets only flex)',
+    'chrome/save-dialog.ts:1526 → covered: code.apply (primary .btn)',
+    'chrome/save-dialog.ts:1545 → covered: code.apply (primary .btn)',
+    'chrome/save-dialog.ts:1572 → covered: code.apply (primary .btn)',
+    'chrome/save-dialog.ts:1589 → covered: code.apply (primary .btn)',
+    'chrome/save-dialog.ts:1786 → covered: tree.parent (default .btn)',
+    'chrome/save-dialog.ts:2032 → row: saveDialog.settledChoiceName (the export step\'s settled choice; .choice.settled .name takes --heo-text-disabled instead of 62% opacity on the row, like design-transfer\'s .part.empty)',
+    'chrome/save-dialog.ts:2401 → covered: tree.parent (default .btn)',
+    'chrome/ai-settings.ts:1003 → covered: tree.parent (default .btn sm)',
+    'chrome/ai-settings.ts:1075 → row: aiSettings.rememberLabel (no dimming rule: the label keeps its normal ink when the checkbox is disabled)',
+    'chrome/ai-menu.ts:526 → row: aiMenu.chip',
+    'chrome/ai-menu.ts:540 → exempt: a textarea, styled by the component, disabled only while a request runs (not a button)',
+    'chrome/ai-menu.ts:586 → exempt: a native select shown only with several providers',
+    'chrome/ai-menu.ts:607 → covered: code.apply (primary .btn sm)',
+    'chrome/ai-menu.ts:659 → row: aiMenu.scope',
+  ];
+  results.__skippedRules = [...skippedRules].sort();
+  results.__missing = missing;
+  results.__notes = [...notes, ...scenarioErrors, ...unparsed.slice(0, 20)];
+  results.__rows = rows.map(({ F, B, ownB, parentB, ...rest }) => ({ ...rest, F, B, ownB, parentB }));
+
+  sections.report(results);
+
+  /* ------------------------------------------------------------------ */
+  const failed = Object.entries(results)
+    .filter(([name, group]) => !name.startsWith('__') && group && typeof group === 'object' && !Array.isArray(group))
+    .filter(([, group]) => Object.values(group).some((value) => value === false))
+    .map(([name]) => name);
+  results.failed = failed;
+  results.ok = failed.length === 0 && errors.length === 0;
+  results.__errors = errors;
+  return results;
+};

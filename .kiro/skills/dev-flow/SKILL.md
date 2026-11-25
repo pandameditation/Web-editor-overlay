@@ -210,18 +210,32 @@ it to a real assertion before finishing.
 
 1. `npm run typecheck`
 2. `npm run build` (or `build:lib` for a quick loop)
-3. The targeted fixture: `node scripts/browser-check.mjs test/<file>.html <ms>`
-4. The full suite: `npm run check` — about 2 minutes (~105 s). See "Running the suite" below.
+3. The targeted fixture: `node scripts/browser-check.mjs test/<file>.html <ms>`, with
+   `--only <section>[,<section>]` on a large page (see "Inner loops" below)
+4. The full suite: `npm run check` — about 3.5 minutes (~215 s wall, ~200 s of it the 108 fixtures).
+   See "Running the suite" below.
 
 **Running the suite.** `check-all.mjs` exits on its own: it prints `N fixtures in Xs, 6 at a time`
 followed by `all green` or `N failed:`, and exits non-zero on failure. So:
 
 - Run it in the **foreground** with an explicit timeout: `npm run check > /tmp/new.log 2>&1` with a
-  300 s tool timeout (600 s at most). Then read the exit code and `tail -5 /tmp/new.log`.
+  420 s tool timeout (600 s at most). Then read the exit code and `tail -5 /tmp/new.log`.
 - **Never** start it in the background and wait with `sleep N` or a polling loop. A fixed sleep costs
   minutes per run for no information.
-- **Inner loops** (each implement / fix iteration): `npm run check:fast` plus the targeted fixture(s)
-  for what you changed. Do not run the full suite every iteration.
+- **Inner loops** (each implement / fix iteration): `npm run check:fast` (~35 s: typecheck, the node
+  tests and the 31 pages that each take 5 s or less) plus the targeted fixture(s) for what you changed.
+  Do not run the full suite every iteration.
+- **On a large page, run only the section you are working on**:
+  `node scripts/browser-check.mjs test/background-editor.html 150000 --only typing` (or
+  `test/<file>.html?only=typing`). background-editor, color-picker, border-editor, styles-sources and
+  a11y-contrast-dark/-light declare their sections with `test/sections.js`; a section's prerequisites
+  run with it, and an unknown name throws and lists the page's sections. A filtered run adds
+  `partialRun: { aFullRun: false, ran, skipped }` to the payload, lists it in `failed`, and
+  browser-check prints `PARTIAL RUN`: it never counts as a pass, so finish with an unfiltered run.
+- **Scheduling uses a timings cache.** Every `check`/`check:fast` run saves each finished page's time
+  to `node_modules/.cache/heo-check/timings.json` (ignored by git, per worktree) and starts the
+  longest pages first by those times next run. A page the cache does not know falls back to its
+  `weight` in `scripts/fixtures.mjs`; delete the file to fall back to `weight` alone.
 - **The full `npm run check` runs once per task**, at the end, compared against the baseline.
   Reviewers read that log instead of re-running the suite.
 - **Record a baseline only when the starting tree changed** since the last stored `baseline.log`
@@ -258,7 +272,9 @@ runs. Distinguish those from regressions instead of re-investigating them each t
   probes this way, wired into `package.json` as `check:popover` and `check:firefox`.
 - Remove diagnostics you added to fixtures, or convert them to assertions.
 - Finish with `git status --short` and confirm only intended files appear. Say what changed.
-- Register new fixtures in `package.json` `scripts.check` so they actually run.
+- Register new fixtures in `FIXTURES` in `scripts/fixtures.mjs` so they actually run (with a `weight`
+  from their measured time). The full run refuses to start while a page that writes `RESULTS:` is in
+  neither `FIXTURES` nor `MANUAL_PAGES`.
 
 ---
 
