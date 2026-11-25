@@ -40,6 +40,8 @@ const ERASE_GRACE_MS = 1500;
  * dialog's own to handle; this is for the keys that come from outside.
  */
 const escapeLayers: Array<() => void> = [];
+/** An Escape press inside a text edit that closed a layer instead, so its keyup leaves the edit alone. */
+let escapeTakenByLayer = false;
 
 /** Register a surface Escape should close first. Returns the function that unregisters it. */
 export function pushEscapeLayer(close: () => void): () => void {
@@ -242,6 +244,13 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
      * only to abandon one, and discarding on it threw away work that was pressed by mistake with
      * no way back. Committed, the edit is one step on the undo stack, so Mod+Z still discards it.
      */
+    // A menu open over the edit (the text toolbar's effects) closes first; the edit goes on.
+    if (key === 'Escape' && escapeLayers.length) {
+      event.preventDefault();
+      escapeTakenByLayer = true;
+      escapeLayers[escapeLayers.length - 1]!();
+      return;
+    }
     if (key === 'Escape' || (key === 'Enter' && mod)) {
       event.preventDefault();
       engine.endTextEdit(true);
@@ -422,7 +431,10 @@ const PANEL_KEYS: Record<string, PanelId> = Object.fromEntries(
  */
 export function handleKeyUp(engine: EditorEngine, event: KeyboardEvent): void {
   const state = engine.store.value;
-  if (event.key !== 'Escape' || !state.editing || !state.textEditing) return;
+  if (event.key !== 'Escape') return;
+  const taken = escapeTakenByLayer;
+  escapeTakenByLayer = false;
+  if (!state.editing || !state.textEditing) return;
   if (
     state.extraction ||
     state.htmlPaste ||
@@ -437,6 +449,8 @@ export function handleKeyUp(engine: EditorEngine, event: KeyboardEvent): void {
   }
   if (insideNativeModal(event) || fromOverlay(event)) return;
   event.preventDefault();
+  // The press closed a menu over the edit (the text toolbar's effects): its release does not end the edit.
+  if (taken) return;
   engine.endTextEdit(true);
 }
 

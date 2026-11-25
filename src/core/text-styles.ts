@@ -126,6 +126,32 @@ export function storedTextStyle(name: string, declarations: Record<string, strin
 }
 
 /**
+ * A text style made from a text effect (the text toolbar's "Save as text style") says which effect
+ * it came from: `--heo-text-effect: arc`. Such a style keeps every declaration the effect needs
+ * (its background, padding, filter), not only typography, which is all a text style made from the
+ * Typography section holds.
+ */
+export const TEXT_EFFECT_MARKER = '--heo-text-effect';
+
+/** Whether a class is a text style made from a text effect. */
+export function isTextEffectStyle(entry: Pick<DesignClass, 'declarations'> | undefined | null): boolean {
+  return isTextStyle(entry) && Boolean(entry && TEXT_EFFECT_MARKER in entry.declarations);
+}
+
+/** The declarations a text effect's style is stored with: all of them, its effect, its marker, its place. */
+export function storedTextEffect(name: string, effect: string, declarations: Record<string, string>, order: number | null = null): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [property, value] of Object.entries(declarations)) {
+    if (property.startsWith('--heo-') || !value.trim()) continue;
+    out[property] = value.trim();
+  }
+  out[TEXT_EFFECT_MARKER] = effect;
+  out[TEXT_STYLE_MARKER] = textStyleMarker(name);
+  if (order !== null) out[TEXT_STYLE_ORDER] = String(order);
+  return out;
+}
+
+/**
  * A name proposed for saving: the style it came from with " alt", or "Text style", made unique
  * against the names already taken (case-insensitively, as the dialog matches them).
  */

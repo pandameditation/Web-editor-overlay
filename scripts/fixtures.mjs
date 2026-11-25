@@ -139,6 +139,7 @@ export const FIXTURES = [
   { page: 'test/design-scope.html', budget: 45000, weight: 2100, fast: true },
   { page: 'test/links.html', budget: 45000, weight: 2100 },
   { page: 'test/text-format.html', budget: 45000, weight: 2000 },
+  { page: 'test/text-effects.html', budget: 60000, weight: 2200, fast: true },
   { page: 'test/text-sweep-out.html', budget: 45000, weight: 2000 },
   { page: 'test/block-roundtrip.html', budget: 60000, weight: 2000, fast: true },
   { page: 'test/plan-honesty.html', budget: 45000, weight: 2000, fast: true },

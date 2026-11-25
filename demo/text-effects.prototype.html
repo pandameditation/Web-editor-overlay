@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Text toolbar: text effects (doodles, highlights, gradient text)</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  The question: what does the text toolbar's "Text effects" button (after Strikethrough) open, and
+  how does an effect land in the text? Shared by every variant, as decided:
+    - an effect is a small recipe (CSS declarations, and for a hand-drawn one a single SVG path that
+      is turned into a background image when applied). No SVG is added to the page's HTML;
+    - it applies like Bold: with text selected, the selection is wrapped in a <span> (a <mark> for a
+      highlight) carrying the effect; with only a caret, an empty wrapper is put there and what is
+      typed next goes in it. Picking the effect again on the same text takes it off;
+    - inline styles first; "Save as text style" turns the wrapper's styles into a class in the
+      design system, which then appears in the menu as one of "Your text styles".
+
+  Variants (?variant=A|B|C, the bottom bar, or ← → with the text not focused):
+    A — Swatch grid: three groups of tiles (Text, Underline, Highlight), a colour row on top.
+    B — Strip + tune: one row of tiles; the applied effect's knobs (colour, weight, second colour)
+        open under it, so customising starts where picking ended.
+    C — List: one row per effect, a word drawn in it and what it does, colours at the row's end.
+
+  Tokens: src/ui/tokens.ts. The toolbar mirrors src/ui/chrome/text-toolbar.ts. ◐ switches theme.
+-->
+  <style>
+    :root {
+      --heo-accent: #6366f1; --heo-accent-ink: #fff;
+      --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 18%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 55%, transparent);
+      --heo-bg: oklch(19% 0.014 265); --heo-bg-glass: oklch(16% 0.014 265 / 86%);
+      --heo-raised: oklch(23.5% 0.016 265); --heo-sunken: oklch(16% 0.012 265);
+      --heo-hover: oklch(28% 0.018 265); --heo-active: oklch(32% 0.02 265);
+      --heo-text: oklch(96% 0.005 265); --heo-text-dim: oklch(74% 0.012 265); --heo-text-faint: oklch(68% 0.014 265);
+      --heo-line: oklch(100% 0 0 / 9%); --heo-line-strong: oklch(100% 0 0 / 16%);
+      --heo-inset: inset 0 1px 0 oklch(100% 0 0 / 6%);
+      --heo-focus-ring: color-mix(in oklab, var(--heo-accent) 60%, white); --heo-accent-text: var(--heo-focus-ring);
+      --heo-r-sm: 7px; --heo-r-md: 10px; --heo-r-lg: 14px;
+      --heo-shadow-sm: 0 1px 2px oklch(0% 0 0 / 30%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(0% 0 0 / 60%), 0 6px 16px oklch(0% 0 0 / 30%);
+      --heo-font: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --heo-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --heo-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+      --heo-fast: 120ms var(--heo-ease); --heo-med: 200ms var(--heo-ease);
+    }
+    [data-theme='light'] {
+      --heo-bg: oklch(99% 0.002 265); --heo-bg-glass: oklch(99% 0.002 265 / 92%);
+      --heo-raised: oklch(100% 0 0); --heo-sunken: oklch(96.5% 0.004 265);
+      --heo-hover: oklch(95% 0.006 265); --heo-active: oklch(92% 0.008 265);
+      --heo-text: oklch(24% 0.014 265); --heo-text-dim: oklch(45% 0.014 265); --heo-text-faint: oklch(50% 0.012 265);
+      --heo-line: oklch(20% 0.02 265 / 11%); --heo-line-strong: oklch(20% 0.02 265 / 20%);
+      --heo-inset: inset 0 1px 0 oklch(100% 0 0 / 80%);
+      --heo-focus-ring: var(--heo-accent); --heo-accent-text: color-mix(in oklab, var(--heo-accent) 80%, black);
+      --heo-shadow-sm: 0 1px 2px oklch(50% 0.03 265 / 12%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(50% 0.03 265 / 24%), 0 6px 16px oklch(50% 0.03 265 / 14%);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 28px; padding: 24px 28px 100px; background: linear-gradient(135deg, #eef1f6, #e3e8f1); color: #1f2330; font: 13px/1.5 var(--heo-font); }
+    button { font: inherit; color: inherit; }
+    svg { flex: none; }
+
+    /* ---- The page being edited ----------------------------------------- */
+    .site { position: relative; padding: 70px 44px 44px; border-radius: 16px; background: #fbfaf7; box-shadow: 0 1px 2px rgb(15 23 42 / 6%), 0 20px 40px -24px rgb(15 23 42 / 25%); }
+    main.site > h1 { margin: 0 0 14px; font: 800 46px/1.12 system-ui, sans-serif; letter-spacing: -0.02em; color: #14171f; }
+    main.site > p { margin: 0 0 12px; max-width: 58ch; font: 18px/1.65 Georgia, serif; color: #2b3140; }
+    [contenteditable]:focus { outline: 2px solid #6366f1; outline-offset: 6px; border-radius: 4px; }
+    .site mark { color: inherit; }
+
+    /* ---- The text toolbar (as heo-text-toolbar) ------------------------ */
+    .tb { position: absolute; left: 44px; top: 14px; z-index: 5; display: flex; align-items: center; gap: 2px; padding: 4px; border: 1px solid var(--heo-line); border-radius: var(--heo-r-lg); background: var(--heo-bg-glass); box-shadow: var(--heo-shadow-lg), var(--heo-inset); backdrop-filter: blur(20px) saturate(160%); color: var(--heo-text-dim); font-family: var(--heo-font); }
+    .ib { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: var(--heo-r-sm); background: transparent; color: var(--heo-text-dim); cursor: pointer; }
+    .ib:hover { background: var(--heo-hover); color: var(--heo-text); }
+    .ib:focus-visible { outline: 2px solid var(--heo-focus-ring); outline-offset: 1px; }
+    .ib[aria-expanded='true'], .ib[aria-pressed='true'] { background: var(--heo-accent-soft); color: var(--heo-accent-text); border-color: var(--heo-accent-line); }
+    .fxbtn { width: auto; grid-auto-flow: column; gap: 2px; padding: 0 4px 0 6px; }
+    .sep { width: 1px; height: 18px; margin: 0 3px; background: var(--heo-line); }
+    .done { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 0; border-radius: var(--heo-r-sm); background: var(--heo-accent); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; }
+
+    /* ---- The effects menu ---------------------------------------------- */
+    .menu { position: absolute; z-index: 6; width: 340px; padding: 10px; border: 1px solid var(--heo-line); border-radius: var(--heo-r-lg); background: var(--heo-bg-glass); box-shadow: var(--heo-shadow-lg), var(--heo-inset); backdrop-filter: blur(20px) saturate(160%); color: var(--heo-text); font-family: var(--heo-font); animation: drop 180ms var(--heo-ease); }
+    @keyframes drop { from { opacity: 0; translate: 0 -6px; scale: .98; } }
+    .menu[data-variant='C'] { width: 320px; }
+    .mhead { display: flex; align-items: center; gap: 8px; margin: 0 2px 8px; font-size: 11.5px; font-weight: 650; }
+    .mhead .on { color: var(--heo-text-faint); font: 400 10.5px var(--heo-mono); }
+    .mhead .x { margin-left: auto; }
+    .group { display: flex; align-items: center; gap: 6px; margin: 10px 2px 6px; color: var(--heo-text-faint); font-size: 9.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+    .group::after { content: ''; flex: 1; border-top: 1px solid var(--heo-line); }
+    .colors { display: flex; align-items: center; gap: 6px; padding: 2px; }
+    .colors .lab { color: var(--heo-text-faint); font-size: 10.5px; margin-right: 2px; }
+    .dot { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 20%); }
+    .dot[aria-checked='true'] { box-shadow: 0 0 0 2px var(--heo-bg), 0 0 0 4px var(--heo-accent); }
+    .dot:focus-visible { outline: 2px solid var(--heo-focus-ring); outline-offset: 3px; }
+    .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+    .tile { display: grid; justify-items: center; align-content: center; gap: 4px; height: 66px; padding: 4px; border: 1px solid var(--heo-line); border-radius: 10px; background: #fbfaf7; color: #1f2330; cursor: pointer; transition: border-color var(--heo-fast), transform var(--heo-fast), box-shadow var(--heo-fast); }
+    .tile:hover { border-color: var(--heo-accent-line); transform: translateY(-1px); }
+    .tile:focus-visible { outline: 2px solid var(--heo-focus-ring); outline-offset: 2px; }
+    .tile[aria-checked='true'] { border-color: var(--heo-accent); box-shadow: 0 0 0 3px var(--heo-accent-soft); }
+    .tile .w { font: 800 21px/1.1 system-ui, sans-serif; letter-spacing: -0.01em; }
+    .tile .n { color: #5b6272; font-size: 9.5px; font-weight: 500; white-space: nowrap; }
+    [data-theme='dark'] .tile { background: #f4f2ec; }
+    .strip { display: grid; grid-auto-flow: column; grid-auto-columns: 74px; gap: 6px; overflow-x: auto; padding: 2px 2px 6px; scroll-snap-type: x mandatory; }
+    .strip .tile { scroll-snap-align: start; }
+    .rows { display: grid; gap: 2px; max-height: 360px; overflow: auto; }
+    .rowfx { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid transparent; border-radius: 9px; background: transparent; text-align: left; cursor: pointer; }
+    .rowfx:hover { background: var(--heo-hover); }
+    .rowfx[aria-checked='true'] { border-color: var(--heo-accent-line); background: var(--heo-accent-soft); }
+    .rowfx:focus-visible { outline: 2px solid var(--heo-focus-ring); outline-offset: -2px; }
+    .rowfx .pv { display: grid; place-items: center; height: 36px; border-radius: 7px; background: #f4f2ec; color: #1f2330; font: 800 17px/1 system-ui, sans-serif; }
+    .rowfx b { display: block; font-size: 11.5px; }
+    .rowfx small { color: var(--heo-text-faint); font-size: 10.5px; }
+    .tune { display: grid; gap: 8px; margin-top: 8px; padding: 10px; border: 1px solid var(--heo-line); border-radius: var(--heo-r-md); background: var(--heo-sunken); }
+    .tune .r { display: grid; grid-template-columns: 70px minmax(0, 1fr); align-items: center; gap: 8px; }
+    .tune .r > span { color: var(--heo-text-faint); font-size: 10.5px; }
+    .tune input[type='range'] { width: 100%; accent-color: var(--heo-accent); }
+    .foot { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--heo-line); }
+    .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--heo-line); border-radius: var(--heo-r-sm); background: var(--heo-raised); box-shadow: var(--heo-inset); color: var(--heo-text-dim); font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+    .btn:hover:not(:disabled) { background: var(--heo-hover); color: var(--heo-text); border-color: var(--heo-line-strong); }
+    .btn:focus-visible { outline: 2px solid var(--heo-focus-ring); outline-offset: 1px; }
+    .btn:disabled { border-style: dashed; background: transparent; box-shadow: none; cursor: not-allowed; }
+    .btn.primary { margin-left: auto; border-color: transparent; background: var(--heo-accent); color: #fff; }
+    .btn.primary:disabled { background: transparent; color: var(--heo-text-dim); border-color: var(--heo-line-strong); }
+    .save { display: flex; gap: 6px; margin-top: 8px; }
+    .save input { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--heo-accent-line); border-radius: var(--heo-r-sm); background: var(--heo-sunken); color: var(--heo-text); font-size: 11.5px; outline: none; }
+    .hint { margin: 6px 2px 0; color: var(--heo-text-faint); font-size: 10.5px; line-height: 1.4; }
+
+    /* ---- What the page now holds --------------------------------------- */
+    .side { display: grid; align-content: start; gap: 14px; }
+    .side h1 { margin: 0; font: 600 11px/1 var(--heo-font); letter-spacing: .08em; text-transform: uppercase; color: #64748b; }
+    .side h2 { margin: 0; font: 650 20px/1.25 var(--heo-font); }
+    .notes { display: grid; gap: 8px; color: #333a48; }
+    .notes .q { padding: 10px 12px; border-left: 3px solid var(--heo-accent); border-radius: 0 8px 8px 0; background: #fff; }
+    .notes ul { margin: 0; padding-left: 18px; }
+    .code { padding: 10px 12px; border-radius: 8px; background: #0f172a; color: #e2e8f0; font: 11px/1.55 var(--heo-mono); white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto; }
+    .code .k { color: #a5b4fc; }
+
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition-duration: 1ms !important; } }
+    .proto-bar { position: fixed; left: calc((100% - 400px) / 2); bottom: 18px; translate: -50% 0; display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 999px; background: #111; color: #fff; font: 600 12px var(--heo-font); z-index: 50; box-shadow: 0 10px 30px rgb(0 0 0 / 30%); }
+    .proto-bar button { border: 0; background: #333; color: #fff; border-radius: 999px; min-width: 28px; height: 28px; cursor: pointer; }
+    .proto-bar span { padding: 0 10px; min-width: 220px; text-align: center; }
+  </style>
+  <style id="ds">/* The design system: text styles saved from the menu land here. */</style>
+</head>
+<body>
+  <main class="site" id="site">
+    <div class="tb" id="tb" role="toolbar" aria-label="Text formatting"></div>
+    <h1 contenteditable="true" id="h">Slow pottery for fast mornings</h1>
+    <p contenteditable="true" id="p">Wheel-thrown stoneware, glazed by hand in small batches. Every cup is fired twice, so it keeps your coffee hot and your mornings calm.</p>
+  </main>
+
+  <aside class="side">
+    <h1>Prototype · Text toolbar</h1>
+    <h2>Text effects</h2>
+    <div class="notes" id="notes"></div>
+    <div class="code" id="code"></div>
+  </aside>
+
+  <div class="proto-bar" role="toolbar" aria-label="Prototype variant switcher">
+    <button type="button" data-step="-1" aria-label="Previous variant">←</button>
+    <span id="proto-label"></span>
+    <button type="button" data-step="1" aria-label="Next variant">→</button>
+    <button type="button" id="theme" aria-label="Switch theme" title="Dark / light">◐</button>
+  </div>
+
+  <script>
+    /* ---- Icons (src/ui/icons.ts), plus the new one: an A on a marker stroke ---- */
+    const P = {
+      bold: 'M4.8 3h3.6a2.4 2.4 0 010 4.8H4.8zM4.8 7.8h4.2a2.6 2.6 0 010 5.2H4.8z',
+      italic: 'M10.6 3H6.8M9.2 13H5.4M9.6 3L6.4 13',
+      underline: 'M4.6 2.8v5.4a3.4 3.4 0 006.8 0V2.8M3.6 13.4h8.8',
+      strike: 'M2.8 8h10.4M11 4.6a3 3 0 00-3-1.8c-1.8 0-3 1-3 2.4 0 1 .6 1.7 1.6 2.2M5 11.4a3 3 0 003 1.8c1.9 0 3.1-1 3.1-2.5 0-.9-.4-1.5-1.2-2',
+      link: 'M6.6 9.4l2.8-2.8M6.9 4.6l1-1a2.7 2.7 0 013.8 3.8l-1 1M9.1 11.4l-1 1a2.7 2.7 0 01-3.8-3.8l1-1',
+      refresh: 'M13 8a5 5 0 01-8.6 3.5M3 8a5 5 0 018.6-3.5M11.6 2.4v2.6H9M4.4 13.6V11H7',
+      check: 'M3.5 8.5l3 3 6-7', close: 'M4 4l8 8M12 4l-8 8', chevronDown: 'M4 6l4 4 4-4', plus: 'M8 3.5v9M3.5 8h9',
+      textFx: 'M4.6 10.2L7.6 2.8h.8l3 7.4M5.7 7.6h4.6M2.4 13.2c2.2-1.3 4.4-1.3 6 0s3.6 1.3 5.2 0',
+    };
+    const icon = (name, size = 13) => `<svg viewBox="0 0 16 16" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${P[name]}"/></svg>`;
+
+    /* ---- The recipes -------------------------------------------------- */
+    const COLORS = [
+      { id: 'violet', a: '#6366f1', b: '#ec4899', glow: 'rgb(168 85 247 / 70%)' },
+      { id: 'mint', a: '#22c55e', b: '#14b8a6', glow: 'rgb(20 184 166 / 70%)' },
+      { id: 'sun', a: '#f59e0b', b: '#ef4444', glow: 'rgb(245 158 11 / 70%)' },
+      { id: 'sky', a: '#06b6d4', b: '#818cf8', glow: 'rgb(6 182 212 / 70%)' },
+      { id: 'lemon', a: '#fde047', b: '#facc15', glow: 'rgb(250 204 21 / 70%)' },
+      { id: 'ink', a: '#1f2937', b: '#475569', glow: 'rgb(31 41 55 / 50%)' },
+    ];
+    /*
+     * One stroke, drawn as a background image: the path, its viewBox, the stroke width, where it sits.
+     * A gradient stroke is a <linearGradient> in the same tiny SVG. `fill` draws a filled shape (the
+     * highlighter's brush) instead of a stroke.
+     */
+    function svgImage(doodle, c, weight = 1) {
+      const grad = `<defs><linearGradient id='g'><stop offset='0' stop-color='${c.a}'/><stop offset='1' stop-color='${c.b}'/></linearGradient></defs>`;
+      const paths = doodle.paths.map((d) => doodle.fill
+        ? `<path d='${d}' fill='url(%23g)' fill-opacity='.85'/>`
+        : `<path d='${d}' fill='none' stroke='url(%23g)' stroke-width='${(doodle.stroke * weight).toFixed(1)}' stroke-linecap='round' stroke-linejoin='round'/>`).join('');
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='${doodle.viewBox}' preserveAspectRatio='none'>${grad}${paths}</svg>`;
+      // Every # escaped too: an unescaped one in a colour starts the URL's fragment and cuts the image short.
+      return `url("data:image/svg+xml,${svg.replace(/%(?!23)/g, '%25').replace(/#/g, '%23').replace(/</g, '%3C').replace(/>/g, '%3E').replace(/"/g, "'")}")`;
+    }
+    const doodle = (d) => (c, w) => ({
+      'background-color': 'transparent',
+      'background-image': svgImage(d, c, w),
+      'background-repeat': 'no-repeat',
+      'background-position': d.at,
+      'background-size': d.size,
+      'padding': d.pad ?? '0 0 .12em',
+      '-webkit-box-decoration-break': 'clone',
+      'box-decoration-break': 'clone',
+    });
+    const EFFECTS = [
+      { id: 'gradient', group: 'Text', label: 'Gradient', about: 'The letters filled with a gradient',
+        css: (c) => ({ background: `linear-gradient(120deg, ${c.a}, ${c.b}) text`, color: 'transparent', '-webkit-box-decoration-break': 'clone', 'box-decoration-break': 'clone' }) },
+      { id: 'echo', group: 'Text', label: 'Echo', about: 'Gradient letters with an offset copy behind',
+        css: (c, w) => ({ background: `linear-gradient(120deg, ${c.a}, ${c.b}) text`, color: 'transparent', filter: `drop-shadow(${(0.06 * w).toFixed(2)}em ${(0.06 * w).toFixed(2)}em 0 #fde68a)`, '-webkit-box-decoration-break': 'clone', 'box-decoration-break': 'clone' }) },
+      { id: 'glow', group: 'Text', label: 'Glow', about: 'Coloured letters with a soft halo',
+        css: (c, w) => ({ color: c.a, 'text-shadow': `0 0 ${(0.35 * w).toFixed(2)}em ${c.glow}` }) },
+      { id: 'outline', group: 'Text', label: 'Outline', about: 'Hollow letters, a coloured outline',
+        css: (c, w) => ({ color: 'transparent', '-webkit-text-stroke': `${(0.035 * w).toFixed(3)}em ${c.a}` }) },
+      { id: 'wavy', group: 'Underline', label: 'Wavy', about: 'A browser underline, wavy',
+        css: (c, w) => ({ 'text-decoration': `underline wavy ${c.a}`, 'text-decoration-thickness': `${(0.07 * w).toFixed(3)}em`, 'text-underline-offset': '.2em' }) },
+      { id: 'arc', group: 'Underline', label: 'Marker arc', about: 'One hand-drawn swoop under the words',
+        css: doodle({ viewBox: '0 0 200 18', paths: ['M3 13 C 48 4, 138 2, 197 11'], stroke: 5.5, at: '0 100%', size: '100% .38em', pad: '0 0 .2em' }) },
+      { id: 'sketch', group: 'Underline', label: 'Sketchy', about: 'Two quick strokes, as if drawn twice',
+        css: doodle({ viewBox: '0 0 200 22', paths: ['M4 11 C 52 3, 142 3, 196 10', 'M16 18 C 68 12, 136 13, 186 17'], stroke: 4.5, at: '0 100%', size: '100% .46em', pad: '0 0 .24em' }) },
+      { id: 'squiggle', group: 'Underline', label: 'Squiggle', about: 'A hand-drawn wave',
+        css: doodle({ viewBox: '0 0 200 18', paths: ['M3 11 Q 22 3, 42 11 T 82 11 T 122 11 T 162 11 T 197 9'], stroke: 4.8, at: '0 100%', size: '100% .4em', pad: '0 0 .2em' }) },
+      { id: 'scribble', group: 'Underline', label: 'Loop', about: 'An underline that doubles back on itself',
+        css: doodle({ viewBox: '0 0 200 20', paths: ['M196 4 C 150 3.6, 60 4.4, 6 5 C 2 5, 2 7.5, 6 7.5 C 70 8, 120 8.6, 140 9.6 C 143 9.8, 143 12, 140 12.1 C 110 13, 70 14.6, 58 17'], stroke: 3.2, at: '0 100%', size: '100% .42em', pad: '0 0 .22em' }) },
+      { id: 'marker', group: 'Highlight', label: 'Marker', about: 'A straight highlighter band', mark: true,
+        css: (c, w) => ({ color: 'inherit', background: `linear-gradient(transparent ${Math.round(62 - 14 * (w - 1))}%, color-mix(in oklab, ${c.a} 55%, transparent) 0)`, '-webkit-box-decoration-break': 'clone', 'box-decoration-break': 'clone', padding: '0 .08em' }) },
+      { id: 'brush', group: 'Highlight', label: 'Brush', about: 'A rough highlighter stroke behind the words', mark: true,
+        css: doodle({ viewBox: '0 0 200 40', fill: true, paths: ['M4 12 L196 6 L198 20 L190 34 L12 36 L2 26 Z'], stroke: 1, at: '0 80%', size: '100% .9em', pad: '0 .12em' }) },
+      { id: 'circle', group: 'Highlight', label: 'Circled', about: 'A hand-drawn ring round the words', mark: true,
+        css: doodle({ viewBox: '0 0 200 60', paths: ['M150 6 C 70 0, 6 14, 6 32 C 6 52, 70 58, 120 55 C 170 52, 196 42, 194 28 C 192 12, 150 6, 92 9'], stroke: 3, at: 'center', size: '100% 100%', pad: '.1em .3em' }) },
+    ];
+
+    const state = {
+      variant: (new URLSearchParams(location.search).get('variant') || 'A').toUpperCase(),
+      open: false,
+      color: 'violet',
+      weight: 1,
+      saving: false,
+      styles: [],      // saved text styles: { name, cls, effect, color, weight }
+      range: null,     // the selection when the menu opened
+    };
+    if (!['A', 'B', 'C'].includes(state.variant)) state.variant = 'A';
+    const NOTES = {
+      A: { name: 'Swatch grid', html: `<p class="q"><b>Twelve tiles in three groups, with a colour row above them.</b> Each tile shows "Aa" drawn with its own effect in the chosen colour. Click one to wrap the selection; click it again to take it off.</p><ul><li>See everything at once. Customising is the colour row only; the rest is done later in Styles.</li></ul>` },
+      B: { name: 'Strip + tune', html: `<p class="q"><b>One row of tiles, and under it the applied effect's knobs:</b> colour and weight. Customising starts where picking ended, without going to Styles.</p><ul><li>Compact. The strip scrolls sideways, so some tiles are out of view.</li></ul>` },
+      C: { name: 'List', html: `<p class="q"><b>One row per effect:</b> a word drawn with it, its name, and what it does. The colour row sits above the list.</p><ul><li>The most legible and the easiest by keyboard, but the tallest.</li></ul>` },
+    };
+
+    /* ---- The text side: wrap, unwrap, find ------------------------------ */
+    const colorOf = () => COLORS.find((c) => c.id === state.color);
+    const effectById = (id) => EFFECTS.find((e) => e.id === id);
+    const styleText = (decl) => Object.entries(decl).map(([k, v]) => `${k}: ${v}`).join('; ');
+    const editables = () => Array.from(document.querySelectorAll('[contenteditable]'));
+    /** The effect wrapper the caret or the selection sits in, if any. */
+    function wrapperAt(range) {
+      let at = range?.commonAncestorContainer;
+      if (at?.nodeType === 3) at = at.parentElement;
+      return at?.closest?.('[data-fx]') ?? null;
+    }
+    function selectionRange() {
+      const sel = getSelection();
+      if (!sel.rangeCount) return null;
+      const r = sel.getRangeAt(0);
+      return editables().some((one) => one.contains(r.commonAncestorContainer)) ? r : null;
+    }
+    function restore() {
+      if (!state.range) return null;
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(state.range);
+      return state.range;
+    }
+    /** Wrap the selection, or put an empty wrapper at the caret for what is typed next, as Bold does. */
+    function apply(effectId) {
+      const range = restore() ?? selectionRange();
+      if (!range) return;
+      const effect = effectById(effectId);
+      const existing = wrapperAt(range);
+      // The same effect again on its own text: off, as Bold toggles.
+      if (existing && existing.dataset.fx === effectId && !existing.dataset.textStyle) { unwrap(existing); return; }
+      const tag = effect.mark ? 'mark' : 'span';
+      const el = document.createElement(tag);
+      el.dataset.fx = effectId;
+      el.setAttribute('style', styleText(effect.css(colorOf(), state.weight)));
+      if (existing) {
+        // Another effect on the same wrapper: replaced, not nested.
+        el.append(...existing.childNodes);
+        existing.replaceWith(el);
+        select(el);
+      } else if (range.collapsed) {
+        // A zero-width space holds the caret inside the empty wrapper; it is dropped when saved.
+        el.textContent = '\u200b';
+        range.insertNode(el);
+        const caret = document.createRange();
+        caret.setStart(el.firstChild, 1);
+        caret.collapse(true);
+        getSelection().removeAllRanges();
+        getSelection().addRange(caret);
+      } else {
+        el.append(range.extractContents());
+        range.insertNode(el);
+        select(el);
+      }
+      state.range = getSelection().getRangeAt(0).cloneRange();
+      render();
+    }
+    function applyStyle(saved) {
+      const range = restore() ?? selectionRange();
+      if (!range) return;
+      const existing = wrapperAt(range);
+      if (existing && existing.dataset.textStyle === saved.cls) { unwrap(existing); return; }
+      const el = document.createElement(effectById(saved.effect).mark ? 'mark' : 'span');
+      el.dataset.fx = saved.effect;
+      el.dataset.textStyle = saved.cls;
+      el.className = saved.cls;
+      if (existing) { el.append(...existing.childNodes); existing.replaceWith(el); select(el); }
+      else if (range.collapsed) { el.textContent = '\u200b'; range.insertNode(el); const c = document.createRange(); c.setStart(el.firstChild, 1); c.collapse(true); getSelection().removeAllRanges(); getSelection().addRange(c); }
+      else { el.append(range.extractContents()); range.insertNode(el); select(el); }
+      state.range = getSelection().getRangeAt(0).cloneRange();
+      render();
+    }
+    function unwrap(el) {
+      const first = el.firstChild; const last = el.lastChild;
+      el.replaceWith(...el.childNodes);
+      if (first && last) { const r = document.createRange(); r.setStartBefore(first); r.setEndAfter(last); getSelection().removeAllRanges(); getSelection().addRange(r); state.range = r.cloneRange(); }
+      render();
+    }
+    function select(el) { const r = document.createRange(); r.selectNodeContents(el); getSelection().removeAllRanges(); getSelection().addRange(r); }
+    /** Retune the wrapper under the selection: a new colour or weight rewrites its style. */
+    function retune() {
+      const el = wrapperAt(state.range);
+      if (!el || el.dataset.textStyle) return;
+      el.setAttribute('style', styleText(effectById(el.dataset.fx).css(colorOf(), state.weight)));
+      renderCode();
+    }
+    /** "Save as text style": the wrapper's style becomes a class in the design system. */
+    function saveStyle(name) {
+      const el = wrapperAt(state.range);
+      if (!el || !name.trim()) return;
+      const cls = 'fx-' + name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const decl = el.getAttribute('style');
+      document.getElementById('ds').textContent += `\n.${cls} { ${decl}; }`;
+      state.styles.push({ name: name.trim(), cls, effect: el.dataset.fx, decl });
+      el.removeAttribute('style');
+      el.className = cls;
+      el.dataset.textStyle = cls;
+      state.saving = false;
+      render();
+    }
+
+    /* ---- Toolbar ------------------------------------------------------- */
+    const tb = document.getElementById('tb');
+    function renderToolbar() {
+      const fmt = [['bold', 'Bold'], ['italic', 'Italic'], ['underline', 'Underline'], ['strikeThrough', 'Strikethrough', 'strike']];
+      tb.innerHTML = `${fmt.map(([cmd, title, ic]) => `<button class="ib" type="button" data-cmd="${cmd}" title="${title}" aria-label="${title}">${icon(ic ?? cmd)}</button>`).join('')}
+        <button class="ib fxbtn" type="button" id="fxbtn" title="Text effects: gradient, glow, hand-drawn underline, highlight" aria-label="Text effects" aria-haspopup="dialog" aria-expanded="${state.open}">${icon('textFx', 14)}${icon('chevronDown', 9)}</button>
+        <span class="sep"></span>
+        <button class="ib" type="button" title="Insert link" aria-label="Insert link">${icon('link')}</button>
+        <button class="ib" type="button" data-cmd="removeFormat" title="Clear formatting" aria-label="Clear formatting">${icon('refresh')}</button>
+        <span class="sep"></span>
+        <button class="done" type="button">${icon('check', 12)} Done</button>`;
+    }
+
+    /* ---- Menu ---------------------------------------------------------- */
+    function preview(effect, c = colorOf(), w = 1) {
+      return styleText(effect.css(c, w)).replace(/"/g, '&quot;');
+    }
+    const current = () => wrapperAt(state.range);
+    function tile(effect) {
+      const on = current()?.dataset.fx === effect.id && !current()?.dataset.textStyle;
+      return `<button type="button" class="tile" role="menuitemradio" aria-checked="${on}" data-fx="${effect.id}" title="${effect.about}${on ? ' (click to take it off)' : ''}">
+        <${effect.mark ? 'mark' : 'span'} class="w" style="${preview(effect)}">Aa</${effect.mark ? 'mark' : 'span'}><span class="n">${effect.label}</span></button>`;
+    }
+    function colorRow() {
+      return `<div class="colors" role="radiogroup" aria-label="Effect colour"><span class="lab">Colour</span>${COLORS.map((c) => `<button type="button" class="dot" role="radio" data-color="${c.id}" aria-checked="${state.color === c.id}" aria-label="${c.id}" title="${c.id}" style="background:linear-gradient(135deg, ${c.a}, ${c.b})"></button>`).join('')}</div>`;
+    }
+    function yours() {
+      if (!state.styles.length) return '';
+      return `<div class="group">Your text styles</div><div class="tiles">${state.styles.map((s) => {
+        const on = current()?.dataset.textStyle === s.cls;
+        return `<button type="button" class="tile" role="menuitemradio" aria-checked="${on}" data-style="${s.cls}" title="${s.name}: .${s.cls}"><${effectById(s.effect).mark ? 'mark' : 'span'} class="w ${s.cls}">Aa</${effectById(s.effect).mark ? 'mark' : 'span'}><span class="n">${s.name}</span></button>`;
+      }).join('')}</div>`;
+    }
+    function footer() {
+      const el = current();
+      const canSave = el && !el.dataset.textStyle;
+      return `${state.saving ? `<form class="save" id="saveform"><input id="savename" placeholder="Style name, e.g. Hero underline" aria-label="Text style name" autocomplete="off"><button class="btn primary" type="submit">Save</button></form>` : ''}
+        <div class="foot">
+          <button class="btn" type="button" data-remove ${el ? '' : 'disabled'} title="${el ? 'Take the effect off this text' : 'No effect here'}">${icon('close', 11)} Remove</button>
+          <button class="btn primary" type="button" data-save ${canSave ? '' : 'disabled'} title="${canSave ? 'Turn this effect into a class you can reuse' : el ? 'Already a text style' : 'Apply an effect first'}">${icon('plus', 11)} Save as text style</button>
+        </div>
+        <p class="hint">${el ? `On <code>&lt;${el.tagName.toLowerCase()}&gt;</code>. Tune it further in Styles › Background, Text style or Effects.` : getSelection().isCollapsed ? 'Nothing selected: what you type next gets the effect.' : 'Applies to the selected text.'}</p>`;
+    }
+    function tune() {
+      const el = current();
+      if (!el || el.dataset.textStyle) return '<p class="hint">Pick an effect to tune its colour and weight here.</p>';
+      const e = effectById(el.dataset.fx);
+      return `<div class="tune"><div class="r"><span>${e.label}</span>${colorRow()}</div>
+        <div class="r"><span>Weight</span><input type="range" min="0.5" max="2" step="0.1" value="${state.weight}" data-weight aria-label="Effect weight"></div></div>`;
+    }
+    function menu() {
+      const el = current();
+      const head = `<div class="mhead">Text effects <span class="on">${el ? `· ${effectById(el.dataset.fx)?.label ?? ''}` : ''}</span><button class="ib x" type="button" data-close aria-label="Close">${icon('close', 11)}</button></div>`;
+      let body;
+      if (state.variant === 'A') {
+        body = `${colorRow()}${['Text', 'Underline', 'Highlight'].map((g) => `<div class="group">${g}</div><div class="tiles">${EFFECTS.filter((e) => e.group === g).map(tile).join('')}</div>`).join('')}`;
+      } else if (state.variant === 'B') {
+        body = `<div class="strip" role="group" aria-label="Effects">${EFFECTS.map(tile).join('')}</div>${tune()}`;
+      } else {
+        body = `${colorRow()}<div class="rows" role="group" aria-label="Effects">${EFFECTS.map((e) => {
+          const on = el?.dataset.fx === e.id && !el?.dataset.textStyle;
+          return `<button type="button" class="rowfx" role="menuitemradio" aria-checked="${on}" data-fx="${e.id}"><span class="pv"><${e.mark ? 'mark' : 'span'} style="${preview(e)}">Pottery</${e.mark ? 'mark' : 'span'}></span><span><b>${e.label}</b><small>${e.about}</small></span></button>`;
+        }).join('')}</div>`;
+      }
+      return `<div class="menu" id="menu" role="dialog" aria-label="Text effects" data-variant="${state.variant}">${head}${body}${yours()}${footer()}</div>`;
+    }
+
+    function render() {
+      document.getElementById('menu')?.remove();
+      renderToolbar();
+      if (state.open) {
+        document.getElementById('site').insertAdjacentHTML('beforeend', menu());
+        const btn = document.getElementById('fxbtn').getBoundingClientRect();
+        const site = document.getElementById('site').getBoundingClientRect();
+        const m = document.getElementById('menu');
+        m.style.left = `${btn.left - site.left - 8}px`;
+        m.style.top = `${btn.bottom - site.top + 6}px`;
+        if (state.saving) document.getElementById('savename')?.focus();
+        // The strip scrolls: the applied effect's tile is brought into it.
+        const strip = m.querySelector('.strip');
+        const on = strip?.querySelector('[aria-checked="true"]');
+        if (strip && on) strip.scrollLeft = on.offsetLeft - strip.offsetLeft - 2;
+      }
+      document.getElementById('notes').innerHTML = NOTES[state.variant].html;
+      document.getElementById('proto-label').textContent = `${state.variant} — ${NOTES[state.variant].name}`;
+      renderCode();
+    }
+    function renderCode() {
+      const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const html = editables().map((one) => one.outerHTML.replace(/ contenteditable="true"/, '').replace(/\u200b/g, '')).join('\n\n');
+      const ds = document.getElementById('ds').textContent.split('\n').slice(1).join('\n');
+      document.getElementById('code').innerHTML = `<span class="k">&lt;!-- the page --&gt;</span>\n${esc(html).replace(/data:image\/svg\+xml,.*?(?=&amp;quot;)/g, 'data:image/svg+xml,…')}${ds ? `\n\n<span class="k">/* design system */</span>\n${esc(ds).replace(/data:image\/svg\+xml,[^"']*/g, 'data:image/svg+xml,…')}` : ''}`;
+    }
+
+    /* ---- Events -------------------------------------------------------- */
+    // Pressing a toolbar or menu control keeps the text's selection, as the real toolbar does.
+    document.addEventListener('pointerdown', (event) => {
+      if (event.target.closest('.tb, .menu') && !event.target.closest('input')) event.preventDefault();
+      else if (state.open && !event.target.closest('.menu')) { state.open = false; state.saving = false; render(); }
+    });
+    document.addEventListener('selectionchange', () => {
+      const r = selectionRange();
+      if (r && !document.activeElement?.closest?.('.menu')) { state.range = r.cloneRange(); if (state.open) { const m = document.getElementById('menu'); if (m) { state.open = true; render(); } } }
+    });
+    document.addEventListener('click', (event) => {
+      const b = event.target.closest('button');
+      if (!b) return;
+      if (b.dataset.cmd) { restore(); document.execCommand(b.dataset.cmd); renderCode(); return; }
+      if (b.id === 'fxbtn') { state.range = selectionRange()?.cloneRange() ?? state.range; state.open = !state.open; state.saving = false; render(); if (state.open && event.detail === 0) document.querySelector('#menu .tile, #menu .rowfx')?.focus(); return; }
+      if (b.dataset.close !== undefined) { state.open = false; render(); restore(); return; }
+      if (b.dataset.fx && b.closest('.menu')) { apply(b.dataset.fx); return; }
+      if (b.dataset.style) { applyStyle(state.styles.find((s) => s.cls === b.dataset.style)); return; }
+      if (b.dataset.color) { state.color = b.dataset.color; retune(); render(); return; }
+      if (b.dataset.remove !== undefined) { const el = current(); if (el) unwrap(el); return; }
+      if (b.dataset.save !== undefined) { state.saving = true; render(); return; }
+    });
+    document.addEventListener('input', (event) => {
+      if (event.target.matches('[data-weight]')) { state.weight = Number(event.target.value); retune(); }
+      else renderCode();
+    });
+    document.addEventListener('submit', (event) => {
+      if (event.target.id !== 'saveform') return;
+      event.preventDefault();
+      saveStyle(document.getElementById('savename').value);
+    });
+    document.addEventListener('keydown', (event) => {
+      const m = document.getElementById('menu');
+      if (event.key === 'Escape' && state.open) { state.open = false; state.saving = false; render(); restore(); document.getElementById('fxbtn')?.focus(); return; }
+      // The menu's tiles and rows: the arrows move between them.
+      if (m && m.contains(document.activeElement) && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key) && document.activeElement.matches('.tile, .rowfx, .dot')) {
+        const items = Array.from(m.querySelectorAll(document.activeElement.matches('.dot') ? '.dot' : '.tile, .rowfx'));
+        const at = items.indexOf(document.activeElement);
+        const cols = state.variant === 'A' ? 4 : 1;
+        const step = event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : event.key === 'ArrowUp' ? -cols : cols;
+        items[Math.max(0, Math.min(items.length - 1, at + (state.variant === 'B' && (event.key === 'ArrowUp' || event.key === 'ArrowDown') ? 0 : step)))]?.focus();
+        event.preventDefault();
+        return;
+      }
+      if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight') && (!document.activeElement || document.activeElement === document.body || document.activeElement.closest('.proto-bar'))) go(event.key === 'ArrowLeft' ? -1 : 1);
+    });
+    function go(step) {
+      const order = ['A', 'B', 'C'];
+      state.variant = order[(order.indexOf(state.variant) + step + 3) % 3];
+      const url = new URL(location.href); url.searchParams.set('variant', state.variant); history.replaceState(null, '', url);
+      render();
+    }
+    document.querySelectorAll('.proto-bar [data-step]').forEach((b) => b.addEventListener('click', () => go(Number(b.dataset.step))));
+    document.getElementById('theme').addEventListener('click', () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark'; render(); });
+    render();
+  </script>
+</body>
+</html>

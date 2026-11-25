@@ -75,10 +75,25 @@ import {
   type ProjectFontFace,
 } from './project-fonts.js';
 import {
+  effectColorById,
+  effectStyle,
+  effectWrapperAt,
+  rewrap,
+  TEXT_EFFECT_ATTR,
+  textEffectById,
+  tidyEffects,
+  unwrapEffect,
+  wrapRange,
+  wrapsInline,
+} from './text-effects.js';
+import {
+  isTextEffectStyle,
   isTextStyle,
   isTypography,
   sortTextStyles,
+  storedTextEffect,
   storedTextStyle,
+  TEXT_EFFECT_MARKER,
   TEXT_STYLE_ORDER,
   textStyleClass,
   textStyleName,
@@ -9084,6 +9099,8 @@ export class EditorEngine {
      * which is how `&nbsp;` was turning up in markup nobody had asked to change.
      */
     restorePlainSpaces(el, beforeText ?? el.textContent ?? '');
+    // An effect picked with only a caret and never typed into leaves nothing behind.
+    tidyEffects(el);
     const after = el.innerHTML;
     if (after === before) {
       rollBack();
@@ -9330,6 +9347,155 @@ export class EditorEngine {
    * forgotten. The preference belongs to the session, so the session holds it.
    */
   linkOpensInNewTab = false;
+
+  /* ---------------------------------------------------------------------- */
+  /* Text effects (the text toolbar's menu)                                 */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * The effect the selection in the text edit sits in: its wrapper, which effect, and the text
+   * style it wears if it was saved as one. Null outside an effect.
+   */
+  textEffectAtSelection(): { el: HTMLElement; effect: string; style: string | null } | null {
+    const host = this.store.value.textEditing;
+    if (!host) return null;
+    const selection = getSelection();
+    const current = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const range = current && host.contains(current.commonAncestorContainer) ? current : this.#textEditRange;
+    const el = effectWrapperAt(range, host);
+    if (!el) return null;
+    const style = Array.from(el.classList).find((name) => isTextEffectStyle(this.classes.get(name))) ?? null;
+    return { el, effect: el.getAttribute(TEXT_EFFECT_ATTR) ?? '', style };
+  }
+
+  /**
+   * Put a text effect on the selection, as Bold does: the selected text is wrapped in a <span>
+   * (a <mark> for a highlight) carrying the effect's styles; with only a caret, an empty one is
+   * put there and what is typed next goes in it. The same effect again on its own text takes it
+   * off; another one replaces it. Part of the text edit, committed with it.
+   */
+  applyTextEffect(id: string, colorId: string): void {
+    const host = this.store.value.textEditing;
+    const effect = textEffectById(id);
+    if (!host || !effect) return;
+    this.#restoreTextSelection();
+    const selection = getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!range || !host.contains(range.commonAncestorContainer)) return;
+    const make = (): HTMLElement => {
+      const el = document.createElement(effect.mark ? 'mark' : 'span');
+      el.setAttribute(TEXT_EFFECT_ATTR, effect.id);
+      el.setAttribute('style', effectStyle(effect, effectColorById(colorId)));
+      return el;
+    };
+    const current = this.textEffectAtSelection();
+    if (current && current.effect === id && !current.style) {
+      unwrapEffect(current.el);
+    } else if (current) {
+      rewrap(current.el, make);
+    } else if (!wrapsInline(range)) {
+      this.notify('Text effects go on words within one paragraph. Select less, then try again.', 'warn');
+      return;
+    } else {
+      wrapRange(range, make);
+    }
+    this.#rememberTextSelection();
+  }
+
+  /** The effect under the selection in another colour. A saved style is left as it is: it is shared. */
+  recolorTextEffect(colorId: string): void {
+    const current = this.textEffectAtSelection();
+    const effect = current ? textEffectById(current.effect) : undefined;
+    if (!current || !effect || current.style) return;
+    current.el.setAttribute('style', effectStyle(effect, effectColorById(colorId)));
+  }
+
+  /** Take the effect under the selection off, its words left as they were. */
+  removeTextEffect(): void {
+    const current = this.textEffectAtSelection();
+    if (!current) return;
+    unwrapEffect(current.el);
+    this.#rememberTextSelection();
+  }
+
+  /** The text styles saved from text effects, in the list's order. */
+  textEffectStyles(): Array<{ entry: DesignClass; name: string; effect: string }> {
+    return this.textStyles()
+      .filter((one) => isTextEffectStyle(one.entry))
+      .map((one) => ({ entry: one.entry, name: one.name, effect: one.entry.declarations[TEXT_EFFECT_MARKER]?.trim() ?? '' }));
+  }
+
+  /**
+   * "Save as text style": the effect under the selection becomes a text style (a class in the
+   * design system, listed with the others), and its wrapper wears the class instead of the
+   * inline styles. The class is one undo step; the wrapper's change goes with the text edit.
+   */
+  saveTextEffectStyle(name: string): string | null {
+    const current = this.textEffectAtSelection();
+    const label = name.trim();
+    if (!current || current.style || !label) return null;
+    const declarations = inlineDeclarations(current.el);
+    const entry: DesignClass = {
+      name: this.classes.uniqueName(textStyleClass(label)),
+      label,
+      declarations: storedTextEffect(label, current.effect, declarations, this.#nextTextStyleOrder()),
+      origin: 'user',
+    };
+    this.history.commit({
+      label: `Save text style ${label}`,
+      subject: `text-style:${entry.name}`,
+      record: {
+        id: nextChangeId(),
+        kind: 'token-class',
+        summary: `Create text style .${entry.name} from a text effect`,
+        target: `.${entry.name}`,
+        detail: { ...entry.declarations },
+        at: Date.now(),
+      },
+      apply: () => this.classes.upsert(entry),
+      revert: () => this.classes.remove(entry.name),
+    });
+    current.el.removeAttribute('style');
+    current.el.classList.add(entry.name);
+    this.#bumpRevision();
+    this.#restoreTextSelection();
+    return entry.name;
+  }
+
+  /** Put a saved effect style on the selection, as `applyTextEffect` does; again on its own text, off. */
+  applyTextEffectStyle(className: string): void {
+    const host = this.store.value.textEditing;
+    const entry = this.classes.get(className);
+    if (!host || !entry || !isTextEffectStyle(entry)) return;
+    const effect = textEffectById(entry.declarations[TEXT_EFFECT_MARKER]?.trim() ?? '');
+    this.#restoreTextSelection();
+    const selection = getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!range || !host.contains(range.commonAncestorContainer)) return;
+    const make = (): HTMLElement => {
+      const el = document.createElement(effect?.mark ? 'mark' : 'span');
+      el.setAttribute(TEXT_EFFECT_ATTR, effect?.id ?? 'style');
+      el.className = entry.name;
+      return el;
+    };
+    const current = this.textEffectAtSelection();
+    if (current && current.style === className) unwrapEffect(current.el);
+    else if (current) rewrap(current.el, make);
+    else if (!wrapsInline(range)) {
+      this.notify('Text effects go on words within one paragraph. Select less, then try again.', 'warn');
+      return;
+    } else wrapRange(range, make);
+    this.#rememberTextSelection();
+  }
+
+  /** The selection as it is now is what the next command acts on. */
+  #rememberTextSelection(): void {
+    const host = this.store.value.textEditing;
+    const selection = getSelection();
+    if (!host || !selection?.rangeCount) return;
+    const range = selection.getRangeAt(0);
+    if (host.contains(range.commonAncestorContainer)) this.#textEditRange = range.cloneRange();
+  }
 
   /* ---------------------------------------------------------------------- */
   /* Drag reordering                                                        */

@@ -99,6 +99,8 @@ const PATHS: Record<string, string> = {
   bold: 'M4.8 3h3.6a2.4 2.4 0 010 4.8H4.8zM4.8 7.8h4.2a2.6 2.6 0 010 5.2H4.8z',
   italic: 'M10.6 3H6.8M9.2 13H5.4M9.6 3L6.4 13',
   underline: 'M4.6 2.8v5.4a3.4 3.4 0 006.8 0V2.8M3.6 13.4h8.8',
+  // Text effects: an A over a hand-drawn stroke.
+  textFx: 'M4.6 10.2L7.6 2.8h.8l3 7.4M5.7 7.6h4.6M2.4 13.2c2.2-1.3 4.4-1.3 6 0s3.6 1.3 5.2 0',
   strike: 'M2.8 8h10.4M11 4.6a3 3 0 00-3-1.8c-1.8 0-3 1-3 2.4 0 1 .6 1.7 1.6 2.2M5 11.4a3 3 0 003 1.8c1.9 0 3.1-1 3.1-2.5 0-.9-.4-1.5-1.2-2',
 
   // Layout previews
