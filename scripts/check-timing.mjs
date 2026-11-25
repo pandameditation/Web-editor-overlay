@@ -11,6 +11,9 @@
  * baseline any improvement is judged against. `check-all.mjs` reports its own timings for the new
  * shape, so the two together give a before and after.
  *
+ * It also seeds the timings cache `check-all.mjs` schedules by (`scripts/timings.mjs`), so the
+ * times it measures and the weights `--weights` prints agree with what the next run uses.
+ *
  * Usage:
  *   node scripts/check-timing.mjs              time every fixture
  *   node scripts/check-timing.mjs --fast       only the quick tier
@@ -19,6 +22,7 @@
 import { spawn } from 'node:child_process';
 import { writeFileSync, rmSync } from 'node:fs';
 import { FIXTURES, fixtureName } from './fixtures.mjs';
+import { saveTimings } from './timings.mjs';
 
 const onlyFast = process.argv.includes('--fast');
 const emitWeights = process.argv.includes('--weights');
@@ -66,6 +70,7 @@ for (const fixture of fixtures) {
   rows.push({ name: fixtureName(fixture), page: fixture.page, ...fixture, ms: result.ms, code: result.code });
   process.stderr.write(`${fixtureName(fixture)} ${result.ms}ms${result.code === 0 ? '' : ` EXIT=${result.code}`}\n`);
 }
+saveTimings(rows.map((r) => ({ name: r.name, ms: r.ms, ok: r.code === 0 })), FIXTURES);
 
 if (emitWeights) {
   console.log('\n/* fresh weights, paste into scripts/fixtures.mjs */');

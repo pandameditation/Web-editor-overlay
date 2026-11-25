@@ -17,10 +17,16 @@
  * Pages that run in parallel are therefore as separate as they were when each had its own Chrome,
  * without paying for a Chrome each.
  *
- * **Two browsers, not one.** The `strict` fixtures need Chrome *without*
+ * **Two browsers, one queue.** The `strict` fixtures need Chrome *without*
  * `--allow-file-access-from-files`, because what they test is the behaviour when a file cannot
- * read its own siblings. A flag is per-process, so they get their own browser. Thirty-eight
- * spawns become two.
+ * read its own siblings. A flag is per-process, so they get their own browser. Both start up
+ * front and one pool of slots feeds both, each page opened in the browser its flag needs, so the
+ * strict pages fill gaps instead of running as a tail after the rest. Thirty-eight spawns become two.
+ *
+ * **Scheduled by measured time.** Each run saves every finished page's time to the timings cache
+ * (`scripts/timings.mjs`, under `node_modules/.cache/`), and the next run starts the longest
+ * first by those times, falling back to the manifest's `weight`; a page with neither starts
+ * first. Delete the cache to fall back to `weight` alone.
  *
  * `browser-check.mjs` is untouched and still the right tool for one page: it takes screenshots,
  * it pauses a stuck renderer to print the call stack, and a single failure is much easier to read
@@ -31,6 +37,8 @@
  *   node scripts/check-all.mjs --fast          the quick tier only
  *   node scripts/check-all.mjs --jobs 4        cap the pages in flight
  *   node scripts/check-all.mjs --serial        one at a time, for comparing against the old shape
+ *
+ * Every form reads and then updates node_modules/.cache/heo-check/timings.json.
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
@@ -38,6 +46,7 @@ import { availableParallelism, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { FIXTURES, fixtureName, scheduled, unaccountedPages } from './fixtures.mjs';
+import { loadTimings, saveTimings } from './timings.mjs';
 import { answerKeys, KEYS_BINDING } from './trusted-keys.mjs';
 
 const CHROME_CANDIDATES = [
@@ -349,9 +358,14 @@ async function runFixture(browser, fixture) {
   }
 }
 
-/** Run a list through `limit` slots, starting the longest first. */
-async function runGroup(browser, fixtures, limit) {
-  const queue = scheduled(fixtures);
+/**
+ * Run a list through `limit` slots, in `scheduled` order, each page in the browser for its flag.
+ *
+ * One queue over both browsers: a slot that frees up takes the next page whichever browser it
+ * needs, so the pages in flight never exceed `limit` and no group waits for another to finish.
+ */
+async function runAll(browsers, fixtures, limit, times) {
+  const queue = scheduled(fixtures, times);
   const results = [];
   let next = 0;
   const worker = async () => {
@@ -359,6 +373,7 @@ async function runGroup(browser, fixtures, limit) {
       const index = next++;
       if (index >= queue.length) return;
       const fixture = queue[index];
+      const browser = fixture.strict ? browsers.strict : browsers.shared;
       const result = await runFixture(browser, fixture).catch((error) => ({
         name: fixtureName(fixture),
         ms: 0,
@@ -389,23 +404,35 @@ function payloadFailed(payload) {
 }
 
 const startedAll = Date.now();
-const groups = [
-  { label: 'shared file origin', allowFileAccess: true, fixtures: chosen.filter((f) => !f.strict) },
-  { label: 'opaque file origins', allowFileAccess: false, fixtures: chosen.filter((f) => f.strict) },
-].filter((group) => group.fixtures.length);
+const times = loadTimings();
+// The shared-origin browser, and the strict one only when a chosen page needs it.
+const needs = {
+  shared: chosen.some((f) => !f.strict),
+  strict: chosen.some((f) => f.strict),
+};
+const launches = [
+  needs.shared ? Browser.launch({ allowFileAccess: true }) : null,
+  needs.strict ? Browser.launch({ allowFileAccess: false }) : null,
+];
+const browserCount = launches.filter(Boolean).length;
+process.stderr.write(
+  `\n--- ${chosen.length} fixture(s), ${Math.min(jobs, chosen.length)} at a time, ${browserCount} browser(s) ---\n`,
+);
 
+const browsers = {};
 const all = [];
-for (const group of groups) {
-  process.stderr.write(
-    `\n--- ${group.label}: ${group.fixtures.length} fixture(s), ${Math.min(jobs, group.fixtures.length)} at a time ---\n`,
-  );
-  const browser = await Browser.launch({ allowFileAccess: group.allowFileAccess });
-  try {
-    all.push(...(await runGroup(browser, group.fixtures, jobs)));
-  } finally {
-    browser.destroy();
-  }
+// Settled rather than `all`, so a browser that did start is still destroyed when the other fails.
+const settled = await Promise.allSettled(launches);
+[browsers.shared, browsers.strict] = settled.map((s) => (s.status === 'fulfilled' ? s.value : null));
+try {
+  const failedLaunch = settled.find((s) => s.status === 'rejected');
+  if (failedLaunch) throw failedLaunch.reason;
+  all.push(...(await runAll(browsers, chosen, jobs, times)));
+} finally {
+  browsers.shared?.destroy();
+  browsers.strict?.destroy();
 }
+saveTimings(all, FIXTURES);
 
 /*
  * Printed one payload after another, in the shapes the single-page harness used.
