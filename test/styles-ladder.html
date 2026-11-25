@@ -314,7 +314,8 @@
           fire(nameField(), 'value-submit', 'ink-own');
           await settle();
           const picked = radioOf(pop()?.querySelector('.lr.new'))?.getAttribute('aria-checked') === 'true';
-          await wait(2600); // past the merge window, so one entry is one entry
+          engine.history.sealStep(); // the step is closed (src/core/history.ts), so one entry is one entry
+          await wait(300);
           const before = engine.history.size;
           fire(openField(), 'value-change', '0.2em');
           await settle();
@@ -347,7 +348,8 @@
             radioOf(rung('.card|base'))?.getAttribute('aria-checked') === 'true' &&
             chip('.card|base') === '4×' && / · changes 4 elements/.test(result()) &&
             radioOf(pop()?.querySelector('.lr.new'))?.getAttribute('aria-checked') === 'false';
-          await wait(2600); // past the merge window, so one entry is one entry
+          engine.history.sealStep(); // the step is closed (src/core/history.ts), so one entry is one entry
+          await wait(300);
           const before = engine.history.size;
           await submitName('note');
           // One it does not wear is put on it (one undo entry), and its own rung picked: 2 elements.
@@ -516,7 +518,8 @@
             Math.abs((field.top + field.height / 2) - (tick.top + tick.height / 2)) < 4 &&
             tick.left >= field.right - 1;
           const disabledEmpty = confirmOf('other')?.disabled === true;
-          await wait(2600); // past the merge window, so an entry is counted as one
+          engine.history.sealStep(); // the step is closed (src/core/history.ts), so an entry is counted as one
+          await wait(300);
           const history = engine.history.size;
           const records = engine.records.length;
           await typeIn(valueField('other'), '0.3em');

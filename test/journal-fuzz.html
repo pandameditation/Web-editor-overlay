@@ -57,7 +57,10 @@
       addEventListener('error', (e) => errors.push('error: ' + e.message));
       addEventListener('unhandledrejection', (e) => errors.push('rejection: ' + e.reason));
       const progress = document.getElementById('progress');
-      const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      // One frame per step: a probe ran this page with one and with two rAFs, twice each, and the full
+      // payload (every run's step log and edited tree, and all three saved files) was identical. The
+      // article page's runs differ between two runs of the same page (it drags by layout), so it keeps two.
+      const frames = () => new Promise((r) => requestAnimationFrame(r));
       const fuzz = () => document.getElementById('fuzz');
 
       const page = decodeURIComponent(location.pathname).split('/').pop();

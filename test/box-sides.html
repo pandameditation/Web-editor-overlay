@@ -273,6 +273,8 @@
          *    must not move under it.
          * ------------------------------------------------------------------ */
         progress.textContent = 'draggingASide';
+        // A real wait, on purpose: the suite's one check that elapsed time past 2.5s splits entries;
+        // the other pages close the step with sealStep instead.
         await wait(2600); // Past the 2.5s commit-merge window, so the undo count means something.
         {
           const before = listed();

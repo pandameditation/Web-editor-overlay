@@ -113,7 +113,8 @@
           await settle(200);
         };
         // Past the history's merge window, so the next commit is an entry of its own.
-        const apart = () => settle(2700);
+        // sealStep is the history's documented way to close a step (src/core/history.ts sealStep).
+        const apart = async () => { engine.history.sealStep(); await settle(); };
 
         // Record the bar's request to open a stop's picker, which a native picker cannot report.
         const picks = [];

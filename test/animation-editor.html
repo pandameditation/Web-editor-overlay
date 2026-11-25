@@ -64,7 +64,6 @@
         const r = el.getBoundingClientRect();
         return { type, x: r.left + r.width * fx, y: r.top + r.height * fy };
       };
-      const apart = () => settle(2700);
       const into = async (el) => {
         el.scrollIntoView({ block: 'center' });
         await settle(200);
@@ -72,6 +71,9 @@
       try {
         const api = window.HtmlEditorOverlay.mount({ theme: 'light', presets: false, detectScriptContent: false });
         const engine = api.engine;
+        // Past the history's merge window, so the next commit is an entry of its own.
+        // sealStep is the history's documented way to close a step (src/core/history.ts sealStep).
+        const apart = async () => { engine.history.sealStep(); await settle(); };
         api.setEditing(true);
         await engine.whenReady();
         engine.setDockTab('styles');

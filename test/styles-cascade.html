@@ -1077,7 +1077,8 @@
         engine.undo();
         engine.setStyle('color', 'red !important', target);
         await settle();
-        await wait(2600); // past the merge window, so one entry is one entry
+        engine.history.sealStep(); // the step is closed (src/core/history.ts), so one entry is one entry
+        await wait(300);
         const sizeBefore = engine.history.size;
         const tag = colourField()?.shadowRoot.querySelector('button.imp');
         tag?.click();

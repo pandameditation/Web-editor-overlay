@@ -175,13 +175,15 @@
         engine.setStyle('width', '100px', para);
         await frames();
         /*
-         * Waited out, not hurried.
+         * The step is closed, not hurried.
          *
          * Adjacent commits on the same property coalesce for 2.5s so a stepper is one undo step.
          * Measuring across that window would have counted the setup edit and the drag as one entry
-         * and read as a pass for the wrong reason.
+         * and read as a pass for the wrong reason. sealStep (src/core/history.ts) ends the step the
+         * way the window expiring would; box-sides keeps the real 2.5s wait.
          */
-        await wait(2600);
+        engine.history.sealStep();
+        await wait(150);
         const undoBefore = engine.history.size;
         await scrub(gaugeFor('width'), 30);
         results.drag = {

@@ -128,7 +128,9 @@
           await send('border-color', 'value-change', 'var(--brand)');
           const first = style(a);
           // Past the history's merge window, so the next edit to the same line is its own entry.
-          await settle(2700);
+          // sealStep is the history's documented way to close a step (src/core/history.ts sealStep).
+          engine.history.sealStep();
+          await settle();
           await send('border-width', 'value-change', '3px');
           const second = style(a);
           await send('outline-style', 'value-change', 'dashed');
@@ -206,24 +208,29 @@
           const rowsWithSide = rows('border');
           // The scope survives the commit: the field being edited does not vanish under the cursor.
           const stillScoped = Boolean(field('border-bottom-width'));
-          await settle(2700);
+          engine.history.sealStep();
+          await settle();
           await pick('all');
           await send('border-color', 'value-change', 'blue');
           const followed = style(d);
           const keepsItsWidth = getComputedStyle(d).borderBottomWidth === '4px' && getComputedStyle(d).borderBottomColor === 'rgb(0, 0, 255)';
-          await settle(2700);
+          engine.history.sealStep();
+          await settle();
           await pick('bottom');
           await send('border-bottom-width', 'value-change', '2px');
           const sameIsNoOverride = style(d);
-          await settle(2700);
+          engine.history.sealStep();
+          await settle();
           await send('border-bottom-style', 'value-change', 'none');
           const none = style(d);
           const noneDrawn = getComputedStyle(d).borderBottomStyle === 'none';
-          await settle(2700);
+          engine.history.sealStep();
+          await settle();
           await send('border-bottom-color', 'value-change', 'red');
           const backOn = style(d);
           const backOnDrawn = getComputedStyle(d).borderBottomStyle === 'dashed' && getComputedStyle(d).borderBottomColor === 'rgb(255, 0, 0)';
-          await settle(2700);
+          engine.history.sealStep();
+          await settle();
           shadow()?.querySelector('.scope [data-act="reset"]')?.click();
           await settle(300);
           const reset = style(d);
@@ -232,7 +239,8 @@
           await pick('top');
           await send('border-top-width', 'value-change', '3px');
           const alone = style(e);
-          await settle(2700);
+          engine.history.sealStep();
+          await settle();
           await pick('all');
           await send('border-color', 'value-change', 'green');
           const topKept = style(e) === 'border: 1px solid green; border-top: 3px solid;' &&
@@ -266,7 +274,8 @@
           await settle(150);
           await send('border-bottom-width', 'value-change', '5px');
           const inRule = !c.getAttribute('style') && rules[1].style.borderBottomWidth === '5px';
-          await settle(2700);
+          engine.history.sealStep();
+          await settle();
           editor()?.shadowRoot?.querySelector('.glyph button.all')?.click();
           await settle(150);
           await send('border-color', 'value-change', 'purple');

@@ -265,7 +265,9 @@
          * 3. Undo puts the author's value back, not the browser's spelling of it.
          * ------------------------------------------------------------------ */
         progress.textContent = 'undo';
-        await wait(2600); // Past the commit-merge window, so this edit is its own entry.
+        // The step is closed (src/core/history.ts sealStep), so this edit is its own entry.
+        engine.history.sealStep();
+        await wait(300);
         engine.setRuleDeclaration(liveRule('#linked'), 'color', '#0a0');
         await frames();
         await wait(250);

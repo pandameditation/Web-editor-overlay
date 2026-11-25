@@ -74,6 +74,11 @@ window.runA11yContrast = async ({ passes }) => {
    * re-walked each call so newly mounted roots count. document.getAnimations() alone returned
    * 0 while a shadow root held a running transition (plan probe 5), so a settle that read only
    * the document waited for nothing and a hover row read the start colour.
+   *
+   * They are finished rather than waited for: the rows read end-state colours, and finish()
+   * jumps a finite transition to that end state in the same frame instead of after its
+   * duration. The g-shadow guard still fails if the walk misses a shadow root, because an
+   * animation that is not found is not finished and its row reads the start colour.
    * ---------------------------------------------------------------- */
   const shadowRoots = () => {
     const out = [];
@@ -97,7 +102,9 @@ window.runA11yContrast = async ({ passes }) => {
       // The Styles cards' Motion picture plays for ~5s whenever its tile is drawn; it changes
       // no colour measured here, and waiting on it made this fixture overrun its time limit.
       .filter((a) => !(a.animationName ?? '').startsWith('heo-art-'));
-    await Promise.race([Promise.all(animations.map((a) => a.finished.catch(() => { }))), wait(2000)]);
+    for (const a of animations) {
+      try { a.finish(); } catch { /* finite only, already filtered */ }
+    }
     await raf();
   };
 
