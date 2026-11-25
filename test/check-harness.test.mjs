@@ -1,10 +1,11 @@
 /**
- * Tests the suite runner's own logic: the scheduling order, the timings cache and the section
- * filter pages use for `?only=`.
+ * Tests the suite runner's own logic: the scheduling order, the timings cache, the section
+ * filter pages use for `?only=` and the event-based settle pages use instead of fixed sleeps.
  *
  * Plain Node, no browser: `scheduled()` and `loadTimings`/`saveTimings` are pure enough to drive
  * with made-up fixtures and a temporary file, and `test/sections.js` runs in a `node:vm` context
- * with a stub window, document and location. Run with: npm run test:harness
+ * with a stub window, document and location. `test/settle.js` runs in one whose timers and frames
+ * are on a fake clock the test advances. Run with: npm run test:harness
  */
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -18,6 +19,7 @@ const page = (name, extra = {}) => ({ page: `test/${name}.html`, budget: 1000, .
 const order = (fixtures, times) => scheduled(fixtures, times).map((f) => f.page.slice(5, -5));
 
 const SECTIONS_SOURCE = readFileSync(new URL('./sections.js', import.meta.url), 'utf8');
+const SETTLE_SOURCE = readFileSync(new URL('./settle.js', import.meta.url), 'utf8');
 
 /**
  * `HeoSections.create` for a page at `search`, loaded the way a page loads it. `progress` is the
@@ -35,6 +37,103 @@ function sectionsAt(search) {
   });
   runInContext(SECTIONS_SOURCE, context);
   return { create: (spec) => window.HeoSections.create(spec), progress };
+}
+
+const FRAME_MS = 16;
+
+/**
+ * `test/settle.js` loaded on a fake clock. `window` is the page's (wrapped) window; `at(ms, fn)`
+ * runs `fn` at that time without going through the wrappers, as an outside event would; `mutate()`
+ * reports a DOM mutation to every connected observer; `animate(ms, name)` starts a transition of
+ * that length in the document; `timeOf(promise)` runs the clock until the
+ * promise settles and returns the time it did. Frames fall every 16 ms.
+ */
+function settleOnAFakeClock() {
+  let clock = 0;
+  let seq = 0;
+  const events = new Map();
+  const schedule = (at, fn, period) => {
+    const id = ++seq;
+    events.set(id, { at, fn, period });
+    return id;
+  };
+  const animations = [];
+  /** A transition of `ms` starting now, finished once the clock passes its end. */
+  const animate = (ms, name = '') => {
+    const start = clock;
+    animations.push({
+      animationName: name,
+      pending: false,
+      playbackRate: 1,
+      get currentTime() {
+        return Math.min(clock - start, ms);
+      },
+      get playState() {
+        return clock - start < ms ? 'running' : 'finished';
+      },
+      effect: { getComputedTiming: () => ({ endTime: ms }) },
+    });
+  };
+  const observers = new Set();
+  class MutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.records = [];
+    }
+    observe() {
+      observers.add(this);
+    }
+    disconnect() {
+      observers.delete(this);
+      this.records = [];
+    }
+    takeRecords() {
+      const records = this.records;
+      this.records = [];
+      return records;
+    }
+  }
+  const window = {
+    performance: { now: () => clock },
+    setTimeout: (fn, ms) => schedule(clock + Math.max(0, Number(ms) || 0), fn),
+    clearTimeout: (id) => events.delete(id),
+    setInterval: (fn, ms) => schedule(clock + ms, fn, ms),
+    clearInterval: (id) => events.delete(id),
+    requestAnimationFrame: (fn) => schedule((Math.floor(clock / FRAME_MS) + 1) * FRAME_MS, () => fn(clock)),
+    cancelAnimationFrame: (id) => events.delete(id),
+    document: { querySelectorAll: () => [], getAnimations: () => animations },
+    MutationObserver,
+  };
+  runInContext(SETTLE_SOURCE, createContext({ window }));
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  const timeOf = async (promise) => {
+    let done = false;
+    promise.then(() => {
+      done = true;
+    });
+    await flush();
+    while (!done) {
+      let next = null;
+      for (const [id, event] of events) if (!next || event.at < next[1].at) next = [id, event];
+      if (!next || next[1].at > 60000) throw new Error('nothing left to run');
+      const [id, event] = next;
+      clock = event.at;
+      if (event.period) event.at += event.period;
+      else events.delete(id);
+      event.fn();
+      await flush();
+    }
+    return clock;
+  };
+  const mutate = () => {
+    for (const observer of observers) {
+      observer.records.push({ type: 'attributes' });
+      Promise.resolve().then(() => {
+        if (observer.records.length) observer.callback(observer.takeRecords(), observer);
+      });
+    }
+  };
+  return { window, settle: window.HeoSettle, at: (ms, fn) => schedule(ms, fn), mutate, animate, timeOf };
 }
 
 const CHAIN = {
@@ -169,6 +268,105 @@ const tests = {
       (error) =>
         error.message === '?only= names unknown section(s) "nope"; this page has: layout, gradient, stops, radial, read, typing',
     );
+  },
+  async quietReturnsAfterItsFramesWhenNothingIsPending() {
+    const { settle, timeOf } = settleOnAFakeClock();
+    // Two frames, a still check, one more frame: 48 ms of a 300 ms settle.
+    assert.equal(await timeOf(settle.quiet(300)), 3 * FRAME_MS);
+    assert.deepEqual({ ...settle.stats() }, { calls: 1, early: 1, toDeadline: 0, savedMs: 300 - 3 * FRAME_MS });
+  },
+  async quietWaitsForATimerDueInsideItsWindow() {
+    const { window, settle, timeOf } = settleOnAFakeClock();
+    let firedAt = null;
+    window.setTimeout(() => {
+      firedAt = window.performance.now();
+    }, 120);
+    const doneAt = await timeOf(settle.quiet(300));
+    assert.equal(firedAt, 120);
+    assert.ok(doneAt > 120 && doneAt < 300, `returned at ${doneAt}`);
+  },
+  async quietIgnoresATimerDueAfterItsDeadline() {
+    const { window, settle, timeOf } = settleOnAFakeClock();
+    window.setTimeout(() => {}, 1000);
+    assert.equal(await timeOf(settle.quiet(300)), 3 * FRAME_MS);
+  },
+  async quietWaitsThroughAShorterIntervalToItsLastTick() {
+    const { window, settle, timeOf } = settleOnAFakeClock();
+    const ticks = [];
+    window.setInterval(() => ticks.push(window.performance.now()), 50);
+    // The deadline is 300 ms after the two frames (332): every tick before it runs, as in a
+    // fixed wait, and it ends after the last one (300) because the next (350) is past it.
+    const doneAt = await timeOf(settle.quiet(300));
+    assert.deepEqual(ticks, [50, 100, 150, 200, 250, 300]);
+    assert.ok(doneAt > 300 && doneAt < 2 * FRAME_MS + 300, `returned at ${doneAt}`);
+    // A cleared interval no longer holds it.
+    const other = settleOnAFakeClock();
+    other.window.clearInterval(other.window.setInterval(() => {}, 50));
+    assert.equal(await other.timeOf(other.settle.quiet(300)), 3 * FRAME_MS);
+  },
+  async quietFollowsAChainOfTimers() {
+    const { window, settle, timeOf } = settleOnAFakeClock();
+    let secondAt = null;
+    window.setTimeout(() => {
+      window.setTimeout(() => {
+        secondAt = window.performance.now();
+      }, 100);
+    }, 100);
+    const doneAt = await timeOf(settle.quiet(300));
+    assert.equal(secondAt, 200);
+    assert.ok(doneAt > 200 && doneAt < 300, `returned at ${doneAt}`);
+  },
+  async aMutationDuringTheLastFrameKeepsItWaiting() {
+    const { settle, at, mutate, timeOf } = settleOnAFakeClock();
+    // Between the still check at 32 and the frame at 48 that would end it.
+    at(40, mutate);
+    assert.equal(await timeOf(settle.quiet(300)), 5 * FRAME_MS);
+  },
+  async aFrameLoopCountsOnlyThroughWhatItChanges() {
+    // A loop that asks for itself every frame and changes nothing: still, after its first frame.
+    const idle = settleOnAFakeClock();
+    const still = () => idle.window.requestAnimationFrame(still);
+    idle.window.requestAnimationFrame(still);
+    assert.equal(await idle.timeOf(idle.settle.quiet(300)), 3 * FRAME_MS);
+    // The same loop writing every frame keeps it busy to the deadline.
+    const busy = settleOnAFakeClock();
+    const writing = () => {
+      busy.mutate();
+      busy.window.requestAnimationFrame(writing);
+    };
+    busy.window.requestAnimationFrame(writing);
+    assert.ok((await busy.timeOf(busy.settle.quiet(300))) >= 2 * FRAME_MS + 300);
+    // A one-off frame asked for from inside another frame's callback still counts.
+    const chained = settleOnAFakeClock();
+    let ranAt = null;
+    chained.window.requestAnimationFrame(() =>
+      chained.window.requestAnimationFrame(() => chained.window.requestAnimationFrame(() => {
+        ranAt = chained.window.performance.now();
+      })));
+    const doneAt = await chained.timeOf(chained.settle.quiet(300));
+    assert.equal(ranAt, 3 * FRAME_MS);
+    assert.ok(doneAt > ranAt, `returned at ${doneAt}`);
+  },
+  async quietWaitsForAnAnimationThatEndsInsideItsWindow() {
+    const { settle, animate, timeOf } = settleOnAFakeClock();
+    animate(200);
+    const doneAt = await timeOf(settle.quiet(300));
+    assert.ok(doneAt >= 200 && doneAt < 300, `returned at ${doneAt}`);
+    // One that ends after the deadline, like a timer due after it, does not hold it; nor does an
+    // art loop, whatever its length.
+    const late = settleOnAFakeClock();
+    late.animate(7200);
+    late.animate(200, 'heo-art-slide');
+    assert.equal(await late.timeOf(late.settle.quiet(300)), 3 * FRAME_MS);
+  },
+  async quietsOwnWaitsNeverCountAsPending() {
+    const { window, settle, timeOf } = settleOnAFakeClock();
+    // Two quiets and a fixed wait at once: neither quiet sees the other's frames or the fixed timer.
+    const times = [];
+    const timed = (promise) => promise.then(() => times.push(window.performance.now()));
+    await timeOf(Promise.all([timed(settle.quiet(300)), timed(settle.fixed(100)), timed(settle.quiet(300))]));
+    assert.deepEqual(times, [3 * FRAME_MS, 3 * FRAME_MS, 100]);
+    assert.deepEqual({ ...settle.stats() }, { calls: 2, early: 2, toDeadline: 0, savedMs: 2 * (300 - 3 * FRAME_MS) });
   },
   async reportListsRanAndSkippedInDeclaredOrder() {
     const sections = sectionsAt('?only=typing,stops').create(CHAIN);

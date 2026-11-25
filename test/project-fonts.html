@@ -86,6 +86,7 @@
     };
     localStorage.setItem('heo:web-font-previews', 'on');
   </script>
+  <script src="settle.js"></script>
   <script src="../dist/html-editor-overlay.iife.js"></script>
   <script>
     (async () => {
@@ -94,7 +95,7 @@
       addEventListener('error', (event) => errors.push('error: ' + event.message));
       addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
       const progress = document.getElementById('progress');
-      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const settle = (ms = 300) => HeoSettle.quiet(ms);
       const check = async (name, fn) => {
         progress.textContent = name;
         try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }

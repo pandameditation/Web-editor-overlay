@@ -26,6 +26,7 @@
   <div id="named" style="width:80px;height:20px;box-shadow:0 2px 6px black, 0 0 0 1px var(--shadow-md)">Named</div>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
+  <script src="settle.js"></script>
   <script src="../dist/html-editor-overlay.iife.js"></script>
   <script>
     (async () => {
@@ -34,7 +35,7 @@
       addEventListener('error', (event) => errors.push('error: ' + event.message));
       addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
       const progress = document.getElementById('progress');
-      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const settle = (ms = 300) => HeoSettle.quiet(ms);
       const check = async (name, fn) => {
         progress.textContent = name;
         try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
@@ -165,7 +166,7 @@
         const blur = root.querySelectorAll('input[type="range"]')[0];
         blur.value = '40';
         blur.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        await settle(150);
+        await HeoSettle.fixed(150); // the slider is still held: nothing may be written yet
         const previewed = getComputedStyle(card).boxShadow.includes('40px');
         // A preview is not an edit: nothing on the undo stack yet.
         const notWrittenYet = engine.history.records.length === recordsBefore;
@@ -424,7 +425,7 @@
         let late = 0;
         for (let i = 0; i < 10; i += 1) {
           const t = performance.now();
-          await settle(50);
+          await HeoSettle.fixed(50); // measures lateness and body writes over real time
           late += Math.max(0, performance.now() - t - 50);
         }
         watch.disconnect();

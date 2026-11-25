@@ -43,6 +43,7 @@
   <div id="gp" style="display: flex; gap: 4px; row-gap: 8px">A gap family</div>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
+  <script src="settle.js"></script>
   <script src="../dist/html-editor-overlay.iife.js"></script>
   <script>
     (async () => {
@@ -50,7 +51,7 @@
       const errors = [];
       addEventListener('error', (event) => errors.push('error: ' + event.message));
       const progress = document.getElementById('progress');
-      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const settle = (ms = 300) => HeoSettle.quiet(ms);
       const deep = (selector, root = document) => {
         const direct = root.querySelector?.(selector);
         if (direct) return direct;
@@ -258,7 +259,7 @@
           await settle(200);
           const kept = document.body.contains(target);
           // Past the pause, a Backspace on the page is the page's again: the shortcut still works.
-          await settle(1700);
+          await HeoSettle.fixed(1700); // the pause is a clock comparison, not a timer: real time
           await keys('Backspace');
           await settle(300);
           results.backspace = {

@@ -34,6 +34,7 @@
   <p id="b" class="spinner">A rule's own animation</p>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
+  <script src="settle.js"></script>
   <script src="../dist/html-editor-overlay.iife.js"></script>
   <script>
     (async () => {
@@ -41,7 +42,7 @@
       const errors = [];
       addEventListener('error', (event) => errors.push('error: ' + event.message));
       const progress = document.getElementById('progress');
-      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const settle = (ms = 300) => HeoSettle.quiet(ms);
       const deep = (selector, root = document) => {
         const direct = root.querySelector?.(selector);
         if (direct) return direct;

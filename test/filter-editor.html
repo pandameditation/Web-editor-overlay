@@ -28,6 +28,7 @@
   </svg>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
+  <script src="settle.js"></script>
   <script src="../dist/html-editor-overlay.iife.js"></script>
   <script>
     (async () => {
@@ -36,7 +37,7 @@
       addEventListener('error', (event) => errors.push('error: ' + event.message));
       addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
       const progress = document.getElementById('progress');
-      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const settle = (ms = 300) => HeoSettle.quiet(ms);
       const check = async (name, fn) => {
         progress.textContent = name;
         try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
@@ -93,7 +94,7 @@
       const slide = async (input, value, settleIt = true) => {
         input.value = String(value);
         input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        await settle(150);
+        await HeoSettle.fixed(150); // the slider is still held until its change
         if (settleIt) {
           input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
           await settle(350);
@@ -162,7 +163,7 @@
         const scale = flat(ed('filter').querySelector('.scale'));
         range.value = '45';
         range.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-        await settle(150);
+        await HeoSettle.fixed(150); // the slider is still held: nothing may be written yet
         const previewed = getComputedStyle(photo).filter.includes('sepia(0.45)');
         const notWrittenYet = engine.history.records.length === recordsBefore;
         range.dispatchEvent(new Event('change', { bubbles: true, composed: true }));

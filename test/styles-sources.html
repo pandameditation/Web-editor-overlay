@@ -107,6 +107,7 @@
   </ul>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
+  <script src="settle.js"></script>
   <script src="../dist/html-editor-overlay.iife.js"></script>
   <script src="sections.js"></script>
   <script>
@@ -129,10 +130,7 @@
         }
         return null;
       };
-      const settle = async (ms = 250) => {
-        await frames();
-        await wait(ms);
-      };
+      const settle = (ms = 250) => HeoSettle.quiet(ms);
       try {
         // `?only=` runs part of the page (test/sections.js).
         const sections = HeoSections.create({

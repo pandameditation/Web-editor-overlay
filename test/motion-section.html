@@ -29,6 +29,7 @@
   <div class="plain" id="plain">Plain</div>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
+  <script src="settle.js"></script>
   <script src="../dist/html-editor-overlay.iife.js"></script>
   <script>
     (async () => {
@@ -37,7 +38,7 @@
       addEventListener('error', (event) => errors.push('error: ' + event.message));
       addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
       const progress = document.getElementById('progress');
-      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const settle = (ms = 300) => HeoSettle.quiet(ms);
       const check = async (name, fn) => {
         progress.textContent = name;
         try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
@@ -163,7 +164,7 @@
         const pointer = (type, x) => bar.dispatchEvent(new PointerEvent(type, { pointerId: 5, button: 0, clientX: x, clientY: box.top + 4, bubbles: true, composed: true }));
         pointer('pointerdown', box.left + 2);
         pointer('pointermove', box.left + 2 + track.width / 6);
-        await settle(60);
+        await HeoSettle.fixed(60); // held mid-drag: the hold is the input, not a settle
         const drafted = ed().querySelectorAll('.bar')[1].style.left;
         const notWrittenYet = !/transform 250ms \d/.test(ruleTransition());
         pointer('pointerup', box.left + 2 + track.width / 6);
@@ -185,7 +186,7 @@
         const x = box.left + box.width / 2;
         pointer('pointerdown', x);
         pointer('pointermove', x + track.width / 6);
-        await settle(60);
+        await HeoSettle.fixed(60); // held mid-drag: the hold is the input, not a settle
         pointer('pointerup', x + track.width / 6);
         await settle(500);
         // What is under the pointer a little off the drawn shapes: still the bar, still its end.
@@ -236,10 +237,10 @@
         const sheetBefore = document.getElementById('site').sheet.cssRules.length;
         const button = Array.from(ed().querySelectorAll('button')).find((one) => /try it/i.test(flat(one)));
         button.click();
-        await settle(120);
+        await HeoSettle.fixed(120); // the mutation count below is over this real time
         const playing = editor().previewing;
         const moving = card.getAnimations().length;
-        await settle(2200);
+        await HeoSettle.fixed(2200); // asserts nothing is written over the whole preview
         watch.disconnect();
         return {
           tryItPlaysOnTheElement: playing >= 3 && moving >= 3,

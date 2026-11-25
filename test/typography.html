@@ -40,6 +40,7 @@
   <p id="p" class="text-body card">Saturday workshops for beginners.</p>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
+  <script src="settle.js"></script>
   <script src="../dist/html-editor-overlay.iife.js"></script>
   <script>
     (async () => {
@@ -48,7 +49,7 @@
       addEventListener('error', (event) => errors.push('error: ' + event.message));
       addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
       const progress = document.getElementById('progress');
-      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const settle = (ms = 300) => HeoSettle.quiet(ms);
       const check = async (name, fn) => {
         progress.textContent = name;
         try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
@@ -253,7 +254,7 @@
         const boxBefore = popup();
         // Entering a row without moving (the list moved under a still pointer) previews nothing.
         target.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false }));
-        await settle(200);
+        await HeoSettle.fixed(200); // asserts no preview follows
         const stillPointer = getComputedStyle(h).fontFamily === before;
         const box = target.getBoundingClientRect();
         target.dispatchEvent(new PointerEvent('pointermove', { clientX: box.left + 10, clientY: box.top + 10, bubbles: true, composed: true }));
@@ -263,7 +264,7 @@
         // The same point again, as the browser sends when the content under it changes: no new preview.
         const other = proot.querySelector('[data-font="Georgia"]');
         other.dispatchEvent(new PointerEvent('pointermove', { clientX: box.left + 10, clientY: box.top + 10, bubbles: true, composed: true }));
-        await settle(300);
+        await HeoSettle.fixed(300); // asserts no new preview follows
         const steady = getComputedStyle(h).fontFamily === previewed;
         const notWritten = engine.history.records.length === recordsBefore;
         proot.querySelector('.list').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false }));
@@ -429,7 +430,7 @@
         for (const one of rows) {
           const box = one.getBoundingClientRect();
           await press([{ type: 'hover', x: box.left + 20, y: box.top + box.height / 2 }]);
-          await settle(350);
+          await HeoSettle.fixed(350); // counts preview flips over real time
           moved.push(Math.round(one.getBoundingClientRect().top - box.top));
           values.add(f().value);
           values.add(f().shadowRoot.querySelector('heo-font-picker').value);
