@@ -51,7 +51,8 @@ export class HeoSegmented extends LitElement {
       /* Inline row rather than a grid: an option may carry an icon, a label, or
          both, and a single-column grid stacked the two into a 22px box and clipped
          them. */
-      button {
+      /* The segments: the bar's buttons only, never the toggle's own, which these sized 28px tall. */
+      .bar button {
         flex: 1 1 0;
         display: inline-flex;
         align-items: center;
@@ -81,20 +82,20 @@ export class HeoSegmented extends LitElement {
       .bar.wrap button {
         flex: 1 0 auto;
       }
-      button:disabled {
+      .bar button:disabled {
         color: var(--heo-text-disabled);
         cursor: not-allowed;
       }
-      button:hover:not(:disabled) {
+      .bar button:hover:not(:disabled) {
         background: var(--heo-hover);
         color: var(--heo-text);
       }
-      button[aria-pressed='true'] {
+      .bar button[aria-pressed='true'] {
         background: var(--heo-raised);
         box-shadow: var(--heo-shadow-sm);
         color: var(--heo-text);
       }
-      button[aria-pressed='true'].accent {
+      .bar button[aria-pressed='true'].accent {
         background: var(--heo-accent);
         color: var(--heo-accent-ink);
       }
@@ -104,14 +105,14 @@ export class HeoSegmented extends LitElement {
         gap: 3px;
         border-radius: 9px;
       }
-      :host([size='lg']) button {
+      :host([size='lg']) .bar button {
         gap: 7px;
         height: 28px;
         border-radius: 6px;
         color: var(--heo-text-dim);
         font-size: 11.5px;
       }
-      :host([size='lg']) button[aria-pressed='true'] svg {
+      :host([size='lg']) .bar button[aria-pressed='true'] svg {
         color: var(--heo-accent-text);
       }
       /*
@@ -186,7 +187,7 @@ export class HeoSegmented extends LitElement {
         cursor: not-allowed;
       }
       /* Matches the value field's clear button, so every set row ends the same way. */
-      button.remove {
+      .bar button.remove {
         flex: 0 0 22px;
         padding: 0;
         /* Dim, not the segments' faint: an icon control needs 3:1, and faint read 2.5:1. */

@@ -335,6 +335,26 @@
           results.toggle.oneSwitchForBothViews =
             flip()?.getAttribute('role') === 'switch' && flip()?.getAttribute('aria-checked') === 'false' &&
             views().shadowRoot.querySelectorAll('button').length === 1 && flip().getAttribute('aria-label') === 'View: Applied';
+          {
+            /*
+             * Its own box, not a segment's: the segments' button rules sized it 28px tall, so the
+             * options overflowed the thumb and the labels sat low. As tall as Close all, the thumb
+             * on each option, each label in the middle of it.
+             */
+            const box = (el) => el.getBoundingClientRect();
+            const thumb = box(flip().querySelector('.thumb'));
+            const opts = Array.from(flip().querySelectorAll('.opt')).map(box);
+            const labels = Array.from(flip().querySelectorAll('.opt')).map((one) => {
+              const range = document.createRange();
+              range.selectNodeContents(one);
+              return range.getBoundingClientRect();
+            });
+            results.toggle.asTallAsCloseAll = Math.abs(box(flip()).height - box(root().querySelector('[data-close-all]')).height) < 1;
+            results.toggle.theThumbFitsAnOption = opts.every((one) => Math.abs(one.top - thumb.top) < 1 && Math.abs(one.height - thumb.height) < 1);
+            results.toggle.eachLabelIsCentred = labels.every((one, at) =>
+              Math.abs((one.top + one.height / 2) - (opts[at].top + opts[at].height / 2)) <= 1.5 &&
+              Math.abs((one.left + one.width / 2) - (opts[at].left + opts[at].width / 2)) <= 1.5);
+          }
           // A press on the half already picked flips it too: anywhere on it is the target.
           await clickAt(flip(), 0.25);
           const flipped = views().value === 'applied' && Boolean(root().querySelector('.applied')) && flip().getAttribute('aria-checked') === 'true';
