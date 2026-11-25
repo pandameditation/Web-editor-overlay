@@ -1,0 +1,1264 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Background card: clip and attachment</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  The question: how does the Background card offer background-clip (border, padding, content, and
+  text, which today it does not offer at all) and background-attachment (scroll, fixed, local, today
+  behind "More", and only on image layers)? Today both live in an image layer's Placement; a gradient
+  or a colour layer has neither.
+
+  The page on the left uses the real CSS the panel writes. Scroll it to see attachment, and scroll
+  inside the hero to see "local". Variants: ?variant=A|B|C, the bottom bar, or ← → (with nothing
+  in the panel focused).
+
+    A — Pickers. Every layer has a "Paint" group with two rows of picture tiles: what it paints
+        into (Border, Padding, Content, Text) and what it does when the page scrolls (Moves,
+        Stays, Inside). They replace "More" and are shown for gradients too.
+    B — On the drawing. The placement canvas is the control: click a ring to clip to that box, or
+        the "Aa" in the middle for text. Attachment is a small scroll preview beside it: drag its
+        bar and watch the layer move or stay, then keep that behaviour.
+    C — Effects first. Two switches at the top of the card for what people actually want: "Fill
+        the text" and "Fixed to the window". They set every layer at once. Each layer still has
+        plain clip and attachment rows, always visible.
+
+  Tokens: src/ui/tokens.ts. The card mirrors src/ui/controls/background-editor.ts. ◐ in the bar
+  switches theme.
+-->
+  <style>
+    :root {
+      --heo-accent: #6366f1;
+      --heo-accent-ink: #fff;
+      --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 18%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 55%, transparent);
+      --heo-bg: oklch(19% 0.014 265);
+      --heo-bg-glass: oklch(16% 0.014 265 / 86%);
+      --heo-raised: oklch(23.5% 0.016 265);
+      --heo-sunken: oklch(16% 0.012 265);
+      --heo-hover: oklch(28% 0.018 265);
+      --heo-active: oklch(32% 0.02 265);
+      --heo-text: oklch(96% 0.005 265);
+      --heo-text-dim: oklch(74% 0.012 265);
+      --heo-text-faint: oklch(68% 0.014 265);
+      --heo-line: oklch(100% 0 0 / 9%);
+      --heo-line-strong: oklch(100% 0 0 / 16%);
+      --heo-focus-ring: color-mix(in oklab, var(--heo-accent) 60%, white);
+      --heo-accent-text: var(--heo-focus-ring);
+      --heo-warn-text: oklch(80% 0.14 85);
+      --heo-card-tint: 25.5% 0.03;
+      --heo-card-chip: 32% 0.07;
+      --heo-card-line: 72% 0.12;
+      --heo-r-sm: 7px;
+      --heo-r-md: 10px;
+      --heo-shadow-sm: 0 1px 2px oklch(0% 0 0 / 30%);
+      --heo-shadow-md: 0 8px 24px -6px oklch(0% 0 0 / 45%), 0 2px 6px oklch(0% 0 0 / 25%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(0% 0 0 / 60%), 0 6px 16px oklch(0% 0 0 / 30%);
+      --heo-font: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --heo-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --heo-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+      --heo-fast: 120ms var(--heo-ease);
+      --heo-med: 200ms var(--heo-ease);
+      --h: 340;
+    }
+
+    [data-theme='light'] {
+      --heo-bg: oklch(99% 0.002 265);
+      --heo-bg-glass: oklch(99% 0.002 265 / 92%);
+      --heo-raised: oklch(100% 0 0);
+      --heo-sunken: oklch(96.5% 0.004 265);
+      --heo-hover: oklch(95% 0.006 265);
+      --heo-active: oklch(92% 0.008 265);
+      --heo-text: oklch(24% 0.014 265);
+      --heo-text-dim: oklch(45% 0.014 265);
+      --heo-text-faint: oklch(50% 0.012 265);
+      --heo-line: oklch(20% 0.02 265 / 11%);
+      --heo-line-strong: oklch(20% 0.02 265 / 20%);
+      --heo-focus-ring: var(--heo-accent);
+      --heo-accent-text: color-mix(in oklab, var(--heo-accent) 80%, black);
+      --heo-warn-text: oklch(52% 0.12 70);
+      --heo-card-tint: 98.8% 0.01;
+      --heo-card-chip: 93% 0.045;
+      --heo-card-line: 60% 0.14;
+      --heo-shadow-sm: 0 1px 2px oklch(50% 0.03 265 / 12%);
+      --heo-shadow-md: 0 8px 24px -6px oklch(50% 0.03 265 / 18%), 0 2px 6px oklch(50% 0.03 265 / 10%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(50% 0.03 265 / 24%), 0 6px 16px oklch(50% 0.03 265 / 14%);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 372px;
+      gap: 24px;
+      padding: 20px 24px 20px 32px;
+      background: linear-gradient(135deg, #e9ecf2, #dfe4ee);
+      color: var(--heo-text);
+      font: 12.5px/1.45 var(--heo-font);
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+    }
+
+    svg {
+      flex: none;
+    }
+
+    /* ---- Stage: the page, its notes, the CSS written ------------------- */
+    .stage {
+      display: grid;
+      align-content: start;
+      gap: 14px;
+      overflow: auto;
+      padding-bottom: 90px;
+      color: #1f2330;
+    }
+
+    .stage h1 {
+      margin: 0;
+      font: 600 11px/1 var(--heo-font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+
+    .stage h2 {
+      margin: 0;
+      font: 650 22px/1.2 var(--heo-font);
+    }
+
+    .notes {
+      max-width: 640px;
+      display: grid;
+      gap: 8px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: #333a48;
+    }
+
+    .notes .q {
+      padding: 10px 12px;
+      border-left: 3px solid var(--heo-accent);
+      border-radius: 0 8px 8px 0;
+      background: #fff;
+    }
+
+    .notes ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .notes b {
+      color: #111827;
+    }
+
+    .page {
+      position: relative;
+      height: 330px;
+      overflow: auto;
+      border-radius: 14px;
+      border: 1px solid #d5dbe6;
+      background: #f8fafc;
+      box-shadow: 0 1px 2px rgb(15 23 42 / 6%);
+    }
+
+    .page .bar {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 26px;
+      padding: 0 10px;
+      background: #eef1f6;
+      border-bottom: 1px solid #dde2ea;
+      color: #64748b;
+      font: 11px var(--heo-mono);
+    }
+
+    .page .bar i {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #cbd2dd;
+    }
+
+    .page .wrap {
+      padding: 28px 28px 420px;
+      font: 15px/1.6 system-ui;
+      color: #334155;
+    }
+
+    .page p {
+      margin: 0 0 14px;
+      max-width: 60ch;
+    }
+
+    #hero {
+      height: 190px;
+      overflow: auto;
+      margin: 0 0 22px;
+      padding: 22px 26px;
+      border: 10px dashed rgb(15 23 42 / 22%);
+      border-radius: 16px;
+      color: #0f172a;
+      outline: 2px solid #6366f1;
+      outline-offset: 3px;
+    }
+
+    #hero h3 {
+      margin: 0 0 6px;
+      font: 800 44px/1.05 system-ui;
+      letter-spacing: -0.02em;
+    }
+
+    #hero .more {
+      color: inherit;
+      opacity: .9;
+      font-size: 14px;
+    }
+
+    .written {
+      max-width: 640px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #e2e8f0;
+      font: 11.5px/1.6 var(--heo-mono);
+      white-space: pre-wrap;
+    }
+
+    .written .k {
+      color: #a5b4fc;
+    }
+
+    /* ---- The dock and the Background card ------------------------------ */
+    .dock {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      border: 1px solid var(--heo-line);
+      border-radius: 14px;
+      background: var(--heo-bg-glass);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--heo-shadow-lg);
+      overflow: hidden;
+    }
+
+    .dhead {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px 8px;
+      border-bottom: 1px solid var(--heo-line);
+    }
+
+    .dhead b {
+      font-size: 14px;
+    }
+
+    .dhead code {
+      color: var(--heo-text-faint);
+      font: 10.5px var(--heo-mono);
+    }
+
+    .scroll {
+      flex: 1;
+      overflow: auto;
+      padding: 10px 12px 18px;
+    }
+
+    .card {
+      border: 1px solid oklch(var(--heo-card-line) var(--h) / 45%);
+      border-radius: 12px;
+      background: var(--heo-raised);
+    }
+
+    .chead {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 5px 6px;
+      border-radius: 11px 11px 0 0;
+      background: linear-gradient(90deg, oklch(var(--heo-card-chip) var(--h)), oklch(var(--heo-card-tint) var(--h)) 70%);
+    }
+
+    .chead .thumb {
+      height: 34px;
+      border-radius: 7px;
+    }
+
+    .chead b {
+      font-size: 11.5px;
+    }
+
+    .chead .sum {
+      display: block;
+      overflow: hidden;
+      color: var(--heo-text-dim);
+      font: 10px var(--heo-mono);
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .cbody {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+    }
+
+    .layers {
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-md);
+      overflow: hidden;
+    }
+
+    .layer {
+      all: unset;
+      display: grid;
+      grid-template-columns: 12px 34px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 10px 6px 6px;
+      cursor: pointer;
+      border-left: 2px solid transparent;
+    }
+
+    .layer+.layer {
+      border-top: 1px solid var(--heo-line);
+    }
+
+    .layer:hover {
+      background: var(--heo-hover);
+    }
+
+    .layer.on {
+      background: var(--heo-hover);
+      border-left-color: var(--heo-accent);
+    }
+
+    .layer:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: -2px;
+    }
+
+    .layer .grip {
+      color: var(--heo-text-faint);
+      font-size: 10px;
+      letter-spacing: -2px;
+    }
+
+    .layer .sw {
+      width: 34px;
+      height: 30px;
+      border-radius: 7px;
+      box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+    }
+
+    .layer b {
+      font-size: 11.5px;
+      display: block;
+    }
+
+    .layer small {
+      color: var(--heo-text-faint);
+      font: 10px var(--heo-mono);
+    }
+
+    .layer .tags {
+      display: flex;
+      gap: 4px;
+    }
+
+    .tag {
+      padding: 0 6px;
+      border-radius: 999px;
+      background: var(--heo-active);
+      color: var(--heo-text-dim);
+      font-size: 9.5px;
+      font-weight: 600;
+      line-height: 16px;
+      white-space: nowrap;
+    }
+
+    .tag.accent {
+      background: var(--heo-accent-soft);
+      color: var(--heo-accent-text);
+    }
+
+    .detail {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-md);
+      background: var(--heo-sunken);
+    }
+
+    .dtitle {
+      font-size: 11.5px;
+      font-weight: 650;
+    }
+
+    .group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+      font-weight: 650;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .group::after {
+      content: '';
+      flex: 1;
+      border-top: 1px solid var(--heo-line);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 84px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+    }
+
+    .row>.lab {
+      color: var(--heo-text-faint);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .vf {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 28px;
+      padding: 0 8px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-bg);
+      font: 11px var(--heo-mono);
+    }
+
+    .vf.muted {
+      color: var(--heo-text-faint);
+    }
+
+    .hint {
+      margin: 0;
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+
+    .hint.warn {
+      color: var(--heo-warn-text);
+    }
+
+    .seg {
+      display: flex;
+      gap: 3px;
+      padding: 3px;
+      border: 1px solid var(--heo-line);
+      border-radius: 8px;
+      background: var(--heo-bg);
+    }
+
+    .seg button {
+      all: unset;
+      flex: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      height: 24px;
+      border-radius: 5px;
+      color: var(--heo-text-faint);
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .seg button:hover {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+
+    .seg button[aria-pressed='true'] {
+      background: var(--heo-raised);
+      box-shadow: var(--heo-shadow-sm), inset 0 0 0 1px var(--heo-line-strong);
+      color: var(--heo-text);
+    }
+
+    .seg button:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 1px;
+    }
+
+    /* ---- A: picture tiles ----------------------------------------------- */
+    .tiles {
+      display: grid;
+      gap: 6px;
+    }
+
+    .tiles.four {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .tiles.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .tilebtn {
+      all: unset;
+      display: grid;
+      justify-items: center;
+      gap: 5px;
+      padding: 6px 4px 7px;
+      border: 1px solid var(--heo-line);
+      border-radius: 9px;
+      background: var(--heo-bg);
+      color: var(--heo-text-dim);
+      font-size: 10.5px;
+      cursor: pointer;
+      text-align: center;
+      transition: border-color var(--heo-fast), background var(--heo-fast);
+    }
+
+    .tilebtn:hover {
+      border-color: var(--heo-line-strong);
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+
+    .tilebtn[aria-checked='true'] {
+      border-color: var(--heo-accent);
+      background: color-mix(in oklab, var(--heo-accent) 10%, var(--heo-bg));
+      color: var(--heo-text);
+      font-weight: 600;
+      box-shadow: 0 0 0 3px var(--heo-accent-soft);
+    }
+
+    .tilebtn:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    /* The box drawings: border (dashed ring), padding, content; the painted part in the layer. */
+    .boxpic {
+      position: relative;
+      width: 52px;
+      height: 36px;
+      border: 5px dashed var(--heo-text-faint);
+      border-radius: 6px;
+      padding: 5px;
+    }
+
+    .boxpic .ct {
+      width: 100%;
+      height: 100%;
+      border-radius: 2px;
+      outline: 1px dotted var(--heo-text-faint);
+    }
+
+    .boxpic.text {
+      border-color: transparent;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      font: 900 22px/1 system-ui;
+      color: transparent;
+      -webkit-background-clip: text;
+      background-clip: text;
+    }
+
+    .scrollpic {
+      position: relative;
+      width: 52px;
+      height: 36px;
+      border: 1px solid var(--heo-text-faint);
+      border-radius: 5px;
+      overflow: hidden;
+      background: var(--heo-raised);
+    }
+
+    .scrollpic .el {
+      position: absolute;
+      left: 6px;
+      right: 6px;
+      top: 6px;
+      height: 22px;
+      border-radius: 3px;
+      border: 1px solid var(--heo-text-faint);
+    }
+
+    .scrollpic .bgp {
+      position: absolute;
+      inset: 0;
+      opacity: .85;
+    }
+
+    .scrollpic .arrow {
+      position: absolute;
+      right: 2px;
+      top: 50%;
+      translate: 0 -50%;
+      color: var(--heo-text);
+      font-size: 10px;
+    }
+
+    .tilebtn:hover .scrollpic.moves .el,
+    .tilebtn:hover .scrollpic.moves .bgp {
+      animation: drift 1.2s var(--heo-ease) infinite alternate;
+    }
+
+    .tilebtn:hover .scrollpic.stays .el {
+      animation: drift 1.2s var(--heo-ease) infinite alternate;
+    }
+
+    .tilebtn:hover .scrollpic.inside .bgp {
+      animation: drift 1.2s var(--heo-ease) infinite alternate;
+    }
+
+    @keyframes drift {
+      to {
+        translate: 0 -10px;
+      }
+    }
+
+    .textopt {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      background: var(--heo-accent-soft);
+      color: var(--heo-text);
+      font-size: 11px;
+    }
+
+    .textopt input {
+      accent-color: var(--heo-accent);
+    }
+
+    /* ---- B: the drawing as the control ---------------------------------- */
+    .canvasB {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 82px;
+      gap: 8px;
+    }
+
+    .drawing {
+      position: relative;
+      height: 150px;
+      border-radius: 10px;
+      background: var(--heo-bg);
+      border: 1px solid var(--heo-line);
+    }
+
+    .ring {
+      all: unset;
+      position: absolute;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: box-shadow var(--heo-fast);
+    }
+
+    .ring .lbl {
+      position: absolute;
+      top: 2px;
+      left: 8px;
+      color: var(--heo-text-faint);
+      font-size: 9px;
+      font-weight: 650;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+
+    .ring:hover {
+      box-shadow: inset 0 0 0 2px var(--heo-accent-line);
+    }
+
+    .ring:hover .lbl {
+      color: var(--heo-text);
+    }
+
+    .ring[aria-checked='true'] {
+      box-shadow: inset 0 0 0 2px var(--heo-accent);
+    }
+
+    .ring[aria-checked='true'] .lbl {
+      color: var(--heo-accent-text);
+    }
+
+    .ring:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 1px;
+    }
+
+    .ring.border {
+      inset: 8px;
+    }
+
+    .ring.padding {
+      inset: 24px;
+    }
+
+    .ring.content {
+      inset: 42px 46px;
+      display: grid;
+      place-items: center;
+    }
+
+    .paintB {
+      position: absolute;
+      inset: 8px;
+      border: 16px solid transparent;
+      border-radius: 10px;
+      padding: 18px 22px;
+      pointer-events: none;
+      display: grid;
+      place-items: center;
+    }
+
+    .paintB .aa {
+      font: 900 34px/1 system-ui;
+      color: var(--heo-text);
+    }
+
+    .aaBtn {
+      all: unset;
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      translate: -50% -50%;
+      padding: 2px 8px;
+      border-radius: 7px;
+      font: 900 30px/1 system-ui;
+      color: var(--heo-text);
+      cursor: pointer;
+    }
+
+    .aaBtn:hover {
+      box-shadow: 0 0 0 2px var(--heo-accent-line);
+    }
+
+    .aaBtn[aria-checked='true'] {
+      box-shadow: 0 0 0 2px var(--heo-accent);
+    }
+
+    .aaBtn:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    .scrub {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 4px;
+    }
+
+    .scrub .vp {
+      position: relative;
+      height: 112px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--heo-raised);
+    }
+
+    .scrub .vp .doc {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 200px;
+    }
+
+    .scrub .vp .doc .line {
+      height: 4px;
+      margin: 6px 8px;
+      border-radius: 2px;
+      background: var(--heo-line-strong);
+    }
+
+    .scrub .vp .doc .elB {
+      height: 44px;
+      margin: 8px 6px;
+      border-radius: 5px;
+      border: 1px solid var(--heo-text-faint);
+      overflow: hidden;
+    }
+
+    .scrub .vp .fixedbg {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .scrub input[type='range'] {
+      width: 100%;
+      accent-color: var(--heo-accent);
+    }
+
+    .scrub .cap {
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+      text-align: center;
+    }
+
+    /* ---- C: effect switches --------------------------------------------- */
+    .effects {
+      display: grid;
+      gap: 6px;
+    }
+
+    .fx {
+      all: unset;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) 30px;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-md);
+      background: var(--heo-sunken);
+      cursor: pointer;
+    }
+
+    .fx:hover {
+      border-color: var(--heo-line-strong);
+    }
+
+    .fx:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    .fx[aria-checked='true'] {
+      border-color: var(--heo-accent-line);
+      background: color-mix(in oklab, var(--heo-accent) 9%, var(--heo-sunken));
+    }
+
+    .fx .pic {
+      width: 34px;
+      height: 30px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      background: var(--heo-raised);
+      box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+      font: 900 16px/1 system-ui;
+    }
+
+    .fx b {
+      display: block;
+      font-size: 11.5px;
+    }
+
+    .fx small {
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+    }
+
+    .sw2 {
+      position: relative;
+      width: 30px;
+      height: 18px;
+      border-radius: 999px;
+      background: var(--heo-active);
+      box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+      transition: background var(--heo-med);
+    }
+
+    .sw2::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--heo-text);
+      transition: translate 260ms cubic-bezier(0.34, 1.45, 0.5, 1);
+    }
+
+    .fx[aria-checked='true'] .sw2 {
+      background: var(--heo-accent);
+    }
+
+    .fx[aria-checked='true'] .sw2::after {
+      translate: 12px 0;
+      background: #fff;
+    }
+
+    .fx .mixed {
+      color: var(--heo-warn-text);
+      font-size: 10px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+
+      *,
+      *::before,
+      *::after {
+        animation: none !important;
+        transition-duration: 1ms !important;
+      }
+    }
+
+    .proto-bar {
+      position: fixed;
+      left: calc((100% - 372px) / 2);
+      bottom: 18px;
+      translate: -50% 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      background: #111;
+      color: #fff;
+      font: 600 12px var(--heo-font);
+      z-index: 50;
+      box-shadow: 0 10px 30px rgb(0 0 0 / 30%);
+    }
+
+    .proto-bar button {
+      border: 0;
+      background: #333;
+      color: #fff;
+      border-radius: 999px;
+      min-width: 28px;
+      height: 28px;
+      cursor: pointer;
+    }
+
+    .proto-bar span {
+      padding: 0 10px;
+      min-width: 220px;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <h1>Prototype · Styles › Background</h1>
+    <h2>Clip and attachment</h2>
+    <div class="notes" id="notes"></div>
+    <div class="page" id="page">
+      <div class="bar"><i></i><i></i><i></i>&nbsp; pottery.example — scroll this page</div>
+      <div class="wrap">
+        <div id="hero">
+          <h3>Slow pottery<br>for fast mornings</h3>
+          <div class="more">Wheel-thrown stoneware, glazed by hand. Scroll inside this box to see “Inside” (local) at
+            work: the layer scrolls with what is in here.<br><br>Each piece is fired twice.<br>Every glaze is
+            food-safe.<br>Ships in recycled paper.<br>Made in small batches.</div>
+        </div>
+        <p>Our studio makes cups, bowls and plates in small runs. Everything is thrown on the wheel, trimmed by hand and
+          fired twice.</p>
+        <p>Scroll this page: with “Moves with the page” (scroll), the background travels with the hero. With “Stays”
+          (fixed), the hero slides over a background pinned to the window.</p>
+        <p>Glazes are mixed in the studio from raw materials.</p>
+      </div>
+    </div>
+    <div class="written" id="written"></div>
+  </main>
+
+  <aside class="dock" aria-label="Styles panel (prototype)">
+    <div class="dhead"><b>Styles</b><code>div#hero</code></div>
+    <div class="scroll">
+      <div class="card" id="card"></div>
+    </div>
+  </aside>
+
+  <div class="proto-bar" role="toolbar" aria-label="Prototype variant switcher">
+    <button type="button" data-step="-1" aria-label="Previous variant">←</button>
+    <span id="proto-label"></span>
+    <button type="button" data-step="1" aria-label="Next variant">→</button>
+    <button type="button" id="theme" aria-label="Switch theme" title="Dark / light">◐</button>
+  </div>
+
+  <script>
+    const CLIPS = [
+      { value: 'border-box', label: 'Border', title: 'Paints under the border too' },
+      { value: 'padding-box', label: 'Padding', title: 'Stops at the inside of the border' },
+      { value: 'content-box', label: 'Content', title: 'Only behind the content' },
+      { value: 'text', label: 'Text', title: 'Only inside the letters' },
+    ];
+    const ATTACH = [
+      { value: 'scroll', label: 'Moves', long: 'Moves with the page', cls: 'moves', title: 'scroll: travels with the element when the page scrolls' },
+      { value: 'fixed', label: 'Stays', long: 'Stays in the window', cls: 'stays', title: 'fixed: pinned to the window; the element slides over it' },
+      { value: 'local', label: 'Inside', long: 'Scrolls with its content', cls: 'inside', title: 'local: scrolls with what is inside the element' },
+    ];
+    const state = {
+      variant: (new URLSearchParams(location.search).get('variant') || 'A').toUpperCase(),
+      selected: 0,
+      transparentText: true,
+      scrub: 0,
+      color: '#fde68a',
+      layers: [
+        { name: 'Linear gradient', sub: '120° · 3 stops', image: 'linear-gradient(120deg, #f43f5e, #a855f7 55%, #6366f1)', clip: 'border-box', attach: 'scroll', size: '' },
+        { name: 'Image', sub: 'dots.svg', image: 'radial-gradient(circle at 2px 2px, rgb(255 255 255 / 55%) 1.6px, transparent 0)', clip: 'border-box', attach: 'scroll', size: '18px 18px' },
+      ],
+    };
+    if (!['A', 'B', 'C'].includes(state.variant)) state.variant = 'A';
+
+    const NOTES = {
+      A: {
+        name: 'Pickers',
+        html: `<p class="q">Every layer, gradients included, gets a <b>Paint</b> group with two rows of picture tiles: <b>what it paints into</b> (Border, Padding, Content, Text) and <b>what it does when the page scrolls</b> (Moves, Stays, Inside). They replace "More: attachment, origin".</p>
+        <ul><li>Each tile draws its meaning: the painted area in the layer's own fill, and on hover a short animation of the scroll behaviour.</li>
+        <li>Picking <b>Text</b> shows "Make the text transparent", on by default, because the letters' own colour hides the background otherwise.</li>
+        <li>The layer list tags any layer that differs from the default, such as <span class="tag accent" style="vertical-align:1px">Text</span> or <span class="tag" style="vertical-align:1px">Fixed</span>, so it reads without opening the layer.</li></ul>`,
+      },
+      B: {
+        name: 'On the drawing',
+        html: `<p class="q">The placement drawing becomes the control. <b>Click a ring</b> (border, padding, content) to paint into that box, or <b>the "Aa"</b> in the middle to paint into the text. Attachment is a small scroll preview beside it: <b>drag its slider</b> and the layer moves or stays as it would on the page.</p>
+        <ul><li>No new vocabulary. Each choice is shown by what happens on the drawing.</li>
+        <li>The three attachment words sit under the preview as a segmented control, for keyboard and for knowing the CSS name.</li>
+        <li>Shown for every layer, not only images.</li></ul>`,
+      },
+      C: {
+        name: 'Effects first',
+        html: `<p class="q">Two switches at the top of the card for the results people want: <b>Fill the text</b> and <b>Fixed to the window</b>. Each sets every layer at once, and Fill the text also makes the text colour transparent.</p>
+        <ul><li>Each layer keeps plain <b>clip</b> and <b>attachment</b> rows in its detail, always visible, for the exact value. A switch reads <span style="color:#b45309">mixed</span> when the layers disagree.</li>
+        <li>Least to learn for the common cases: gradient text, parallax hero.</li></ul>`,
+      },
+    };
+
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const anyText = () => state.layers.some((l) => l.clip === 'text');
+    const layerFill = (layer) => `background:${layer.image};${layer.size ? `background-size:${layer.size};` : ''}`;
+    const stackFill = () => `background-image:${state.layers.map((l) => l.image).join(', ')};background-size:${state.layers.map((l) => l.size || 'auto').join(', ')};background-color:${state.color};`;
+
+    /* What the panel writes: the lists only where a layer differs, the prefix and the colour with text. */
+    function written() {
+      const lines = [
+        ['background-image', state.layers.map((l) => l.image).join(',\n    ')],
+        ['background-size', state.layers.map((l) => l.size || 'auto').join(', ')],
+        ['background-color', state.color],
+      ];
+      if (state.layers.some((l) => l.clip !== 'border-box')) {
+        const clip = state.layers.map((l) => l.clip).join(', ');
+        if (anyText()) lines.push(['-webkit-background-clip', clip]);
+        lines.push(['background-clip', clip]);
+      }
+      if (state.layers.some((l) => l.attach !== 'scroll')) lines.push(['background-attachment', state.layers.map((l) => l.attach).join(', ')]);
+      if (anyText() && state.transparentText) lines.push(['color', 'transparent']);
+      return lines;
+    }
+
+    function paintStage() {
+      const hero = document.getElementById('hero');
+      hero.removeAttribute('style');
+      for (const [p, v] of written()) hero.style.setProperty(p, v.replace(/\n\s*/g, ' '));
+      document.getElementById('written').innerHTML = `<span class="k">#hero</span> {\n${written().map(([p, v]) => `  ${p}: ${esc(v)};`).join('\n')}\n}`;
+    }
+
+    function layerRow(layer, index) {
+      const tags = [
+        layer.clip !== 'border-box' ? `<span class="tag ${layer.clip === 'text' ? 'accent' : ''}">${CLIPS.find((c) => c.value === layer.clip).label}</span>` : '',
+        layer.attach !== 'scroll' ? `<span class="tag">${layer.attach === 'fixed' ? 'Fixed' : 'Local'}</span>` : '',
+      ].join('');
+      return `<button type="button" class="layer${state.selected === index ? ' on' : ''}" data-layer="${index}">
+        <span class="grip" aria-hidden="true">⋮⋮</span><span class="sw" style="${layerFill(layer)}background-color:#334155"></span>
+        <span><b>${layer.name}</b><small>${layer.sub}</small></span><span class="tags">${tags}</span></button>`;
+    }
+
+    function textNote(layer) {
+      if (layer.clip !== 'text') return '';
+      return `<label class="textopt"><input type="checkbox" data-transparent ${state.transparentText ? 'checked' : ''}> Make the text transparent, so the layer shows through</label>
+        ${state.layers.some((l) => l.clip !== 'text') ? '<p class="hint warn">The other layers still paint the whole box. Clip them to Text too, or the letters sit on a filled box.</p>' : ''}`;
+    }
+
+    /* A: two rows of picture tiles. */
+    function detailA(layer, i) {
+      const clipTiles = CLIPS.map((c) => {
+        const pic = c.value === 'text'
+          ? `<span class="boxpic text" style="${layerFill(layer)}-webkit-background-clip:text;background-clip:text">Aa</span>`
+          : `<span class="boxpic" style="${layerFill(layer)}background-clip:${c.value};background-origin:border-box"><span class="ct"></span></span>`;
+        return `<button type="button" class="tilebtn" role="radio" aria-checked="${layer.clip === c.value}" data-clip="${c.value}" title="${c.title}">${pic}${c.label}</button>`;
+      }).join('');
+      const attachTiles = ATTACH.map((a) => `<button type="button" class="tilebtn" role="radio" aria-checked="${layer.attach === a.value}" data-attach="${a.value}" title="${a.title}">
+          <span class="scrollpic ${a.cls}"><span class="bgp" style="${layerFill(layer)}"></span><span class="el"></span></span>${a.label}</button>`).join('');
+      return `<div class="group">Paint</div>
+        <div class="tiles four" role="radiogroup" aria-label="Paints into">${clipTiles}</div>
+        ${textNote(layer)}
+        <div class="row"><span class="lab">on scroll</span><span class="hint">${ATTACH.find((a) => a.value === layer.attach).long}</span></div>
+        <div class="tiles three" role="radiogroup" aria-label="When the page scrolls">${attachTiles}</div>`;
+    }
+
+    /* B: the drawing is the clip control, the scroll preview the attachment one. */
+    function detailB(layer) {
+      const rings = ['border-box', 'padding-box', 'content-box'].map((v) => {
+        const c = CLIPS.find((one) => one.value === v);
+        return `<button type="button" class="ring ${c.label.toLowerCase()}" role="radio" aria-checked="${layer.clip === v}" data-clip="${v}" title="${c.title}" aria-label="Paint into the ${c.label.toLowerCase()} box"><span class="lbl">${c.label}</span></button>`;
+      }).join('');
+      const isText = layer.clip === 'text';
+      const paint = isText
+        ? `<div class="paintB"><span class="aa" style="${layerFill(layer)}-webkit-background-clip:text;background-clip:text;color:transparent">Aa</span></div>`
+        : `<div class="paintB" style="${layerFill(layer)}background-clip:${layer.clip};background-origin:border-box;border-color:color-mix(in oklab, var(--heo-text-faint) 28%, transparent)"></div>`;
+      const fixed = layer.attach === 'fixed';
+      const local = layer.attach === 'local';
+      const y = state.scrub;
+      return `<div class="group">Paint into · click the drawing</div>
+        <div class="canvasB">
+          <div class="drawing" role="radiogroup" aria-label="Paints into">
+            ${paint}${rings}
+            ${isText ? '' : `<button type="button" class="aaBtn" role="radio" aria-checked="false" data-clip="text" title="Only inside the letters">Aa</button>`}
+            ${isText ? `<button type="button" class="aaBtn" role="radio" aria-checked="true" data-clip="text" style="color:transparent" aria-label="Paint into the text">Aa</button>` : ''}
+          </div>
+          <div class="scrub">
+            <div class="vp" title="Drag the slider to scroll this little page">
+              ${fixed ? `<span class="fixedbg" style="${layerFill(layer)}clip-path:inset(${28 - y * 0.6}px 7px ${112 - 72 + y * 0.6}px 7px round 5px)"></span>` : ''}
+              <div class="doc" style="translate:0 ${-y * 0.6}px">
+                <div class="line"></div><div class="line" style="width:60%"></div>
+                <div class="elB" style="${fixed ? '' : layerFill(layer)}${local ? `background-position:0 ${-y * 0.4}px;` : ''}"></div>
+                <div class="line"></div><div class="line" style="width:70%"></div><div class="line"></div>
+              </div>
+            </div>
+            <input type="range" min="0" max="100" value="${y}" data-scrub aria-label="Scroll the preview">
+            <span class="cap">drag to scroll</span>
+          </div>
+        </div>
+        ${textNote(layer)}
+        <div class="row"><span class="lab">on scroll</span>
+          <div class="seg" role="radiogroup" aria-label="When the page scrolls">${ATTACH.map((a) => `<button type="button" role="radio" aria-pressed="${layer.attach === a.value}" aria-checked="${layer.attach === a.value}" data-attach="${a.value}" title="${a.title}">${a.label}</button>`).join('')}</div>
+        </div>`;
+    }
+
+    /* C: plain rows in the layer, the effects above the stack. */
+    function detailC(layer) {
+      return `<div class="group">Paint</div>
+        <div class="row"><span class="lab">clip</span>
+          <div class="seg" role="radiogroup" aria-label="background-clip">${CLIPS.map((c) => `<button type="button" role="radio" aria-pressed="${layer.clip === c.value}" aria-checked="${layer.clip === c.value}" data-clip="${c.value}" title="${c.title}">${c.label}</button>`).join('')}</div></div>
+        <div class="row"><span class="lab">attachment</span>
+          <div class="seg" role="radiogroup" aria-label="background-attachment">${ATTACH.map((a) => `<button type="button" role="radio" aria-pressed="${layer.attach === a.value}" aria-checked="${layer.attach === a.value}" data-attach="${a.value}" title="${a.title}">${a.value}</button>`).join('')}</div></div>
+        ${textNote(layer)}`;
+    }
+
+    function effectsC() {
+      const all = (key, value) => state.layers.every((l) => l[key] === value);
+      const some = (key, value) => state.layers.some((l) => l[key] === value);
+      const fx = (id, on, mixed, pic, title, sub) => `<button type="button" class="fx" role="switch" aria-checked="${on}" data-fx="${id}">
+          <span class="pic">${pic}</span><span><b>${title}</b><small>${mixed ? '<span class="mixed">mixed · </span>' : ''}${sub}</small></span><span class="sw2" aria-hidden="true"></span></button>`;
+      const gradient = state.layers[0].image;
+      return `<div class="effects">
+        ${fx('text', all('clip', 'text'), !all('clip', 'text') && some('clip', 'text'), `<span style="background:${gradient};-webkit-background-clip:text;background-clip:text;color:transparent">Aa</span>`, 'Fill the text', 'The background shows only through the letters')}
+        ${fx('fixed', all('attach', 'fixed'), !all('attach', 'fixed') && some('attach', 'fixed'), '📌', 'Fixed to the window', 'The element scrolls over a still background')}
+      </div>`;
+    }
+
+    function render() {
+      const layer = state.layers[state.selected];
+      const detail = state.variant === 'A' ? detailA(layer, state.selected) : state.variant === 'B' ? detailB(layer) : detailC(layer);
+      document.getElementById('card').innerHTML = `
+        <div class="chead"><span class="thumb" style="${stackFill()}"></span><span><b>Background</b><span class="sum">${anyText() ? 'text · ' : ''}${state.layers.some((l) => l.attach === 'fixed') ? 'fixed · ' : ''}linear-gradient(120deg,…</span></span><span style="color:var(--heo-text-dim)">⌃</span></div>
+        <div class="cbody">
+          ${state.variant === 'C' ? effectsC() : ''}
+          <div class="layers">${state.layers.map(layerRow).join('')}
+            <div class="layer" style="cursor:default"><span></span><span class="sw" style="background:${state.color}"></span><span><b>Color</b><small>${state.color}</small></span><span></span></div>
+          </div>
+          <div class="detail">
+            <div class="dtitle">${layer.name}</div>
+            <div class="row"><span class="lab">${layer.name === 'Image' ? 'image' : 'fill'}</span><span class="vf">${layer.name === 'Image' ? 'url(dots.svg)' : '120° · 3 stops'}<span>⌄</span></span></div>
+            ${detail}
+            <div class="group">Placement</div>
+            <div class="row"><span class="lab">size</span><span class="vf ${layer.size ? '' : 'muted'}">${layer.size || 'auto'}<span>⌄</span></span></div>
+            <div class="row"><span class="lab">repeat</span><span class="vf muted">repeat<span>⌄</span></span></div>
+          </div>
+          <p class="hint">Top layer first; the color is always underneath. The color is clipped like the bottom layer.</p>
+        </div>`;
+      document.getElementById('notes').innerHTML = NOTES[state.variant].html;
+      document.getElementById('proto-label').textContent = `${state.variant} — ${NOTES[state.variant].name}`;
+      paintStage();
+    }
+
+    const card = document.getElementById('card');
+    card.addEventListener('click', (event) => {
+      const b = event.target.closest('button, input');
+      if (!b) return;
+      const layer = state.layers[state.selected];
+      if (b.dataset.layer !== undefined) state.selected = Number(b.dataset.layer);
+      else if (b.dataset.clip) layer.clip = b.dataset.clip;
+      else if (b.dataset.attach) layer.attach = b.dataset.attach;
+      else if (b.dataset.fx === 'text') {
+        const on = !state.layers.every((l) => l.clip === 'text');
+        state.layers.forEach((l) => { l.clip = on ? 'text' : 'border-box'; });
+      } else if (b.dataset.fx === 'fixed') {
+        const on = !state.layers.every((l) => l.attach === 'fixed');
+        state.layers.forEach((l) => { l.attach = on ? 'fixed' : 'scroll'; });
+      } else if (b.matches('[data-transparent]')) state.transparentText = b.checked;
+      else return;
+      const focus = b.dataset.clip ? `[data-clip="${b.dataset.clip}"]` : b.dataset.attach ? `[data-attach="${b.dataset.attach}"]` : b.dataset.fx ? `[data-fx="${b.dataset.fx}"]` : b.dataset.layer !== undefined ? `[data-layer="${b.dataset.layer}"]` : null;
+      render();
+      if (focus) card.querySelector(focus)?.focus({ preventScroll: true });
+    });
+    card.addEventListener('input', (event) => {
+      if (!event.target.matches('[data-scrub]')) return;
+      state.scrub = Number(event.target.value);
+      const at = event.target;
+      render();
+      const again = card.querySelector('[data-scrub]');
+      again?.focus({ preventScroll: true });
+      void at;
+    });
+    /* Arrow keys inside a picker move the choice, as a radio group does. */
+    card.addEventListener('keydown', (event) => {
+      const group = event.target.closest('[role="radiogroup"]');
+      if (!group || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+      const items = Array.from(group.querySelectorAll('[role="radio"]'));
+      const at = items.indexOf(event.target.closest('[role="radio"]'));
+      const next = items[(at + (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length];
+      event.preventDefault();
+      next?.click();
+    });
+
+    function go(step) {
+      const order = ['A', 'B', 'C'];
+      state.variant = order[(order.indexOf(state.variant) + step + 3) % 3];
+      const url = new URL(location.href);
+      url.searchParams.set('variant', state.variant);
+      history.replaceState(null, '', url);
+      render();
+    }
+    document.querySelectorAll('.proto-bar [data-step]').forEach((b) => b.addEventListener('click', () => go(Number(b.dataset.step))));
+    document.getElementById('theme').addEventListener('click', () => {
+      const root = document.documentElement;
+      root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    });
+    addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      const active = document.activeElement;
+      if (active && active !== document.body && !active.closest('.proto-bar')) return;
+      go(event.key === 'ArrowLeft' ? -1 : 1);
+    });
+    render();
+  </script>
+</body>
+
+</html>

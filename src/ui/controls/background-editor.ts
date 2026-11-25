@@ -5,6 +5,7 @@ import {
   composeBlend,
   gradientCss,
   imageCss,
+  isDefault,
   KEYWORD_POSITIONS,
   positionPercent,
   type Background,
@@ -44,11 +45,21 @@ const SIZE_OPTIONS: SegmentOption[] = [
   { value: 'contain', label: 'Contain' },
   { value: 'custom', label: 'Set', title: 'A size of your own' },
 ];
-const CLIP_OPTIONS: SegmentOption[] = [
-  { value: 'border-box', label: 'Border', title: 'Paint into the border box' },
-  { value: 'padding-box', label: 'Padding', title: 'Paint into the padding box' },
-  { value: 'content-box', label: 'Content', title: 'Paint into the content box' },
+/** What a layer paints into: the three boxes, drawn as rings, and the letters, drawn as Aa. */
+const CLIPS: ReadonlyArray<{ value: string; label: string; title: string }> = [
+  { value: 'border-box', label: 'Border', title: 'Paints under the border too' },
+  { value: 'padding-box', label: 'Padding', title: 'Stops at the inside of the border' },
+  { value: 'content-box', label: 'Content', title: 'Only behind the content' },
+  { value: 'text', label: 'Text', title: 'Only inside the letters' },
 ];
+/** What a layer does when the page scrolls, said as what is seen, each with its CSS word. */
+const ATTACH_OPTIONS: SegmentOption[] = [
+  { value: 'scroll', label: 'Moves', title: 'scroll: moves with the element as the page scrolls' },
+  { value: 'fixed', label: 'Stays', title: 'fixed: stays still in the window; the element slides over it' },
+  { value: 'local', label: 'Inside', title: 'local: scrolls with what is inside the element' },
+];
+/** The layer's sections, folded by the user, for the session: the same ones stay folded layer to layer. */
+const folded = new Set<string>();
 
 /** The mini element's border and padding: where each box sits inside it, as an inset. */
 const BOX_INSET: Record<string, number> = { 'border-box': -12, 'padding-box': 0, 'content-box': 14 };
@@ -64,6 +75,9 @@ const clone = (background: Background): Background => ({
 });
 const clamp = (n: number, min: number, max: number): number => Math.max(min, Math.min(max, n));
 const placement = (): Placement => ({ position: '', size: '', repeat: '', attachment: '', origin: '', clip: '', blend: '' });
+/** A layer's clip and attachment as they read: the default where nothing is written. */
+const clipOf = (layer: BackgroundLayer): string => layer.clip.trim().toLowerCase() || 'border-box';
+const attachmentOf = (layer: BackgroundLayer): string => layer.attachment.trim().toLowerCase() || 'scroll';
 const isPending = (layer: BackgroundLayer | undefined): boolean => layer?.kind === 'image' && !layer.url?.trim();
 
 /** Two hex colours mixed, for a stop added between two others; the left one where either is not hex. */
@@ -135,7 +149,7 @@ export class HeoBackgroundEditor extends LitElement {
       }
       .layer {
         display: grid;
-        grid-template-columns: 14px 26px minmax(0, 1fr) auto;
+        grid-template-columns: 14px 26px minmax(0, 1fr) auto auto;
         gap: 7px;
         align-items: center;
         min-height: 38px;
@@ -557,6 +571,262 @@ export class HeoBackgroundEditor extends LitElement {
         font-size: 10.5px;
       }
 
+      /* A layer's tags in the list: what it paints into, how it scrolls, where not the default. */
+      .tags {
+        display: flex;
+        gap: 4px;
+      }
+      .tag {
+        padding: 0 6px;
+        border-radius: 999px;
+        background: var(--heo-active);
+        color: var(--heo-text-dim);
+        font-size: 9.5px;
+        font-weight: 600;
+        line-height: 16px;
+        white-space: nowrap;
+      }
+      .tag.accent {
+        background: var(--heo-accent-soft);
+        color: var(--heo-accent-text);
+      }
+
+      /*
+       * The layer's sections: Fill, Paint, Placement. The head is the group label the detail had,
+       * made a button that folds its section, with what the section holds at its end.
+       */
+      .sect + .sect {
+        margin-top: 12px;
+      }
+      .shead {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        margin: 0 0 8px;
+        padding: 2px 0;
+        border: 0;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--heo-text-faint);
+        font-size: 9.5px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+      .shead::after {
+        content: '';
+        flex: 1;
+        order: 2;
+        min-width: 12px;
+        border-top: 1px solid var(--heo-line);
+      }
+      .shead:hover {
+        color: var(--heo-text-dim);
+      }
+      .shead:focus-visible {
+        outline: 2px solid var(--heo-focus-ring);
+        outline-offset: 2px;
+      }
+      .shead .chev {
+        display: grid;
+        transition: rotate var(--heo-fast);
+      }
+      .shead[aria-expanded='false'] {
+        margin-bottom: 0;
+      }
+      .shead[aria-expanded='false'] .chev {
+        rotate: -90deg;
+      }
+      .shead .sval {
+        order: 3;
+        max-width: 60%;
+        overflow: hidden;
+        color: var(--heo-text-dim);
+        font-family: var(--heo-mono);
+        font-size: 10px;
+        font-weight: 400;
+        letter-spacing: 0;
+        text-overflow: ellipsis;
+        text-transform: none;
+        white-space: nowrap;
+      }
+
+      /*
+       * Paint: the element drawn as its three boxes, the layer painted into the one it clips to.
+       * Each ring is a button; the Aa in the middle paints only inside the letters.
+       */
+      .paint {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 84px;
+        gap: 8px;
+      }
+      .rings {
+        position: relative;
+        height: 136px;
+        overflow: hidden;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-md);
+        background: var(--heo-sunken);
+      }
+      .rings .fill {
+        position: absolute;
+        inset: 6px;
+        display: grid;
+        place-items: center;
+        padding: 14px 16px;
+        border: 14px solid color-mix(in oklab, var(--heo-text-faint) 22%, transparent);
+        border-radius: 9px;
+        pointer-events: none;
+      }
+      .aa {
+        font: 900 30px/1 system-ui, sans-serif;
+      }
+      .ring {
+        position: absolute;
+        padding: 0;
+        border: 0;
+        border-radius: 9px;
+        background: transparent;
+        cursor: pointer;
+        transition: box-shadow var(--heo-fast);
+      }
+      .ring.border {
+        inset: 6px;
+      }
+      .ring.padding {
+        inset: 20px;
+        border-radius: 6px;
+      }
+      .ring.content {
+        inset: 34px 36px;
+        border-radius: 4px;
+      }
+      .ring .lbl {
+        position: absolute;
+        top: 1px;
+        left: 7px;
+        color: var(--heo-text-faint);
+        font-size: 8.5px;
+        font-weight: 650;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        text-shadow: 0 1px 2px rgb(0 0 0 / 45%);
+        pointer-events: none;
+      }
+      .ring:hover {
+        box-shadow: inset 0 0 0 2px var(--heo-accent-line);
+      }
+      .ring:hover .lbl {
+        color: var(--heo-text);
+      }
+      .ring[aria-checked='true'] {
+        box-shadow: inset 0 0 0 2px var(--heo-accent);
+      }
+      .ring[aria-checked='true'] .lbl {
+        color: #fff;
+      }
+      .ring:focus-visible,
+      .aa-btn:focus-visible {
+        outline: 2px solid var(--heo-focus-ring);
+        outline-offset: 1px;
+      }
+      .aa-btn {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        z-index: 1;
+        translate: -50% -50%;
+        padding: 2px 8px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: var(--heo-text);
+        font: 900 30px/1 system-ui, sans-serif;
+        cursor: pointer;
+        transition: box-shadow var(--heo-fast);
+      }
+      .aa-btn:hover {
+        box-shadow: 0 0 0 2px var(--heo-accent-line);
+      }
+      /* Picked, it lets the painted letters under it show: it is only their frame now. */
+      .aa-btn[aria-checked='true'] {
+        color: transparent;
+        box-shadow: 0 0 0 2px var(--heo-accent);
+      }
+
+      /* The scroll preview: a little page with the element on it, scrolled by its slider. */
+      .scrub {
+        display: grid;
+        grid-template-rows: 1fr auto auto;
+        gap: 3px;
+      }
+      .vp {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: 8px;
+        background: var(--heo-raised);
+      }
+      .vp .doc {
+        position: absolute;
+        inset: 0 0 auto;
+        height: 220px;
+      }
+      .vp .doc i {
+        display: block;
+        height: 4px;
+        margin: 6px 8px;
+        border-radius: 2px;
+        background: var(--heo-line-strong);
+      }
+      .vp .doc .el {
+        display: block;
+        height: 42px;
+        margin: 8px 6px;
+        border: 1px solid var(--heo-text-faint);
+        border-radius: 5px;
+        background-size: cover;
+      }
+      .vp .pinned {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+      }
+      .scrub input[type='range'] {
+        width: 100%;
+        margin: 0;
+        accent-color: var(--heo-accent);
+      }
+      .scrub .cap {
+        color: var(--heo-text-faint);
+        font-size: 9.5px;
+        text-align: center;
+      }
+
+      .textfill {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 8px;
+        padding: 7px 9px;
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-accent-soft);
+        color: var(--heo-text);
+        font-size: 11px;
+        line-height: 1.35;
+        cursor: pointer;
+      }
+      .textfill input {
+        flex: none;
+        margin: 0;
+        accent-color: var(--heo-accent);
+      }
+      .note.warn {
+        color: var(--heo-warn-text);
+      }
+
       .tip {
         margin: 8px 0 0;
         color: var(--heo-text-faint);
@@ -570,6 +840,11 @@ export class HeoBackgroundEditor extends LitElement {
   @property({ attribute: false }) value: Background = { layers: [], color: '' };
   /** What the page draws for the colour, for its placeholder. */
   @property({ type: String }) computedColor = '';
+  /**
+   * Whether the element's text is see-through (its colour fully transparent), so a layer clipped to
+   * the text shows through the letters. The host reads it from the page; the switch sets it.
+   */
+  @property({ type: Boolean }) textTransparent = false;
   /** Keyed by longhand: `background-color`, `background-repeat`, `background-blend-mode`. */
   @property({ attribute: false }) fields: Record<string, BackgroundFieldSpec> = {};
 
@@ -578,6 +853,8 @@ export class HeoBackgroundEditor extends LitElement {
   @state() private selected = 0;
   /** The stop picked on the bar, by index into the gradient's stops. */
   @state() private stop = 0;
+  /** How far the scroll preview's little page is scrolled, 0 to 100. */
+  @state() private scrubbed = 0;
   /** What is being dragged in a list: a layer, or a stop's colour. */
   #dragFrom: { list: 'layer' | 'stop'; index: number } | null = null;
   /** The host's value last taken, as text: the host hands a new object on every render. */
@@ -667,6 +944,7 @@ export class HeoBackgroundEditor extends LitElement {
       <span class="grip" title="Drag to reorder">${icon('grip', 12)}</span>
       <span class="thumb checker"><i style=${thumbStyle(layer)}></i></span>
       <span class="name"><b>${layerName(layer)}</b><span>${layerSummary(layer)}</span></span>
+      ${this.#renderTags(layer)}
       <span @click=${(event: Event) => event.stopPropagation()}>${renderKill({ label: `Remove ${layerName(layer).toLowerCase()} layer`, tight: true, onClick: () => this.#remove(index) })}</span>
     </div>`;
   }
@@ -752,11 +1030,10 @@ export class HeoBackgroundEditor extends LitElement {
           ></heo-segmented>`
         : nothing}
       </div>
-      ${this.#renderFill(layer, index)}
+      ${this.#renderSection('fill', 'Fill', layerSummary(layer), this.#renderFill(layer, index))}
+      ${this.#renderSection('paint', 'Paint', `${CLIPS.find((one) => one.value === clipOf(layer))?.label ?? clipOf(layer)} · ${ATTACH_OPTIONS.find((one) => one.value === attachmentOf(layer))?.label ?? attachmentOf(layer)}`, this.#renderPaint(layer, index))}
       ${this.#showsPlacement(layer)
-        ? html`<div class="group">Placement</div>
-          ${this.#renderCanvas(layer, index)}
-          ${this.#renderPlacement(layer, index)}`
+        ? this.#renderSection('placement', 'Placement', placementSummary(layer), html`${this.#renderCanvas(layer, index)}${this.#renderPlacement(layer, index)}`)
         : nothing}
     </div>`;
   }
@@ -769,8 +1046,173 @@ export class HeoBackgroundEditor extends LitElement {
    */
   #showsPlacement(layer: BackgroundLayer): boolean {
     if (layer.kind === 'image') return true;
-    return (Object.keys(placement()) as Array<keyof Placement>).some((key) => Boolean(layer[key]?.trim()));
+    // Clip and attachment are Paint's, which every layer has: they do not open Placement.
+    // A part at its default says nothing: "padding-box text" reads back an origin of padding-box,
+    // the default, and that opened Placement on a gradient clipped to its text.
+    return (Object.keys(placement()) as Array<keyof Placement>)
+      .filter((key) => key !== 'clip' && key !== 'attachment')
+      .some((key) => !isDefault(key, layer[key] ?? ''));
   }
+
+  /**
+   * One of the layer's sections: a head that folds it, saying what it holds, so a folded section
+   * still reads ("Text · Stays"), and its body.
+   */
+  #renderSection(id: string, title: string, summary: string, body: TemplateResult): TemplateResult {
+    const open = !folded.has(id);
+    return html`<section class="sect" data-section=${id}>
+      <button
+        type="button"
+        class="shead"
+        aria-expanded=${String(open)}
+        @click=${() => {
+          if (open) folded.add(id);
+          else folded.delete(id);
+          this.requestUpdate();
+        }}
+      >
+        <span class="chev" aria-hidden="true">${icon('chevronDown', 10)}</span>
+        <span class="stitle">${title}</span>
+        <span class="sval">${summary}</span>
+      </button>
+      ${open ? html`<div class="sbody">${body}</div>` : nothing}
+    </section>`;
+  }
+
+  /** A layer's tags in the list: what it paints into and how it scrolls, where those are not the default. */
+  #renderTags(layer: BackgroundLayer): TemplateResult | typeof nothing {
+    const clip = clipOf(layer);
+    const attachment = attachmentOf(layer);
+    if (clip === 'border-box' && attachment === 'scroll') return nothing;
+    return html`<span class="tags">
+      ${clip !== 'border-box' ? html`<span class=${clip === 'text' ? 'tag accent' : 'tag'}>${CLIPS.find((one) => one.value === clip)?.label ?? clip}</span>` : nothing}
+      ${attachment !== 'scroll' ? html`<span class="tag">${attachment === 'fixed' ? 'Fixed' : attachment === 'local' ? 'Local' : attachment}</span>` : nothing}
+    </span>`;
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Paint: what the layer paints into, and what it does when the page scrolls */
+  /* ---------------------------------------------------------------------- */
+
+  /**
+   * The layer drawn in the element's three boxes, each ring a button: click one to paint into that
+   * box, or the Aa to paint only inside the letters. Beside it, a little page with the element on
+   * it: drag its slider to scroll, and the layer moves, stays or scrolls inside, as it will.
+   */
+  #renderPaint(layer: BackgroundLayer, index: number): TemplateResult {
+    const clip = clipOf(layer);
+    const text = clip === 'text';
+    const fill = paintStyle(layer);
+    const setClip = (value: string): void => this.#change((next) => {
+      next.layers[index]!.clip = value === 'border-box' ? '' : value;
+    }, true);
+    const rings = CLIPS.slice(0, 3).map((one) => html`<button
+      type="button"
+      class=${`ring ${one.label.toLowerCase()}`}
+      role="radio"
+      data-clip=${one.value}
+      aria-checked=${String(clip === one.value)}
+      tabindex=${clip === one.value || (text && one.value === 'border-box') ? '0' : '-1'}
+      aria-label=${`Paint into the ${one.label.toLowerCase()} box`}
+      title=${one.title}
+      @click=${() => setClip(one.value)}
+    ><span class="lbl">${one.label}</span></button>`);
+    const others = this.draft.layers.some((one, at) => at !== index && imageCss(one) && clipOf(one) !== 'text');
+    return html`
+      <div class="paint">
+        <div class="rings" role="radiogroup" aria-label="Paints into" @keydown=${(event: KeyboardEvent) => this.#ringKey(event, index)}>
+          ${text
+        ? html`<span class="fill" style=${`inset:6px;border-width:14px`}><b class="aa" style=${`${fill}-webkit-background-clip:text;background-clip:text;color:transparent`}>Aa</b></span>`
+        : html`<span class="fill" style=${`${fill}background-clip:${clip};background-origin:border-box`}></span>`}
+          ${rings}
+          <button
+            type="button"
+            class="aa-btn"
+            role="radio"
+            data-clip="text"
+            aria-checked=${String(text)}
+            tabindex=${text ? '0' : '-1'}
+            aria-label="Paint only inside the text"
+            title="Only inside the letters"
+            @click=${() => setClip('text')}
+          >Aa</button>
+        </div>
+        ${this.#renderScrollPreview(layer)}
+      </div>
+      ${text
+        ? html`<label class="textfill">
+            <input
+              type="checkbox"
+              .checked=${this.textTransparent}
+              @change=${(event: Event) => this.dispatchEvent(new CustomEvent('background-text-transparent', {
+          detail: { value: (event.target as HTMLInputElement).checked },
+          bubbles: true,
+          composed: true,
+        }))}
+            />
+            <span>Make the text transparent, so the layer shows through</span>
+          </label>
+          ${others ? html`<p class="note warn">The other layers still paint the whole box. Clip them to Text too, or the letters sit on a filled box.</p>` : nothing}`
+        : nothing}
+      <div class="row" style="margin-top:8px">
+        <span class="label">on scroll</span>
+        <heo-segmented
+          label="On scroll"
+          .options=${ATTACH_OPTIONS}
+          .value=${attachmentOf(layer)}
+          @segment-change=${(event: CustomEvent<{ value: string }>) => this.#change((next) => {
+          next.layers[index]!.attachment = event.detail.value === 'scroll' ? '' : event.detail.value;
+        }, true)}
+        ></heo-segmented>
+      </div>`;
+  }
+
+  /** The rings and the Aa are one radio group: the arrows move along it, as they do in any. */
+  #ringKey(event: KeyboardEvent, index: number): void {
+    const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const order = CLIPS.map((one) => one.value);
+    const at = order.indexOf(clipOf(this.draft.layers[index]!));
+    const next = order[(at + step + order.length) % order.length]!;
+    this.#change((draft) => { draft.layers[index]!.clip = next === 'border-box' ? '' : next; }, true);
+    void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>(`.rings [data-clip="${next}"]`)?.focus());
+  }
+
+  /**
+   * A little page with the element on it, to scroll by its slider. "Moves": the layer goes with the
+   * element. "Stays": it stays in the window and the element slides over it. "Inside": it scrolls
+   * with what is in the element, so here it drifts against the element's frame.
+   */
+  #renderScrollPreview(layer: BackgroundLayer): TemplateResult {
+    const attachment = attachmentOf(layer);
+    const fill = paintStyle(layer);
+    // The little page scrolls up to 60px; the element sits 30px down it and is 42px tall.
+    const y = Math.round(this.scrubbed * 0.6);
+    const top = 30 - y;
+    return html`<div class="scrub">
+      <div class="vp" aria-hidden="true">
+        ${attachment === 'fixed'
+        ? html`<span class="pinned" style=${`${fill}clip-path:inset(${top}px 7px calc(100% - ${top + 42}px) 7px round 5px)`}></span>`
+        : nothing}
+        <div class="doc" style=${`translate:0 ${-y}px`}>
+          <i></i><i style="width:60%"></i>
+          <span class="el" style=${attachment === 'fixed' ? '' : `${fill}${attachment === 'local' ? `background-position:0 ${-y * 0.8}px;` : ''}`}></span>
+          <i></i><i style="width:70%"></i><i></i><i style="width:50%"></i>
+        </div>
+      </div>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        .value=${String(this.scrubbed)}
+        aria-label="Scroll the preview page"
+        @input=${(event: Event) => { this.scrubbed = Number((event.target as HTMLInputElement).value); }}
+      />
+      <span class="cap">drag to scroll</span>
+    </div>`;
+  }
+
 
   #renderFill(layer: BackgroundLayer, index: number): TemplateResult {
     switch (layer.kind) {
@@ -1054,17 +1496,6 @@ export class HeoBackgroundEditor extends LitElement {
       this.#change((next) => { next.layers[index]!.position = value; }, commit), '0% 0%')}
         <span class="in">in ${origin.replace('-box', '')} box</span>
       </div>
-      <div class="clip">
-        <span>clip</span>
-        <heo-segmented
-          label="Paint into"
-          .options=${CLIP_OPTIONS}
-          .value=${clip}
-          @segment-change=${(event: CustomEvent<{ value: string }>) => this.#change((next) => {
-        next.layers[index]!.clip = event.detail.value === 'border-box' ? '' : event.detail.value;
-      }, true)}
-        ></heo-segmented>
-      </div>
     </div>`;
   }
 
@@ -1100,7 +1531,7 @@ export class HeoBackgroundEditor extends LitElement {
     const custom = Boolean(size) && !['auto', 'cover', 'contain'].includes(size);
     const set = (key: keyof Placement) => (value: string, commit: boolean): void =>
       this.#change((next) => { next.layers[index]![key] = value; }, commit);
-    const boxed = !!(layer.attachment || layer.origin);
+    const boxed = !isDefault('origin', layer.origin);
     return html`
       <div class="row" style="margin-top:8px">
         <span class="label">size</span>
@@ -1126,11 +1557,7 @@ export class HeoBackgroundEditor extends LitElement {
         ${this.#field('background-blend-mode', 'keyword', layer.blend, '', 'Blend mode', set('blend'), 'normal')}
       </div>
       <details class="more" ?open=${boxed}>
-        <summary>More: attachment, origin</summary>
-        <div class="row">
-          <span class="label">attachment</span>
-          ${this.#field('background-attachment', 'keyword', layer.attachment, '', 'Attachment', set('attachment'), 'scroll')}
-        </div>
+        <summary>More: origin</summary>
         <div class="row">
           <span class="label">origin</span>
           ${this.#field('background-origin', 'keyword', layer.origin, '', 'Origin', set('origin'), 'padding-box')}
@@ -1291,6 +1718,20 @@ function layerSummary(layer: BackgroundLayer): string {
     default:
       return `${(layer.raw ?? '').slice(0, 40)}${blend}`;
   }
+}
+
+/** Placement, as its section head says it: where the layer sits, and its size. */
+function placementSummary(layer: BackgroundLayer): string {
+  const parts = [layer.position.trim() || '0% 0%', layer.size.trim() || 'auto'];
+  if (layer.repeat.trim() && layer.repeat.trim() !== 'repeat') parts.push(layer.repeat.trim());
+  return parts.join(' · ');
+}
+
+/** A layer's paint, for the Paint drawings: its image, an image covering the box as it would at a glance. */
+function paintStyle(layer: BackgroundLayer): string {
+  const image = imageCss(layer);
+  if (!image) return '';
+  return layer.kind === 'image' ? `background-image:${image};background-size:cover;background-position:center;` : `background-image:${image};`;
 }
 
 function thumbStyle(layer: BackgroundLayer): string {

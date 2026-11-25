@@ -154,10 +154,9 @@
           await mouse(point('move', track, 0.5, 0.3), point('down', track, 0.5, 0.3), point('up', track, 0.5, 0.3));
           const withStop = style(a);
           const stopCount = shadow().querySelectorAll('.stop').length;
-          const groups = () => Array.from(shadow().querySelectorAll('.group')).map((one) => one.textContent.trim());
           // Placement is an image's business: a stack of only a gradient opened it, as noise.
           results.placementNeedsAnImage = {
-            notForAGradientAlone: !groups().includes('Placement') && !shadow().querySelector('.canvas') && !shadow().querySelector('heo-segmented[label="Size"]'),
+            notForAGradientAlone: !shadow().querySelector('[data-section="placement"]') && !shadow().querySelector('.canvas') && !shadow().querySelector('heo-segmented[label="Size"]'),
           };
           results.gradient = {
             aGradientIsWritten: added === 'background: linear-gradient(180deg, #00000000 0%, #000000aa 100%);',
@@ -244,7 +243,7 @@
           const url = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E";
           await send(field('background-image'), 'value-change', url);
           const image = style(a);
-          const placed = () => Boolean(shadow().querySelector('.canvas')) && Array.from(shadow().querySelectorAll('.group')).some((one) => one.textContent.trim() === 'Placement');
+          const placed = () => Boolean(shadow().querySelector('.canvas')) && Boolean(shadow().querySelector('[data-section="placement"]'));
           results.placementNeedsAnImage.anImageLayerHasIt = placed();
           // Re-query after each pick: the detail re-renders for the other layer.
           shadow().querySelector('.layer[data-layer="1"]').click();
@@ -285,7 +284,9 @@
           await mouse(point('move', origin, 0.98, 0.02, { alt: true }), point('down', origin, 0.98, 0.02, { alt: true }), point('up', origin, 0.98, 0.02, { alt: true }));
           const unsnapped = style(a);
           await apart();
-          await segment('Paint into', 'content-box');
+          // The clip is Paint's now: the content ring, a radio of the drawing.
+          shadow().querySelector('.rings [data-clip="content-box"]').click();
+          await settle(250);
           const clipped = style(a);
           const clipLine = shadow().querySelector('.clip-line')?.style.inset;
           results.canvas = {
@@ -324,6 +325,103 @@
           await settle(300);
           results.placement.removingALayerTakesItsBlend = style(a) === 'background: radial-gradient(at right top, #6366f1 50%, #ec4899 75%) red;';
           results.placementNeedsAnImage.removingTheImageClosesIt = !shadow().querySelector('.canvas');
+        }
+
+        progress.textContent = 'paint';
+        /*
+         * Paint, for every layer and not only an image: what it paints into (a ring of the drawing,
+         * or the Aa for the letters) and what it does when the page scrolls. Clip and attachment
+         * were an image's only, attachment behind "More", and the letters were not offered at all.
+         */
+        {
+          await apart();
+          shadow().querySelector('.layer[data-layer="0"]').click();
+          await settle(250);
+          const sections = () => Array.from(shadow().querySelectorAll('[data-section]')).map((one) => one.dataset.section).join(',');
+          const head = (id) => shadow().querySelector(`[data-section="${id}"] .shead`);
+          const tags = () => Array.from(shadow().querySelectorAll('.layer[data-layer="0"] .tag')).map((one) => one.textContent.trim()).join(',');
+          const sectionsOfAGradient = sections();
+          const paintSays = head('paint')?.querySelector('.sval')?.textContent.trim();
+          shadow().querySelector('.rings [data-clip="padding-box"]').click();
+          await settle(250);
+          const padded = style(a);
+          await apart();
+          // One radio group: the arrows move along the rings, then to the Aa.
+          shadow().querySelector('.rings [aria-checked="true"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, composed: true, cancelable: true }));
+          await settle(300);
+          const arrowed = style(a);
+          const focusFollows = shadow().activeElement?.dataset.clip === 'content-box';
+          await apart();
+          const entries = engine.history.size;
+          shadow().querySelector('.rings .aa-btn').click();
+          await settle(300);
+          const text = style(a);
+          const oneEntry = engine.history.size === entries + 1;
+          const see = getComputedStyle(a).color;
+          const box = shadow().querySelector('.textfill input');
+          const ticked = box?.checked === true;
+          const tagged = tags();
+          // "padding-box text" reads back an origin of padding-box, the default: it is no reason to open Placement.
+          const stillNoPlacement = sections() === 'fill,paint';
+          const lettersDrawn = /background-clip:text/.test(shadow().querySelector('.rings .fill .aa')?.getAttribute('style')?.replace(/\s/g, '') ?? '');
+          engine.undo();
+          await settle(300);
+          const undone = style(a);
+          await apart();
+          shadow().querySelector('.rings .aa-btn').click();
+          await settle(300);
+          await apart();
+          shadow().querySelector('.textfill input').click();
+          await settle(300);
+          const unticked = style(a);
+          await apart();
+          shadow().querySelector('.textfill input').click();
+          await settle(300);
+          await apart();
+          shadow().querySelector('.rings [data-clip="border-box"]').click();
+          await settle(300);
+          const back = style(a);
+          await apart();
+          await segment('On scroll', 'fixed');
+          const fixed = style(a);
+          const fixedTag = tags();
+          const range = shadow().querySelector('.scrub input[type="range"]');
+          const docBefore = shadow().querySelector('.vp .doc').style.translate;
+          range.value = '100';
+          range.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+          await settle(150);
+          const scrolled = shadow().querySelector('.vp .doc').style.translate !== docBefore && Boolean(shadow().querySelector('.vp .pinned'));
+          await apart();
+          await segment('On scroll', 'scroll');
+          const unfixed = style(a);
+          // A folded section still says what it holds.
+          head('paint').click();
+          await settle(200);
+          const foldedShut = head('paint').getAttribute('aria-expanded') === 'false' && !shadow().querySelector('.rings') &&
+            head('paint').querySelector('.sval').textContent.trim() === 'Border · Moves';
+          head('paint').click();
+          await settle(200);
+          const radial = 'radial-gradient(at right top, #6366f1 50%, #ec4899 75%)';
+          results.paint = {
+            aGradientHasFillAndPaint: sectionsOfAGradient === 'fill,paint',
+            paintSaysWhatItHolds: paintSays === 'Border · Moves',
+            aRingClips: padded === `background: ${radial} padding-box red;`,
+            theArrowsMoveAlongTheRings: arrowed === `background: ${radial} padding-box content-box red;` && focusFollows,
+            theAaClipsToTheText: text === `background: ${radial} padding-box text red; color: transparent;`,
+            andMakesTheTextTransparentInOneStep: oneEntry && see === 'rgba(0, 0, 0, 0)',
+            theSwitchIsShownTicked: ticked,
+            theDrawingPaintsTheLetters: lettersDrawn,
+            theLayerIsTagged: tagged === 'Text',
+            aTextClipDoesNotOpenPlacement: stillNoPlacement,
+            undoTakesBothBack: undone === `background: ${radial} padding-box content-box red;`,
+            untickingGivesTheTextItsColourBack: unticked === `background: ${radial} padding-box text red;`,
+            leavingTheTextPutsTheColourBack: back === `background: ${radial} red;`,
+            staysWritesFixed: fixed === `background: ${radial} fixed red;` && fixedTag === 'Fixed',
+            thePreviewScrollsOverAStillLayer: scrolled,
+            movesTakesItAway: unfixed === `background: ${radial} red;`,
+            aFoldedSectionStillSaysWhatItHolds: foldedShut,
+            andOpensAgain: Boolean(shadow().querySelector('.rings')),
+          };
         }
 
         progress.textContent = 'read';

@@ -405,6 +405,22 @@ const NEW_ID_RULE = 'new-id-rule';
  */
 const userToggled = new Map<string, boolean>();
 
+/**
+ * A colour that draws nothing: `transparent`, or any colour whose alpha is 0, as the browser gives
+ * a computed colour (`rgba(0, 0, 0, 0)`) or as it is written (`#0000`, `rgb(0 0 0 / 0%)`).
+ */
+function isTransparentColor(value: string): boolean {
+  const text = value.trim().toLowerCase();
+  if (text === 'transparent') return true;
+  if (/^#(?:[0-9a-f]{3}0|[0-9a-f]{6}00)$/.test(text)) return true;
+  // The alpha only: after a slash, or the fourth of four comma-separated values. "rgb(0, 0, 0)" ends
+  // in a 0 too, and read that way every black text counted as see-through.
+  const inside = /^(?:rgba?|hsla?|oklch|oklab|lab|lch|color)\((.*)\)$/.exec(text)?.[1];
+  if (!inside) return false;
+  const alpha = inside.includes('/') ? inside.split('/').pop()! : inside.split(',').length === 4 ? inside.split(',').pop()! : '';
+  return /^\s*0(?:\.0+)?%?\s*$/.test(alpha);
+}
+
 /** Close all: every card moves on this one clock, the HEO easing, a little longer than one card's morph. */
 const CLOSE_ALL_MS = 420;
 const CLOSE_ALL_EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
@@ -2712,9 +2728,38 @@ export class HeoStylesPanel extends HeoElement {
       const { spec, choice } = choiceOf('background');
       previewChosen(host, spec, choice.picked, composeBackground(next));
     };
+    /*
+     * A layer clipped to the text shows only where the letters are see-through: clipping the first
+     * layer to the text makes the text transparent in the same step (one undo), and un-clipping the
+     * last puts back the colour that step wrote. "Make the text transparent" in the editor does it
+     * by hand, either way.
+     */
+    const transparent = isTransparentColor(computed.color);
+    const clipsText = (background: Background): boolean => background.layers.some((layer) => layer.clip.trim().toLowerCase() === 'text');
+    const textWrites = (next: Background): Array<{ dest: NonNullable<RowPlace['picked']['dest']>; property: string; value: string; remove?: boolean }> => {
+      const before = clipsText(value);
+      const after = clipsText(next);
+      if (before === after) return [];
+      // Where the background is written, so the two stay together: a rule's gradient text, in the rule.
+      const dest = (asLonghands ? placeOfLonghand('background-clip') : choiceOf('background')).choice.picked.dest;
+      if (!dest) return [];
+      if (after && !transparent) return [{ dest, property: 'color', value: 'transparent' }];
+      const declared = cards.cascade('color').applying.find((one) => !one.via);
+      if (!after && transparent && declared && isTransparentColor(declared.value)) return [{ dest, property: 'color', value: '', remove: true }];
+      return [];
+    };
+    const setTextTransparent = (on: boolean): void => {
+      const dest = (asLonghands ? placeOfLonghand('background-clip') : choiceOf('background')).choice.picked.dest;
+      if (!dest) return;
+      this.editor.writeDeclarationsTo(
+        [on ? { dest, property: 'color', value: 'transparent' } : { dest, property: 'color', value: '', remove: true }],
+        on ? 'Make text transparent' : 'Remove transparent text',
+        el,
+      );
+    };
     const commit = (next: Background): void => {
       if (!asLonghands) {
-        this.#commitBackground(value, next, choiceOf('background').choice, choiceOf('background-color').choice, el, model, ctx);
+        this.#commitBackground(value, next, choiceOf('background').choice, choiceOf('background-color').choice, el, model, ctx, textWrites(next));
         return;
       }
       const writes = changedLonghands(next).flatMap((property) => {
@@ -2724,6 +2769,7 @@ export class HeoStylesPanel extends HeoElement {
         if (!dest || (!text && !own(property))) return [];
         return [{ dest, property, value: text, remove: !text }];
       });
+      writes.push(...textWrites(next).map((one) => ({ ...one, remove: Boolean(one.remove) })));
       this.editor.cancelPreview();
       if (writes.length) this.editor.writeDeclarationsTo(writes, 'Set background', el);
     };
@@ -2732,7 +2778,9 @@ export class HeoStylesPanel extends HeoElement {
       <heo-background-editor
         .value=${value}
         .computedColor=${computed.backgroundColor}
+        .textTransparent=${transparent}
         .fields=${fields}
+        @background-text-transparent=${(event: CustomEvent<{ value: boolean }>) => setTextTransparent(event.detail.value)}
         @background-input=${(event: CustomEvent<{ value: Background }>) => preview(event.detail.value)}
         @background-change=${(event: CustomEvent<{ value: Background }>) => commit(event.detail.value)}
         @background-revert=${() => this.editor.cancelPreview()}
@@ -2774,6 +2822,7 @@ export class HeoStylesPanel extends HeoElement {
     el: HTMLElement,
     model: ElementModel,
     ctx: CascadeContext,
+    extra: Array<{ dest: NonNullable<RowPlace['picked']['dest']>; property: string; value: string; remove?: boolean }> = [],
   ): void {
     const declaredIn = (property: string, into: WriteTarget | null): boolean => Boolean(into) &&
       model.cascade(property, ctx).applying.some((one) => !one.via && sameTarget(targetOf(one, el), into!));
@@ -2805,6 +2854,7 @@ export class HeoStylesPanel extends HeoElement {
         writes.push({ dest, property: 'background-blend-mode', value: blend, remove: !blend });
       }
     }
+    writes.push(...extra);
     if (!writes.length) return;
     this.editor.writeDeclarationsTo(writes, writes.some((one) => one.value) ? 'Set background' : 'Remove background', el);
   }

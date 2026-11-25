@@ -1,0 +1,1797 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Background: the gradient editor with clip and attachment</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  Follows demo/background-clip-attachment.prototype.html, where B ("On the drawing") was picked.
+  The question now: does B still fit once a gradient layer's whole editor is there too? That editor,
+  as src/ui/controls/background-editor.ts draws it: swatches, Linear | Radial, the angle dial (or
+  the shape and centre), the stop bar (drag a stop, click the bar to add one), and the stop list
+  (colour, position, remove, drag to reorder). Everything here works.
+
+  The page on the left is the real CSS. Variants: ?variant=1|2|3, the bottom bar, or ← → with
+  nothing in the panel focused.
+
+    1 — Stacked. Fill, Paint and Placement one under the other, each a section that folds, its
+        head saying what it holds ("Text · Stays"). Nothing moves; it is long.
+    2 — One drawing. A single drawing at the top of the layer is the gradient's preview and the
+        surface for three modes: Gradient (turn the angle, move a radial centre on it), Paint
+        (click a ring or the Aa) and Scroll (the drawing becomes the little page). The mode's
+        controls go under it.
+    3 — Paint strip. The gradient editor keeps the room. Paint and Scroll are one compact strip
+        between the layer list and the editor: the rings drawn small, and three scroll tiles.
+
+  Tokens: src/ui/tokens.ts. ◐ switches theme.
+-->
+  <style>
+    :root {
+      --heo-accent: #6366f1;
+      --heo-accent-ink: #fff;
+      --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 18%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 55%, transparent);
+      --heo-bg: oklch(19% 0.014 265);
+      --heo-bg-glass: oklch(16% 0.014 265 / 86%);
+      --heo-raised: oklch(23.5% 0.016 265);
+      --heo-sunken: oklch(16% 0.012 265);
+      --heo-hover: oklch(28% 0.018 265);
+      --heo-active: oklch(32% 0.02 265);
+      --heo-text: oklch(96% 0.005 265);
+      --heo-text-dim: oklch(74% 0.012 265);
+      --heo-text-faint: oklch(68% 0.014 265);
+      --heo-line: oklch(100% 0 0 / 9%);
+      --heo-line-strong: oklch(100% 0 0 / 16%);
+      --heo-focus-ring: color-mix(in oklab, var(--heo-accent) 60%, white);
+      --heo-accent-text: var(--heo-focus-ring);
+      --heo-warn-text: oklch(80% 0.14 85);
+      --heo-card-tint: 25.5% 0.03;
+      --heo-card-chip: 32% 0.07;
+      --heo-card-line: 72% 0.12;
+      --heo-r-sm: 7px;
+      --heo-r-md: 10px;
+      --heo-shadow-sm: 0 1px 2px oklch(0% 0 0 / 30%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(0% 0 0 / 60%), 0 6px 16px oklch(0% 0 0 / 30%);
+      --heo-font: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --heo-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --heo-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+      --heo-fast: 120ms var(--heo-ease);
+      --heo-med: 200ms var(--heo-ease);
+      --checker: repeating-conic-gradient(oklch(60% 0 0 / 28%) 0 25%, transparent 0 50%) 0 0 / 10px 10px;
+      --h: 340;
+    }
+
+    [data-theme='light'] {
+      --heo-bg: oklch(99% 0.002 265);
+      --heo-bg-glass: oklch(99% 0.002 265 / 92%);
+      --heo-raised: oklch(100% 0 0);
+      --heo-sunken: oklch(96.5% 0.004 265);
+      --heo-hover: oklch(95% 0.006 265);
+      --heo-active: oklch(92% 0.008 265);
+      --heo-text: oklch(24% 0.014 265);
+      --heo-text-dim: oklch(45% 0.014 265);
+      --heo-text-faint: oklch(50% 0.012 265);
+      --heo-line: oklch(20% 0.02 265 / 11%);
+      --heo-line-strong: oklch(20% 0.02 265 / 20%);
+      --heo-focus-ring: var(--heo-accent);
+      --heo-accent-text: color-mix(in oklab, var(--heo-accent) 80%, black);
+      --heo-warn-text: oklch(52% 0.12 70);
+      --heo-card-tint: 98.8% 0.01;
+      --heo-card-chip: 93% 0.045;
+      --heo-card-line: 60% 0.14;
+      --heo-shadow-sm: 0 1px 2px oklch(50% 0.03 265 / 12%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(50% 0.03 265 / 24%), 0 6px 16px oklch(50% 0.03 265 / 14%);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 372px;
+      gap: 24px;
+      padding: 20px 24px 20px 32px;
+      background: linear-gradient(135deg, #e9ecf2, #dfe4ee);
+      color: var(--heo-text);
+      font: 12.5px/1.45 var(--heo-font);
+    }
+
+    button,
+    input {
+      font: inherit;
+      color: inherit;
+    }
+
+    svg {
+      flex: none;
+    }
+
+    .sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+    }
+
+    /* ---- Stage --------------------------------------------------------- */
+    .stage {
+      display: grid;
+      align-content: start;
+      gap: 14px;
+      overflow: auto;
+      padding-bottom: 90px;
+      color: #1f2330;
+    }
+
+    .stage h1 {
+      margin: 0;
+      font: 600 11px/1 var(--heo-font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+
+    .stage h2 {
+      margin: 0;
+      font: 650 22px/1.2 var(--heo-font);
+    }
+
+    .notes {
+      max-width: 640px;
+      display: grid;
+      gap: 8px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: #333a48;
+    }
+
+    .notes .q {
+      padding: 10px 12px;
+      border-left: 3px solid var(--heo-accent);
+      border-radius: 0 8px 8px 0;
+      background: #fff;
+    }
+
+    .notes ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .notes b {
+      color: #111827;
+    }
+
+    .page {
+      position: relative;
+      height: 300px;
+      overflow: auto;
+      border-radius: 14px;
+      border: 1px solid #d5dbe6;
+      background: #f8fafc;
+    }
+
+    .page .bar {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 26px;
+      padding: 0 10px;
+      background: #eef1f6;
+      border-bottom: 1px solid #dde2ea;
+      color: #64748b;
+      font: 11px var(--heo-mono);
+    }
+
+    .page .bar i {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #cbd2dd;
+    }
+
+    .page .wrap {
+      padding: 24px 28px 420px;
+      font: 15px/1.6 system-ui;
+      color: #334155;
+    }
+
+    .page p {
+      margin: 0 0 14px;
+      max-width: 60ch;
+    }
+
+    #hero {
+      height: 180px;
+      overflow: auto;
+      margin: 0 0 22px;
+      padding: 20px 26px;
+      border: 10px dashed rgb(15 23 42 / 22%);
+      border-radius: 16px;
+      color: #0f172a;
+      outline: 2px solid #6366f1;
+      outline-offset: 3px;
+    }
+
+    #hero h3 {
+      margin: 0 0 6px;
+      font: 800 44px/1.05 system-ui;
+      letter-spacing: -0.02em;
+    }
+
+    #hero .more {
+      opacity: .9;
+      font-size: 14px;
+    }
+
+    .written {
+      max-width: 640px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #e2e8f0;
+      font: 11.5px/1.6 var(--heo-mono);
+      white-space: pre-wrap;
+    }
+
+    .written .k {
+      color: #a5b4fc;
+    }
+
+    /* ---- Dock, card, layers ------------------------------------------- */
+    .dock {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      border: 1px solid var(--heo-line);
+      border-radius: 14px;
+      background: var(--heo-bg-glass);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--heo-shadow-lg);
+      overflow: hidden;
+    }
+
+    .dhead {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px 8px;
+      border-bottom: 1px solid var(--heo-line);
+    }
+
+    .dhead b {
+      font-size: 14px;
+    }
+
+    .dhead code {
+      color: var(--heo-text-faint);
+      font: 10.5px var(--heo-mono);
+    }
+
+    .scroll {
+      flex: 1;
+      overflow: auto;
+      padding: 10px 12px 18px;
+    }
+
+    .card {
+      border: 1px solid oklch(var(--heo-card-line) var(--h) / 45%);
+      border-radius: 12px;
+      background: var(--heo-raised);
+    }
+
+    .chead {
+      display: grid;
+      grid-template-columns: 48px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 5px 6px;
+      border-radius: 11px 11px 0 0;
+      background: linear-gradient(90deg, oklch(var(--heo-card-chip) var(--h)), oklch(var(--heo-card-tint) var(--h)) 70%);
+    }
+
+    .chead .thumb {
+      height: 34px;
+      border-radius: 7px;
+    }
+
+    .chead b {
+      font-size: 11.5px;
+    }
+
+    .chead .sum {
+      display: block;
+      overflow: hidden;
+      color: var(--heo-text-dim);
+      font: 10px var(--heo-mono);
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .cbody {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+    }
+
+    .layers {
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-md);
+      overflow: hidden;
+    }
+
+    .layer {
+      all: unset;
+      display: grid;
+      grid-template-columns: 12px 34px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 6px 10px 6px 6px;
+      cursor: pointer;
+      border-left: 2px solid transparent;
+    }
+
+    .layer+.layer {
+      border-top: 1px solid var(--heo-line);
+    }
+
+    .layer:hover {
+      background: var(--heo-hover);
+    }
+
+    .layer.on {
+      background: var(--heo-hover);
+      border-left-color: var(--heo-accent);
+    }
+
+    .layer:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: -2px;
+    }
+
+    .layer .grip {
+      color: var(--heo-text-faint);
+      font-size: 10px;
+      letter-spacing: -2px;
+    }
+
+    .layer .sw {
+      width: 34px;
+      height: 30px;
+      border-radius: 7px;
+      box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+    }
+
+    .layer b {
+      font-size: 11.5px;
+      display: block;
+    }
+
+    .layer small {
+      color: var(--heo-text-faint);
+      font: 10px var(--heo-mono);
+    }
+
+    .tags {
+      display: flex;
+      gap: 4px;
+    }
+
+    .tag {
+      padding: 0 6px;
+      border-radius: 999px;
+      background: var(--heo-active);
+      color: var(--heo-text-dim);
+      font-size: 9.5px;
+      font-weight: 600;
+      line-height: 16px;
+      white-space: nowrap;
+    }
+
+    .tag.accent {
+      background: var(--heo-accent-soft);
+      color: var(--heo-accent-text);
+    }
+
+    .detail {
+      display: grid;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-md);
+      background: var(--heo-sunken);
+    }
+
+    .dtitle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11.5px;
+      font-weight: 650;
+    }
+
+    .group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+      font-weight: 650;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .group::after {
+      content: '';
+      flex: 1;
+      border-top: 1px solid var(--heo-line);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+    }
+
+    .row>.lab {
+      color: var(--heo-text-faint);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .vf {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 28px;
+      padding: 0 8px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-bg);
+      font: 11px var(--heo-mono);
+    }
+
+    .vf.muted {
+      color: var(--heo-text-faint);
+    }
+
+    .hint {
+      margin: 0;
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+
+    .hint.warn {
+      color: var(--heo-warn-text);
+    }
+
+    .seg {
+      display: flex;
+      gap: 3px;
+      padding: 3px;
+      border: 1px solid var(--heo-line);
+      border-radius: 8px;
+      background: var(--heo-bg);
+    }
+
+    .seg button {
+      all: unset;
+      flex: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      min-width: 0;
+      height: 24px;
+      padding: 0 6px;
+      border-radius: 5px;
+      color: var(--heo-text-faint);
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .seg button:hover {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+
+    .seg button[aria-pressed='true'] {
+      background: var(--heo-raised);
+      box-shadow: var(--heo-shadow-sm), inset 0 0 0 1px var(--heo-line-strong);
+      color: var(--heo-text);
+    }
+
+    .seg button:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 1px;
+    }
+
+    .seg button small {
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+      font-weight: 500;
+    }
+
+    .seg.lg button {
+      height: 30px;
+      flex-direction: column;
+      gap: 0;
+      line-height: 1.1;
+    }
+
+    .textopt {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 9px;
+      border-radius: 8px;
+      background: var(--heo-accent-soft);
+      font-size: 11px;
+    }
+
+    .textopt input {
+      accent-color: var(--heo-accent);
+    }
+
+    /* ---- The gradient editor (as background-editor.ts) ----------------- */
+    .presets {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(0, 1fr));
+      gap: 5px;
+    }
+
+    .preset {
+      all: unset;
+      aspect-ratio: 1;
+      border-radius: 6px;
+      cursor: pointer;
+      box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+      transition: transform var(--heo-fast);
+    }
+
+    .preset:hover {
+      transform: scale(1.08);
+    }
+
+    .preset:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    .gline {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .gline .seg {
+      flex: 1;
+    }
+
+    .dial {
+      position: relative;
+      width: 30px;
+      height: 30px;
+      flex: none;
+      border-radius: 50%;
+      background: var(--heo-bg);
+      box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .dial:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    .dial i {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 2px;
+      height: 12px;
+      margin-left: -1px;
+      transform-origin: 50% 0;
+      background: var(--heo-accent);
+      border-radius: 1px;
+    }
+
+    .dial b {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 6px;
+      height: 6px;
+      margin: -3px;
+      border-radius: 50%;
+      background: var(--heo-text);
+    }
+
+    .num {
+      width: 54px;
+      height: 28px;
+      padding: 0 6px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-bg);
+      font: 11px var(--heo-mono);
+    }
+
+    .num:focus {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 0;
+    }
+
+    .ib {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      color: var(--heo-text-dim);
+      cursor: pointer;
+    }
+
+    .ib:hover {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+
+    .ib[aria-pressed='true'] {
+      background: var(--heo-accent-soft);
+      color: var(--heo-accent-text);
+    }
+
+    .ib:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 1px;
+    }
+
+    .nine {
+      display: grid;
+      grid-template-columns: repeat(3, 10px);
+      gap: 3px;
+      padding: 4px;
+      border-radius: 6px;
+      background: var(--heo-bg);
+      box-shadow: inset 0 0 0 1px var(--heo-line);
+    }
+
+    .nine button {
+      all: unset;
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      background: var(--heo-active);
+      cursor: pointer;
+    }
+
+    .nine button[aria-pressed='true'] {
+      background: var(--heo-accent);
+    }
+
+    .nine button:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 1px;
+    }
+
+    .gbar {
+      position: relative;
+      height: 40px;
+      margin: 2px 7px 0;
+    }
+
+    .track {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 22px;
+      border-radius: 6px;
+      background: var(--checker);
+      box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+      cursor: copy;
+    }
+
+    .track i {
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+    }
+
+    .stop {
+      all: unset;
+      position: absolute;
+      top: 14px;
+      width: 14px;
+      height: 18px;
+      margin-left: -7px;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .stop::before {
+      content: '';
+      position: absolute;
+      left: 6px;
+      top: -14px;
+      width: 2px;
+      height: 14px;
+      background: #fff;
+      box-shadow: 0 0 0 1px rgb(0 0 0 / 35%);
+    }
+
+    .stop i {
+      position: absolute;
+      inset: 0;
+      border-radius: 4px;
+      border: 2px solid #fff;
+      box-shadow: 0 1px 3px rgb(0 0 0 / 40%);
+    }
+
+    .stop[aria-pressed='true'] i {
+      border-color: var(--heo-accent);
+      box-shadow: 0 0 0 2px var(--heo-accent-soft), 0 1px 3px rgb(0 0 0 / 40%);
+    }
+
+    .stop:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+
+    .scale {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 33px;
+      color: var(--heo-text-faint);
+      font: 9px var(--heo-mono);
+    }
+
+    .scale span {
+      position: absolute;
+      translate: -50% 0;
+    }
+
+    .stops {
+      display: grid;
+      gap: 4px;
+    }
+
+    .srow {
+      display: grid;
+      grid-template-columns: 14px minmax(0, 1fr) 62px 22px;
+      align-items: center;
+      gap: 6px;
+      padding: 2px;
+      border-radius: 7px;
+    }
+
+    .srow.sel {
+      background: var(--heo-hover);
+    }
+
+    .srow.over {
+      box-shadow: 0 -2px 0 var(--heo-accent);
+    }
+
+    .srow .g {
+      color: var(--heo-text-faint);
+      cursor: grab;
+      font-size: 10px;
+      letter-spacing: -2px;
+      text-align: center;
+    }
+
+    .cfield {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 28px;
+      padding: 0 3px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-bg);
+      font: 11px var(--heo-mono);
+    }
+
+    .cfield input[type='color'] {
+      width: 22px;
+      height: 20px;
+      padding: 0;
+      border: 0;
+      border-radius: 4px;
+      background: none;
+      cursor: pointer;
+    }
+
+    .pct {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      height: 28px;
+      padding: 0 6px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-bg);
+      font: 11px var(--heo-mono);
+    }
+
+    .pct input {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      font: inherit;
+      outline: none;
+    }
+
+    .kill {
+      all: unset;
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      color: var(--heo-text-faint);
+      cursor: pointer;
+    }
+
+    .kill:hover {
+      background: color-mix(in oklab, oklch(66% 0.19 22) 18%, transparent);
+      color: oklch(78% 0.14 22);
+    }
+
+    .kill:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+    }
+
+    .kill[disabled] {
+      visibility: hidden;
+    }
+
+    /* ---- B's drawing: rings to click, the Aa, and the scroll preview ---- */
+    .drawing {
+      position: relative;
+      height: 150px;
+      border-radius: 10px;
+      background: var(--heo-bg);
+      border: 1px solid var(--heo-line);
+      touch-action: none;
+      overflow: hidden;
+    }
+
+    .drawing.sm {
+      height: 74px;
+    }
+
+    .paint {
+      position: absolute;
+      inset: 8px;
+      border: 16px solid color-mix(in oklab, var(--heo-text-faint) 22%, transparent);
+      border-radius: 10px;
+      padding: 16px 20px;
+      pointer-events: none;
+      display: grid;
+      place-items: center;
+    }
+
+    .drawing.sm .paint {
+      inset: 5px;
+      border-width: 9px;
+      padding: 8px 10px;
+      border-radius: 7px;
+    }
+
+    .paint .aa {
+      font: 900 34px/1 system-ui;
+    }
+
+    .drawing.sm .paint .aa {
+      font-size: 20px;
+    }
+
+    .ring {
+      all: unset;
+      position: absolute;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    .ring .lbl {
+      position: absolute;
+      top: 2px;
+      left: 8px;
+      color: var(--heo-text-faint);
+      font-size: 9px;
+      font-weight: 650;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      pointer-events: none;
+      text-shadow: 0 1px 2px rgb(0 0 0 / 40%);
+    }
+
+    .ring:hover {
+      box-shadow: inset 0 0 0 2px var(--heo-accent-line);
+    }
+
+    .ring:hover .lbl {
+      color: var(--heo-text);
+    }
+
+    .ring[aria-checked='true'] {
+      box-shadow: inset 0 0 0 2px var(--heo-accent);
+    }
+
+    .ring[aria-checked='true'] .lbl {
+      color: #fff;
+    }
+
+    .ring:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 1px;
+    }
+
+    .ring.border {
+      inset: 8px;
+    }
+
+    .ring.padding {
+      inset: 24px;
+    }
+
+    .ring.content {
+      inset: 40px 44px;
+    }
+
+    .drawing.sm .ring.border {
+      inset: 5px;
+      border-radius: 7px;
+    }
+
+    .drawing.sm .ring.padding {
+      inset: 14px;
+      border-radius: 6px;
+    }
+
+    .drawing.sm .ring.content {
+      inset: 22px 24px;
+      border-radius: 4px;
+    }
+
+    .drawing.sm .ring .lbl {
+      display: none;
+    }
+
+    .aaBtn {
+      all: unset;
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      translate: -50% -50%;
+      padding: 2px 8px;
+      border-radius: 7px;
+      font: 900 30px/1 system-ui;
+      color: var(--heo-text);
+      cursor: pointer;
+      z-index: 2;
+    }
+
+    .drawing.sm .aaBtn {
+      font-size: 18px;
+      padding: 1px 5px;
+    }
+
+    .aaBtn:hover {
+      box-shadow: 0 0 0 2px var(--heo-accent-line);
+    }
+
+    .aaBtn[aria-checked='true'] {
+      box-shadow: 0 0 0 2px var(--heo-accent);
+      color: transparent;
+    }
+
+    .aaBtn:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    /* The gradient's own handles on the drawing (variant 2): the angle knob, the radial centre. */
+    .knobline {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 2px;
+      margin-left: -1px;
+      transform-origin: 50% 0;
+      background: rgb(255 255 255 / 85%);
+      box-shadow: 0 0 0 1px rgb(0 0 0 / 30%);
+      pointer-events: none;
+    }
+
+    .knob {
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      margin: -9px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 0 0 2px var(--heo-accent), 0 2px 6px rgb(0 0 0 / 40%);
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .knob:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 3px;
+    }
+
+    .hub {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 8px;
+      height: 8px;
+      margin: -4px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 0 0 1px rgb(0 0 0 / 35%);
+      pointer-events: none;
+    }
+
+    .snap9 {
+      position: absolute;
+      width: 6px;
+      height: 6px;
+      margin: -3px;
+      border-radius: 50%;
+      background: rgb(255 255 255 / 55%);
+      pointer-events: none;
+    }
+
+    .dcap {
+      position: absolute;
+      left: 8px;
+      bottom: 6px;
+      padding: 1px 7px;
+      border-radius: 999px;
+      background: rgb(0 0 0 / 45%);
+      color: #fff;
+      font: 600 10px var(--heo-mono);
+      pointer-events: none;
+    }
+
+    .scrub {
+      display: grid;
+      gap: 4px;
+    }
+
+    .vp {
+      position: relative;
+      height: 110px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--heo-raised);
+    }
+
+    .vp.big {
+      height: 150px;
+    }
+
+    .vp .doc {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 240px;
+    }
+
+    .vp .doc .line {
+      height: 4px;
+      margin: 6px 8px;
+      border-radius: 2px;
+      background: var(--heo-line-strong);
+    }
+
+    .vp .doc .el {
+      height: 44px;
+      margin: 8px 6px;
+      border-radius: 5px;
+      border: 1px solid var(--heo-text-faint);
+    }
+
+    .vp .pinned {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .scrub input[type='range'] {
+      width: 100%;
+      accent-color: var(--heo-accent);
+    }
+
+    .scrub .cap {
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+      text-align: center;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 82px;
+      gap: 8px;
+    }
+
+    /* Sections that fold (variant 1). */
+    .sect {
+      display: grid;
+      gap: 10px;
+    }
+
+    .shead {
+      all: unset;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+      font-weight: 650;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .shead::after {
+      content: '';
+      flex: 1;
+      order: 2;
+      border-top: 1px solid var(--heo-line);
+    }
+
+    .shead .chev {
+      transition: rotate var(--heo-fast);
+    }
+
+    .shead[aria-expanded='false'] .chev {
+      rotate: -90deg;
+    }
+
+    .shead .val {
+      order: 3;
+      color: var(--heo-text-dim);
+      font: 500 10px var(--heo-mono);
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .shead:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+
+    /* The paint strip (variant 3). */
+    .strip {
+      display: grid;
+      grid-template-columns: 96px minmax(0, 1fr);
+      gap: 8px;
+      align-items: stretch;
+    }
+
+    .stiles {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 5px;
+    }
+
+    .stile {
+      all: unset;
+      display: grid;
+      justify-items: center;
+      align-content: center;
+      gap: 4px;
+      border: 1px solid var(--heo-line);
+      border-radius: 8px;
+      background: var(--heo-bg);
+      color: var(--heo-text-dim);
+      font-size: 10px;
+      cursor: pointer;
+    }
+
+    .stile:hover {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+
+    .stile[aria-checked='true'] {
+      border-color: var(--heo-accent);
+      color: var(--heo-text);
+      font-weight: 600;
+      box-shadow: 0 0 0 3px var(--heo-accent-soft);
+    }
+
+    .stile:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    .mini {
+      position: relative;
+      width: 40px;
+      height: 30px;
+      border: 1px solid var(--heo-text-faint);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .mini .e {
+      position: absolute;
+      left: 5px;
+      right: 5px;
+      top: 5px;
+      height: 16px;
+      border-radius: 2px;
+      border: 1px solid var(--heo-text-faint);
+    }
+
+    .mini .b {
+      position: absolute;
+      inset: 0;
+      opacity: .9;
+    }
+
+    .stile:hover .mini.moves .e,
+    .stile:hover .mini.moves .b,
+    .stile:hover .mini.stays .e,
+    .stile:hover .mini.inside .b {
+      animation: drift 1.2s var(--heo-ease) infinite alternate;
+    }
+
+    @keyframes drift {
+      to {
+        translate: 0 -8px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+
+      *,
+      *::before,
+      *::after {
+        animation: none !important;
+        transition-duration: 1ms !important;
+      }
+    }
+
+    .proto-bar {
+      position: fixed;
+      left: calc((100% - 372px) / 2);
+      bottom: 18px;
+      translate: -50% 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      background: #111;
+      color: #fff;
+      font: 600 12px var(--heo-font);
+      z-index: 50;
+      box-shadow: 0 10px 30px rgb(0 0 0 / 30%);
+    }
+
+    .proto-bar button {
+      border: 0;
+      background: #333;
+      color: #fff;
+      border-radius: 999px;
+      min-width: 28px;
+      height: 28px;
+      cursor: pointer;
+    }
+
+    .proto-bar span {
+      padding: 0 10px;
+      min-width: 220px;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <h1>Prototype · Styles › Background</h1>
+    <h2>The gradient editor, with clip and attachment</h2>
+    <div class="notes" id="notes"></div>
+    <div class="page" id="page">
+      <div class="bar"><i></i><i></i><i></i>&nbsp; pottery.example — scroll this page</div>
+      <div class="wrap">
+        <div id="hero">
+          <h3>Slow pottery<br>for fast mornings</h3>
+          <div class="more">Wheel-thrown stoneware, glazed by hand. Scroll inside this box for “Inside”
+            (local).<br><br>Each piece is fired twice.<br>Every glaze is food-safe.<br>Made in small batches.</div>
+        </div>
+        <p>Our studio makes cups, bowls and plates in small runs. Everything is thrown on the wheel.</p>
+        <p>Scroll this page: with “Moves”, the background travels with the hero; with “Stays”, the hero slides over it.
+        </p>
+      </div>
+    </div>
+    <div class="written" id="written"></div>
+  </main>
+
+  <aside class="dock" aria-label="Styles panel (prototype)">
+    <div class="dhead"><b>Styles</b><code>div#hero</code></div>
+    <div class="scroll" id="scroll">
+      <div class="card" id="card"></div>
+    </div>
+  </aside>
+  <input type="color" id="picker" class="sr" tabindex="-1" aria-hidden="true">
+
+  <div class="proto-bar" role="toolbar" aria-label="Prototype variant switcher">
+    <button type="button" data-step="-1" aria-label="Previous variant">←</button>
+    <span id="proto-label"></span>
+    <button type="button" data-step="1" aria-label="Next variant">→</button>
+    <button type="button" id="theme" aria-label="Switch theme" title="Dark / light">◐</button>
+  </div>
+
+  <script>
+    const ICON = {
+      up: 'M8 13V3M4 7l4-4 4 4', right: 'M3 8h10M9 4l4 4-4 4', down: 'M8 3v10M4 9l4 4 4-4', left: 'M13 8H3M7 4L3 8l4 4',
+      chev: 'M4 6l4 4 4-4', trash: 'M3.5 4.5h9M6.5 4.5V3h3v1.5M5 4.5l.6 8h4.8l.6-8',
+    };
+    const svg = (name, size = 12) => `<svg viewBox="0 0 16 16" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICON[name]}"/></svg>`;
+    const PRESETS = [
+      ['#f43f5e', '#6366f1'], ['#f97316', '#facc15'], ['#06b6d4', '#3b82f6'], ['#22c55e', '#14b8a6'],
+      ['#a855f7', '#ec4899'], ['#0f172a', '#334155'], ['#fde68a', '#fb7185'], ['#e0e7ff', '#c7d2fe'],
+    ];
+    const CLIPS = [
+      { value: 'border-box', label: 'Border', title: 'Paints under the border too' },
+      { value: 'padding-box', label: 'Padding', title: 'Stops at the inside of the border' },
+      { value: 'content-box', label: 'Content', title: 'Only behind the content' },
+      { value: 'text', label: 'Text', title: 'Only inside the letters' },
+    ];
+    const ATTACH = [
+      { value: 'scroll', label: 'Moves', css: 'scroll', cls: 'moves', title: 'scroll: travels with the element' },
+      { value: 'fixed', label: 'Stays', css: 'fixed', cls: 'stays', title: 'fixed: pinned to the window' },
+      { value: 'local', label: 'Inside', css: 'local', cls: 'inside', title: 'local: scrolls with what is inside the element' },
+    ];
+    const NINE = ['left top', 'top', 'right top', 'left', 'center', 'right', 'left bottom', 'bottom', 'right bottom'];
+    const NINE_XY = { 'left top': [0, 0], top: [50, 0], 'right top': [100, 0], left: [0, 50], center: [50, 50], right: [100, 50], 'left bottom': [0, 100], bottom: [50, 100], 'right bottom': [100, 100] };
+
+    const state = {
+      variant: (new URLSearchParams(location.search).get('variant') || '1'),
+      selected: 0,
+      stop: 0,
+      mode: 'gradient',
+      open: { fill: true, paint: true, place: true },
+      transparentText: true,
+      scrub: 0,
+      color: '#fde68a',
+      layers: [
+        { name: 'Gradient', g: { kind: 'linear', angle: 120, shape: 'ellipse', at: 'center', stops: [{ c: '#f43f5e', at: 0 }, { c: '#a855f7', at: 55 }, { c: '#6366f1', at: 100 }] }, clip: 'border-box', attach: 'scroll' },
+        { name: 'Image', image: 'radial-gradient(circle at 2px 2px, rgb(255 255 255 / 55%) 1.6px, transparent 0)', size: '18px 18px', clip: 'border-box', attach: 'scroll' },
+      ],
+    };
+    if (!['1', '2', '3'].includes(state.variant)) state.variant = '1';
+
+    const NOTES = {
+      1: {
+        name: 'Stacked', html: `<p class="q"><b>Fill, Paint and Placement, one under the other.</b> Each is a section that folds, and its heading says what it holds (<code>Linear · 3 stops</code>, <code>Text · Stays</code>), so a folded section still reads.</p>
+        <ul><li>The gradient editor is exactly today's. B's drawing and the scroll preview sit under it, unchanged from the last round.</li>
+        <li>Nothing changes place as you work. The cost is length: the layer's detail is about 780px with every section open, against about 640px for 2 and 3.</li></ul>` },
+      2: {
+        name: 'One drawing', html: `<p class="q"><b>One drawing at the top of the layer is the preview and the surface</b> for three modes, switched just above it. Each mode button shows its current value:</p>
+        <ul><li><b>Gradient:</b> drag the knob round the drawing to turn the angle (Shift snaps to 15°). For a radial gradient, drag its centre, which snaps to the nine dots. The swatches, the stop bar and the stop list are under the drawing.</li>
+        <li><b>Paint:</b> click a ring or the Aa, as in B.</li>
+        <li><b>Scroll:</b> the drawing becomes the little page. Drag the slider to compare Moves, Stays and Inside.</li>
+        <li>Compact, and every tool works on the same picture. The modes hide what is not in use.</li></ul>` },
+      3: {
+        name: 'Paint strip', html: `<p class="q"><b>The gradient editor keeps its room.</b> Paint and Scroll become one compact strip under the layer list: B's rings drawn small (click a ring or the Aa) and three scroll tiles that animate on hover.</p>
+        <ul><li>Always visible and always one click, but with the least space. The strip has no slider preview; the tiles show the motion instead.</li>
+        <li>The full gradient editor is below it, as today.</li></ul>` },
+    };
+
+    /* ---- CSS ----------------------------------------------------------- */
+    const stopsCss = (g) => [...g.stops].sort((a, b) => a.at - b.at).map((s) => `${s.c} ${Math.round(s.at)}%`).join(', ');
+    const gradCss = (g) => g.kind === 'linear' ? `linear-gradient(${Math.round(g.angle)}deg, ${stopsCss(g)})` : `radial-gradient(${g.shape} at ${g.at}, ${stopsCss(g)})`;
+    const imageOf = (layer) => layer.g ? gradCss(layer.g) : layer.image;
+    const fillOf = (layer) => `background-image:${imageOf(layer)};background-size:${layer.size || 'auto'};`;
+    const anyText = () => state.layers.some((l) => l.clip === 'text');
+    function written() {
+      const lines = [
+        ['background-image', state.layers.map(imageOf).join(',\n    ')],
+        ['background-size', state.layers.map((l) => l.size || 'auto').join(', ')],
+        ['background-color', state.color],
+      ];
+      if (state.layers.some((l) => l.clip !== 'border-box')) {
+        const clip = state.layers.map((l) => l.clip).join(', ');
+        if (anyText()) lines.push(['-webkit-background-clip', clip]);
+        lines.push(['background-clip', clip]);
+      }
+      if (state.layers.some((l) => l.attach !== 'scroll')) lines.push(['background-attachment', state.layers.map((l) => l.attach).join(', ')]);
+      if (anyText() && state.transparentText) lines.push(['color', 'transparent']);
+      return lines;
+    }
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const hex = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+    const mix = (a, b, t) => '#' + hex(a).map((v, i) => Math.round(v + (hex(b)[i] - v) * t).toString(16).padStart(2, '0')).join('');
+
+    /* ---- Pieces -------------------------------------------------------- */
+    function gradientEditor(g, { dial = true } = {}) {
+      const order = g.stops.map((_, k) => k).sort((a, b) => g.stops[a].at - g.stops[b].at);
+      const line = `linear-gradient(90deg, ${stopsCss(g)})`;
+      const kind = `<div class="seg" role="group" aria-label="Gradient kind">${['linear', 'radial'].map((k) => `<button type="button" data-kind="${k}" aria-pressed="${g.kind === k}">${k === 'linear' ? 'Linear' : 'Radial'}</button>`).join('')}</div>`;
+      const shape = g.kind === 'linear'
+        ? `${dial ? '' : '<span style="color:var(--heo-text-faint);font-size:10.5px">angle</span>'}${dial ? `<span class="dial" role="slider" tabindex="0" aria-label="Angle" aria-valuemin="0" aria-valuemax="359" aria-valuenow="${Math.round(g.angle)}" data-dial title="Drag to turn; Shift snaps to 15°"><i style="transform:rotate(${g.angle + 180}deg)"></i><b></b></span>` : ''}
+           <input class="num" data-angle type="number" min="0" max="359" value="${Math.round(g.angle)}" aria-label="Angle in degrees">
+           ${[[0, 'up'], [90, 'right'], [180, 'down'], [270, 'left']].map(([a, n]) => `<button type="button" class="ib" data-angle-to="${a}" aria-label="Angle ${a}°" aria-pressed="${Math.round(g.angle) === a}">${svg(n)}</button>`).join('')}`
+        : `<div class="seg" role="group" aria-label="Shape" style="flex:none">${['circle', 'ellipse'].map((s) => `<button type="button" data-shape="${s}" aria-pressed="${g.shape === s}">${s === 'circle' ? 'Circle' : 'Ellipse'}</button>`).join('')}</div>
+           <span style="color:var(--heo-text-faint);font-size:10.5px">at</span>
+           <span class="nine" role="group" aria-label="Centre">${NINE.map((p) => `<button type="button" data-center="${p}" aria-label="Centre ${p}" aria-pressed="${g.at === p}"></button>`).join('')}</span>`;
+      return `
+        <div class="presets" role="group" aria-label="Gradient swatches">${PRESETS.map((p, i) => `<button type="button" class="preset" data-preset="${i}" aria-label="Gradient swatch ${i + 1}" style="background:linear-gradient(135deg, ${p[0]}, ${p[1]})"></button>`).join('')}</div>
+        <div class="gline">${kind}</div>
+        <div class="gline">${shape}</div>
+        <div class="gbar">
+          <div class="track" data-track title="Click to add a stop"><i style="background:${line}"></i></div>
+          ${g.stops.map((s, k) => `<button type="button" class="stop" data-stop="${k}" style="left:${s.at}%" aria-pressed="${k === state.stop}" aria-label="Stop ${k + 1}: ${s.c} at ${Math.round(s.at)}%. Arrows move it, Delete removes it, Enter picks its colour."><i style="background:${s.c}"></i></button>`).join('')}
+          <div class="scale" aria-hidden="true">${[0, 25, 50, 75, 100].map((n) => `<span style="left:${n}%">${n}</span>`).join('')}</div>
+        </div>
+        <div class="stops" role="list" aria-label="Color stops">${order.map((k) => {
+        const s = g.stops[k];
+        return `<div class="srow${k === state.stop ? ' sel' : ''}" role="listitem" draggable="true" data-row="${k}">
+            <span class="g" title="Drag to reorder the colours" aria-hidden="true">⋮⋮</span>
+            <label class="cfield"><input type="color" value="${s.c}" data-color="${k}" aria-label="Stop ${k + 1} colour">${s.c}</label>
+            <label class="pct"><input type="number" min="0" max="100" value="${Math.round(s.at)}" data-at="${k}" aria-label="Stop ${k + 1} position, percent">%</label>
+            <button type="button" class="kill" data-remove="${k}" aria-label="Remove stop ${k + 1}" ${g.stops.length > 2 ? '' : 'disabled'}>${svg('trash')}</button>
+          </div>`;
+      }).join('')}</div>`;
+    }
+
+    /* B's drawing: the layer painted with its clip, the rings and the Aa to click. */
+    function paintDrawing(layer, small = false) {
+      const rings = CLIPS.slice(0, 3).map((c) => `<button type="button" class="ring ${c.label.toLowerCase()}" role="radio" aria-checked="${layer.clip === c.value}" data-clip="${c.value}" title="${c.title}" aria-label="Paint into the ${c.label.toLowerCase()} box"><span class="lbl">${c.label}</span></button>`).join('');
+      const isText = layer.clip === 'text';
+      const paint = isText
+        ? `<div class="paint"><span class="aa" style="${fillOf(layer)}-webkit-background-clip:text;background-clip:text;color:transparent">Aa</span></div>`
+        : `<div class="paint" style="${fillOf(layer)}background-clip:${layer.clip};background-origin:border-box"></div>`;
+      return `<div class="drawing${small ? ' sm' : ''}" role="radiogroup" aria-label="Paints into">${paint}${rings}
+        <button type="button" class="aaBtn" role="radio" aria-checked="${isText}" data-clip="text" title="Only inside the letters" aria-label="Paint into the text">Aa</button></div>`;
+    }
+
+    function scrollPreview(layer, big = false) {
+      const y = state.scrub;
+      const fixed = layer.attach === 'fixed';
+      const local = layer.attach === 'local';
+      const top = 28 - y;
+      return `<div class="scrub">
+        <div class="vp${big ? ' big' : ''}" title="Drag the slider to scroll this little page">
+          ${fixed ? `<span class="pinned" style="${fillOf(layer)}clip-path:inset(${top}px 7px calc(100% - ${top + 46}px) 7px round 5px)"></span>` : ''}
+          <div class="doc" style="translate:0 ${-y}px">
+            <div class="line"></div><div class="line" style="width:60%"></div>
+            <div class="el" style="${fixed ? '' : fillOf(layer)}${local ? `background-position:0 ${-y * 0.8}px;` : ''}"></div>
+            <div class="line"></div><div class="line" style="width:70%"></div><div class="line"></div><div class="line" style="width:50%"></div>
+          </div>
+        </div>
+        <input type="range" min="0" max="60" value="${y}" data-scrub aria-label="Scroll the preview">
+        <span class="cap">drag to scroll</span></div>`;
+    }
+
+    const attachSeg = (layer) => `<div class="seg" role="radiogroup" aria-label="When the page scrolls">${ATTACH.map((a) => `<button type="button" role="radio" aria-pressed="${layer.attach === a.value}" aria-checked="${layer.attach === a.value}" data-attach="${a.value}" title="${a.title}">${a.label}</button>`).join('')}</div>`;
+
+    function textNote(layer) {
+      if (layer.clip !== 'text') return '';
+      return `<label class="textopt"><input type="checkbox" data-transparent ${state.transparentText ? 'checked' : ''}> Make the text transparent, so the layer shows through</label>
+        ${state.layers.some((l) => l.clip !== 'text') ? '<p class="hint warn">The other layers still paint the whole box. Clip them to Text too, or the letters sit on a filled box.</p>' : ''}`;
+    }
+
+    const clipLabel = (l) => CLIPS.find((c) => c.value === l.clip).label;
+    const attachLabel = (l) => ATTACH.find((a) => a.value === l.attach).label;
+    const fillLabel = (l) => l.g ? `${l.g.kind === 'linear' ? `Linear ${Math.round(l.g.angle)}°` : `Radial ${l.g.shape}`} · ${l.g.stops.length} stops` : 'url(dots.svg)';
+
+    function fillBody(layer) {
+      return layer.g ? gradientEditor(layer.g) : `<div class="row"><span class="lab">image</span><span class="vf">url(dots.svg)<span>⌄</span></span></div>`;
+    }
+    const placementBody = (layer) => `<div class="row"><span class="lab">size</span><span class="vf ${layer.size ? '' : 'muted'}">${layer.size || 'auto'}<span>⌄</span></span></div>
+      <div class="row"><span class="lab">repeat</span><span class="vf muted">repeat<span>⌄</span></span></div>`;
+
+    /* 1: stacked sections. */
+    function detail1(layer) {
+      const sect = (id, title, value, body) => `<div class="sect"><button type="button" class="shead" data-sect="${id}" aria-expanded="${state.open[id]}"><span class="chev">${svg('chev', 10)}</span>${title}<span class="val">${value}</span></button>${state.open[id] ? body : ''}</div>`;
+      return [
+        sect('fill', 'Fill', fillLabel(layer), fillBody(layer)),
+        sect('paint', 'Paint', `${clipLabel(layer)} · ${attachLabel(layer)}`, `<div class="split">${paintDrawing(layer)}${scrollPreview(layer)}</div>
+          ${textNote(layer)}<div class="row"><span class="lab">on scroll</span>${attachSeg(layer)}</div>`),
+        sect('place', 'Placement', layer.size || 'auto', placementBody(layer)),
+      ].join('');
+    }
+
+    /* 2: one drawing, three modes. */
+    function gradientDrawing(layer) {
+      const g = layer.g;
+      const paint = `<div class="paint" style="${fillOf(layer)}background-origin:border-box"></div>`;
+      if (!g) return `<div class="drawing">${paint}</div>`;
+      if (g.kind === 'linear') {
+        const r = 52;
+        const rad = ((g.angle - 90) * Math.PI) / 180;
+        return `<div class="drawing" data-surface>${paint}
+          <span class="knobline" style="height:${r}px;transform:rotate(${g.angle + 180}deg)"></span><span class="hub"></span>
+          <span class="knob" role="slider" tabindex="0" data-knob aria-label="Angle" aria-valuenow="${Math.round(g.angle)}" aria-valuemin="0" aria-valuemax="359" title="Drag to turn; Shift snaps to 15°" style="left:calc(50% + ${Math.cos(rad) * r}px);top:calc(50% + ${Math.sin(rad) * r}px)"></span>
+          <span class="dcap">${Math.round(g.angle)}°</span></div>`;
+      }
+      const [x, y] = NINE_XY[g.at] ?? [50, 50];
+      return `<div class="drawing" data-surface>${paint}
+        ${Object.values(NINE_XY).map(([a, b]) => `<span class="snap9" style="left:calc(24px + (100% - 48px) * ${a / 100});top:calc(24px + (100% - 48px) * ${b / 100})"></span>`).join('')}
+        <span class="knob" role="slider" tabindex="0" data-centre aria-label="Centre: ${g.at}. Arrows move it." title="Drag the centre; it snaps to the dots" style="left:calc(24px + (100% - 48px) * ${x / 100});top:calc(24px + (100% - 48px) * ${y / 100})"></span>
+        <span class="dcap">${g.shape} at ${g.at}</span></div>`;
+    }
+    function detail2(layer) {
+      const modes = [
+        { id: 'gradient', label: layer.g ? 'Gradient' : 'Image', val: layer.g ? (layer.g.kind === 'linear' ? `${Math.round(layer.g.angle)}°` : layer.g.shape) : 'dots' },
+        { id: 'paint', label: 'Paint', val: clipLabel(layer) },
+        { id: 'scroll', label: 'Scroll', val: attachLabel(layer) },
+      ];
+      const seg = `<div class="seg lg" role="tablist" aria-label="Edit">${modes.map((m) => `<button type="button" role="tab" aria-selected="${state.mode === m.id}" aria-pressed="${state.mode === m.id}" data-mode="${m.id}">${m.label}<small>${m.val}</small></button>`).join('')}</div>`;
+      let surface; let below;
+      if (state.mode === 'gradient') {
+        surface = gradientDrawing(layer);
+        // The drawing turns the angle and moves the centre, so the editor under it drops its dial.
+        below = layer.g ? gradientEditor(layer.g, { dial: false }) : fillBody(layer);
+      } else if (state.mode === 'paint') {
+        surface = paintDrawing(layer);
+        below = textNote(layer) || '<p class="hint">Click a ring to paint into that box, or the Aa to paint only inside the letters.</p>';
+      } else {
+        surface = scrollPreview(layer, true);
+        below = `<div class="row"><span class="lab">on scroll</span>${attachSeg(layer)}</div><p class="hint">Drag the slider: “Stays” keeps the layer still while the element moves over it.</p>`;
+      }
+      return `${seg}${surface}${below}<div class="group">Placement</div>${placementBody(layer)}`;
+    }
+
+    /* 3: a compact strip above the editor. */
+    function detail3(layer) {
+      const tiles = ATTACH.map((a) => `<button type="button" class="stile" role="radio" aria-checked="${layer.attach === a.value}" data-attach="${a.value}" title="${a.title}"><span class="mini ${a.cls}"><span class="b" style="${fillOf(layer)}"></span><span class="e"></span></span>${a.label}</button>`).join('');
+      return `<div class="group">Paint · Scroll</div>
+        <div class="strip">${paintDrawing(layer, true)}<div class="stiles" role="radiogroup" aria-label="When the page scrolls">${tiles}</div></div>
+        ${textNote(layer)}
+        <div class="group">Fill</div>${fillBody(layer)}
+        <div class="group">Placement</div>${placementBody(layer)}`;
+    }
+
+    function layerRow(layer, index) {
+      const tags = [layer.clip !== 'border-box' ? `<span class="tag ${layer.clip === 'text' ? 'accent' : ''}">${clipLabel(layer)}</span>` : '', layer.attach !== 'scroll' ? `<span class="tag">${layer.attach === 'fixed' ? 'Fixed' : 'Local'}</span>` : ''].join('');
+      return `<button type="button" class="layer${state.selected === index ? ' on' : ''}" data-layer="${index}"><span class="grip" aria-hidden="true">⋮⋮</span><span class="sw" style="${fillOf(layer)}background-color:#334155"></span>
+        <span><b>${layer.name}</b><small>${fillLabel(layer)}</small></span><span class="tags">${tags}</span></button>`;
+    }
+
+    function render() {
+      const layer = state.layers[state.selected];
+      const detail = state.variant === '1' ? detail1(layer) : state.variant === '2' ? detail2(layer) : detail3(layer);
+      const keep = document.getElementById('scroll').scrollTop;
+      document.getElementById('card').innerHTML = `
+        <div class="chead"><span class="thumb" style="background-image:${state.layers.map(imageOf).join(',')};background-size:${state.layers.map((l) => l.size || 'auto').join(',')};background-color:${state.color}"></span>
+          <span><b>Background</b><span class="sum">${anyText() ? 'text · ' : ''}${state.layers.some((l) => l.attach === 'fixed') ? 'fixed · ' : ''}${esc(imageOf(state.layers[0]))}</span></span><span style="color:var(--heo-text-dim)">⌃</span></div>
+        <div class="cbody">
+          <div class="layers">${state.layers.map(layerRow).join('')}
+            <div class="layer" style="cursor:default"><span></span><span class="sw" style="background:${state.color}"></span><span><b>Color</b><small>${state.color}</small></span><span></span></div></div>
+          <div class="detail"><div class="dtitle">${layer.name}</div>${detail}</div>
+          <p class="hint">Top layer first; the color is always underneath, clipped like the bottom layer.</p>
+        </div>`;
+      document.getElementById('scroll').scrollTop = keep;
+      document.getElementById('notes').innerHTML = NOTES[state.variant].html;
+      document.getElementById('proto-label').textContent = `${state.variant} — ${NOTES[state.variant].name}`;
+      const hero = document.getElementById('hero');
+      hero.removeAttribute('style');
+      for (const [p, v] of written()) hero.style.setProperty(p, v.replace(/\n\s*/g, ' '));
+      document.getElementById('written').innerHTML = `<span class="k">#hero</span> {\n${written().map(([p, v]) => `  ${p}: ${esc(v)};`).join('\n')}\n}`;
+    }
+
+    /* After a render, focus goes back to the control that was used, by its data attribute. */
+    function refocus(selector) {
+      if (selector) document.querySelector(`#card ${selector}`)?.focus({ preventScroll: true });
+    }
+    const g = () => state.layers[state.selected].g;
+    function update(fn, focus) { fn(); render(); refocus(focus); }
+
+    /* ---- Events -------------------------------------------------------- */
+    const card = document.getElementById('card');
+    card.addEventListener('click', (event) => {
+      const b = event.target.closest('button');
+      if (!b || b.disabled) return;
+      const layer = state.layers[state.selected];
+      const d = b.dataset;
+      if (d.layer !== undefined) return update(() => { state.selected = Number(d.layer); state.stop = 0; }, `[data-layer="${d.layer}"]`);
+      if (d.clip) return update(() => { layer.clip = d.clip; }, `[data-clip="${d.clip}"]`);
+      if (d.attach) return update(() => { layer.attach = d.attach; }, `[data-attach="${d.attach}"]`);
+      if (d.mode) return update(() => { state.mode = d.mode; }, `[data-mode="${d.mode}"]`);
+      if (d.sect) return update(() => { state.open[d.sect] = !state.open[d.sect]; }, `[data-sect="${d.sect}"]`);
+      if (!g()) return;
+      if (d.preset !== undefined) return update(() => { const [a, c] = PRESETS[Number(d.preset)]; g().stops = [{ c: a, at: 0 }, { c, at: 100 }]; state.stop = 0; }, `[data-preset="${d.preset}"]`);
+      if (d.kind) return update(() => { g().kind = d.kind; }, `[data-kind="${d.kind}"]`);
+      if (d.angleTo) return update(() => { g().angle = Number(d.angleTo); }, `[data-angle-to="${d.angleTo}"]`);
+      if (d.shape) return update(() => { g().shape = d.shape; }, `[data-shape="${d.shape}"]`);
+      if (d.center) return update(() => { g().at = d.center; }, `[data-center="${d.center}"]`);
+      if (d.remove !== undefined) return update(() => { g().stops.splice(Number(d.remove), 1); state.stop = 0; });
+    });
+    card.addEventListener('change', (event) => {
+      const t = event.target;
+      if (t.matches('[data-transparent]')) return update(() => { state.transparentText = t.checked; });
+      if (!g()) return;
+      if (t.matches('[data-angle]')) return update(() => { g().angle = ((Number(t.value) % 360) + 360) % 360; }, '[data-angle]');
+      if (t.matches('[data-at]')) return update(() => { g().stops[Number(t.dataset.at)].at = Math.max(0, Math.min(100, Number(t.value))); }, `[data-at="${t.dataset.at}"]`);
+    });
+    card.addEventListener('input', (event) => {
+      const t = event.target;
+      if (t.matches('[data-scrub]')) return update(() => { state.scrub = Number(t.value); }, '[data-scrub]');
+      if (t.matches('[data-color]')) { g().stops[Number(t.dataset.color)].c = t.value; state.stop = Number(t.dataset.color); render(); }
+    });
+
+    /* Drags: a stop along the bar, a press on the bar adds one, the dial and the knob turn the angle, the centre moves. */
+    function track(move, done) {
+      const up = () => { removeEventListener('pointermove', move); removeEventListener('pointerup', up); done?.(); };
+      addEventListener('pointermove', move);
+      addEventListener('pointerup', up);
+    }
+    card.addEventListener('pointerdown', (event) => {
+      const t = event.target;
+      const stop = t.closest('[data-stop]');
+      if (stop) {
+        event.preventDefault();
+        const k = Number(stop.dataset.stop);
+        state.stop = k;
+        const x0 = event.clientX;
+        let moved = false;
+        track((m) => {
+          if (!moved && Math.abs(m.clientX - x0) < 3) return;
+          moved = true;
+          const r = card.querySelector('[data-track]').getBoundingClientRect();
+          g().stops[k].at = Math.max(0, Math.min(100, Math.round(((m.clientX - r.left) / r.width) * 100)));
+          render();
+        }, () => {
+          render();
+          refocus(`[data-stop="${k}"]`);
+          if (!moved) card.querySelector(`[data-color="${k}"]`)?.click();
+        });
+        return;
+      }
+      if (t.closest('[data-track]')) {
+        const r = t.closest('[data-track]').getBoundingClientRect();
+        const at = Math.max(0, Math.min(100, Math.round(((event.clientX - r.left) / r.width) * 100)));
+        const sorted = [...g().stops].sort((a, b) => a.at - b.at);
+        const right = sorted.find((s) => s.at >= at) ?? sorted.at(-1);
+        const left = [...sorted].reverse().find((s) => s.at <= at) ?? sorted[0];
+        const tt = right.at === left.at ? 0 : (at - left.at) / (right.at - left.at);
+        g().stops.push({ c: mix(left.c, right.c, tt), at });
+        state.stop = g().stops.length - 1;
+        render();
+        return;
+      }
+      const dial = t.closest('[data-dial], [data-knob]') || (g()?.kind === 'linear' ? t.closest('[data-surface]') : null);
+      if (dial) {
+        event.preventDefault();
+        const isKnob = !dial.matches('[data-dial]');
+        const rectOf = () => (isKnob ? card.querySelector('[data-surface]') : card.querySelector('[data-dial]')).getBoundingClientRect();
+        const turn = (m) => {
+          const r = rectOf();
+          let a = (Math.atan2(m.clientY - (r.top + r.height / 2), m.clientX - (r.left + r.width / 2)) * 180) / Math.PI + 90;
+          a = ((a % 360) + 360) % 360;
+          if (m.shiftKey) a = Math.round(a / 15) * 15;
+          g().angle = Math.round(a) % 360;
+          render();
+        };
+        turn(event);
+        track(turn, () => refocus(isKnob ? '[data-knob]' : '[data-dial]'));
+        return;
+      }
+      if (t.closest('[data-centre]') || (t.closest('[data-surface]') && g()?.kind === 'radial')) {
+        event.preventDefault();
+        const place = (m) => {
+          const r = card.querySelector('[data-surface]').getBoundingClientRect();
+          const x = ((m.clientX - r.left - 24) / (r.width - 48)) * 100;
+          const y = ((m.clientY - r.top - 24) / (r.height - 48)) * 100;
+          let best = 'center'; let dist = Infinity;
+          for (const [name, [a, b]] of Object.entries(NINE_XY)) { const dd = Math.hypot(a - x, b - y); if (dd < dist) { dist = dd; best = name; } }
+          g().at = best;
+          render();
+        };
+        place(event);
+        track(place, () => refocus('[data-centre]'));
+      }
+    });
+    card.addEventListener('keydown', (event) => {
+      const t = event.target;
+      const k = t.dataset?.stop;
+      if (k !== undefined) {
+        const s = g().stops[Number(k)];
+        if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); return update(() => { s.at = Math.max(0, Math.min(100, s.at + (event.key === 'ArrowLeft' ? -1 : 1) * (event.shiftKey ? 10 : 1))); }, `[data-stop="${k}"]`); }
+        if ((event.key === 'Delete' || event.key === 'Backspace') && g().stops.length > 2) { event.preventDefault(); return update(() => { g().stops.splice(Number(k), 1); state.stop = 0; }, '[data-stop="0"]'); }
+        if (event.key === 'Enter') { event.preventDefault(); card.querySelector(`[data-color="${k}"]`)?.click(); }
+        return;
+      }
+      if (t.matches('[data-dial], [data-knob]')) {
+        const step = event.key === 'ArrowRight' || event.key === 'ArrowUp' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowDown' ? -1 : 0;
+        if (!step) return;
+        event.preventDefault();
+        const sel = t.matches('[data-knob]') ? '[data-knob]' : '[data-dial]';
+        return update(() => { g().angle = (((g().angle + step * (event.shiftKey ? 15 : 1)) % 360) + 360) % 360; }, sel);
+      }
+      if (t.matches('[data-centre]')) {
+        const [x, y] = NINE_XY[g().at];
+        const dx = event.key === 'ArrowLeft' ? -50 : event.key === 'ArrowRight' ? 50 : 0;
+        const dy = event.key === 'ArrowUp' ? -50 : event.key === 'ArrowDown' ? 50 : 0;
+        if (!dx && !dy) return;
+        event.preventDefault();
+        const nx = Math.max(0, Math.min(100, x + dx)); const ny = Math.max(0, Math.min(100, y + dy));
+        return update(() => { g().at = Object.entries(NINE_XY).find(([, [a, b]]) => a === nx && b === ny)[0]; }, '[data-centre]');
+      }
+      const group = t.closest('[role="radiogroup"]');
+      if (group && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+        const items = Array.from(group.querySelectorAll('[role="radio"]'));
+        const at = items.indexOf(t.closest('[role="radio"]'));
+        if (at < 0) return;
+        event.preventDefault();
+        items[(at + (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length]?.click();
+      }
+    });
+    /* The stop list reorders the colours; the positions stay where they are. */
+    let dragRow = null;
+    card.addEventListener('dragstart', (event) => { const r = event.target.closest?.('[data-row]'); if (r) { dragRow = Number(r.dataset.row); event.dataTransfer.effectAllowed = 'move'; } });
+    card.addEventListener('dragover', (event) => { const r = event.target.closest?.('[data-row]'); if (r && dragRow !== null) { event.preventDefault(); r.classList.add('over'); } });
+    card.addEventListener('dragleave', (event) => event.target.closest?.('[data-row]')?.classList.remove('over'));
+    card.addEventListener('drop', (event) => {
+      const r = event.target.closest?.('[data-row]');
+      if (!r || dragRow === null) return;
+      event.preventDefault();
+      const order = g().stops.map((_, k) => k).sort((a, b) => g().stops[a].at - g().stops[b].at);
+      const colors = order.map((k) => g().stops[k].c);
+      const from = order.indexOf(dragRow); const to = order.indexOf(Number(r.dataset.row));
+      const [c] = colors.splice(from, 1); colors.splice(to, 0, c);
+      order.forEach((k, i) => { g().stops[k].c = colors[i]; });
+      dragRow = null;
+      render();
+    });
+
+    function go(step) {
+      const order = ['1', '2', '3'];
+      state.variant = order[(order.indexOf(state.variant) + step + 3) % 3];
+      const url = new URL(location.href);
+      url.searchParams.set('variant', state.variant);
+      history.replaceState(null, '', url);
+      render();
+    }
+    document.querySelectorAll('.proto-bar [data-step]').forEach((b) => b.addEventListener('click', () => go(Number(b.dataset.step))));
+    document.getElementById('theme').addEventListener('click', () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark'; });
+    addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      const a = document.activeElement;
+      if (a && a !== document.body && !a.closest('.proto-bar')) return;
+      go(event.key === 'ArrowLeft' ? -1 : 1);
+    });
+    render();
+  </script>
+</body>
+
+</html>
