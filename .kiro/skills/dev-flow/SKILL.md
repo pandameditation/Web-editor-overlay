@@ -234,8 +234,14 @@ followed by `all green` or `N failed:`, and exits non-zero on failure. So:
 - **`npm run check:changed`** runs only the fixtures the diff against HEAD can reach
   (`--base <ref>` for another ref, `--list` to print the selection and its reasons). It picks by the
   coverage map; a changed file the map cannot place (new, or never covered) selects the whole suite
-  and says why, and the run ends with a `CHANGED-ONLY` line. Inner loop only, never the gate. A leaf
-  control still reaches about a third of the suite; core files reach all of it.
+  and says why, and the run ends with a `CHANGED-ONLY` line (and `nothing selected`, not
+  `all green`, when no page was picked). Inner loop only, never the gate. A leaf control still
+  reaches about a third of the suite; core files reach all of it.
+  Its limit: the map credits a file only where one of its functions ran, never for module-level
+  code (constants, tables), so a changed file also selects the pages of each file that imports one
+  of its values directly (border.ts: 12 pages by its own entry, all 108 with styles-panel.ts, which
+  reads `SIDES`). A value passed on through a second module is still missed; the full
+  `npm run check` catches it.
 - **`npm run check:map`** records that map (~3 minutes, the whole suite under coverage). Re-run it
   after adding src files or pages: until then they select everything.
 - **On a large page, run only the section you are working on**:

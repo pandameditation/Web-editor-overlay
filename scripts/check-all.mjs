@@ -52,7 +52,8 @@
  * `--changed` (npm run check:changed) is for the inner loop and never the gate: it picks pages by
  * the coverage map (`scripts/affected.mjs`, recorded by npm run check:map into
  * node_modules/.cache/heo-check/coverage.json), runs the whole suite when a changed file cannot
- * be placed, saying why, and ends with a CHANGED-ONLY line. It combines with `--fast` as the
+ * be placed, saying why, and ends with a CHANGED-ONLY line, then `nothing selected` in place of
+ * `all green` when it picked no page. It combines with `--fast` as the
  * intersection. `--record-coverage` refreshes the map for the pages it ran, so it combines with
  * `--fast` or `--changed` too.
  */
@@ -67,6 +68,7 @@ import {
   saveCoverage,
   selectAffected,
   srcFilesFromCoverage,
+  srcImporters,
   unmappedBundles,
 } from './affected.mjs';
 import { FIXTURES, fixtureName, scheduled, unaccountedPages } from './fixtures.mjs';
@@ -127,6 +129,7 @@ if (onlyChanged) {
     fixtures: FIXTURES,
     coverage: loadCoverage(),
     readPage: (page) => readFileSync(page, 'utf8'),
+    importers: srcImporters(),
   });
   const picked = new Set(selection.selected);
   chosen = chosen.filter((f) => picked.has(f));
@@ -580,6 +583,9 @@ if (failures.length) {
     `  node scripts/browser-check.mjs test/${page}.html 60000 --shot /tmp/${page}.png`,
   );
   process.exitCode = 1;
+} else if (onlyChanged && !all.length) {
+  // Not 'all green': nothing ran, and that line is what a reader greps for as the pass.
+  console.log('nothing selected');
 } else {
   console.log('all green');
 }

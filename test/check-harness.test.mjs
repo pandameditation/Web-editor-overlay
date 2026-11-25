@@ -4,7 +4,7 @@
  * the diff-based selection behind `--changed` with the coverage map it reads.
  *
  * Plain Node, no browser: `scheduled()`, `loadTimings`/`saveTimings`, `selectAffected`,
- * `srcFilesFromCoverage` and `saveCoverage` are pure enough to drive with made-up fixtures, a
+ * `srcFilesFromCoverage`, `srcImporters` and `saveCoverage` are pure enough to drive with made-up fixtures, a
  * hand-written bundle and source map, and a temporary file, and `test/sections.js` runs in a `node:vm` context
  * with a stub window, document and location. `test/settle.js` runs in one whose timers and frames
  * are on a fake clock the test advances. Run with: npm run test:harness
@@ -20,6 +20,7 @@ import {
   saveCoverage,
   selectAffected,
   srcFilesFromCoverage,
+  srcImporters,
   unmappedBundles,
 } from '../scripts/affected.mjs';
 import { fixtureName, scheduled } from '../scripts/fixtures.mjs';
@@ -317,7 +318,7 @@ const tests = {
   },
   async quietIgnoresATimerDueAfterItsDeadline() {
     const { window, settle, timeOf } = settleOnAFakeClock();
-    window.setTimeout(() => {}, 1000);
+    window.setTimeout(() => { }, 1000);
     assert.equal(await timeOf(settle.quiet(300)), 3 * FRAME_MS);
   },
   async quietWaitsThroughAShorterIntervalToItsLastTick() {
@@ -331,7 +332,7 @@ const tests = {
     assert.ok(doneAt > 300 && doneAt < 2 * FRAME_MS + 300, `returned at ${doneAt}`);
     // A cleared interval no longer holds it.
     const other = settleOnAFakeClock();
-    other.window.clearInterval(other.window.setInterval(() => {}, 50));
+    other.window.clearInterval(other.window.setInterval(() => { }, 50));
     assert.equal(await other.timeOf(other.settle.quiet(300)), 3 * FRAME_MS);
   },
   async quietFollowsAChainOfTimers() {
@@ -404,6 +405,57 @@ const tests = {
     assert.deepEqual(names(selection), ['b', 'b (strict)']);
     assert.equal(selection.why.get('b'), 'covers src/ui/y.ts');
     assert.deepEqual(names(affected(['src/core/x.ts'])), ['a', 'b']);
+  },
+  async aSrcFileAlsoSelectsThePagesOfFilesThatReadItsValues() {
+    // x.ts is covered by a and b only; y.ts imports one of x's constants, and b (strict) covers y.
+    const importers = { 'src/core/x.ts': ['src/ui/y.ts'] };
+    const selection = selectAffected({
+      changed: ['src/core/x.ts'],
+      fixtures: AFFECTED.slice(0, 3),
+      coverage: COVERAGE,
+      readPage: () => '',
+      importers,
+    });
+    assert.equal(selection.all, null);
+    assert.deepEqual(names(selection), ['a', 'b', 'b (strict)']);
+    assert.equal(selection.why.get('b (strict)'), 'covers src/ui/y.ts, which imports src/core/x.ts');
+    assert.equal(selection.why.get('b'), 'covers src/core/x.ts; covers src/ui/y.ts, which imports src/core/x.ts');
+    // An importer's pages never stand in for the file's own entry.
+    const unmapped = selectAffected({
+      changed: ['src/new.ts'],
+      fixtures: AFFECTED.slice(0, 3),
+      coverage: COVERAGE,
+      readPage: () => '',
+      importers: { 'src/new.ts': ['src/ui/y.ts'] },
+    });
+    assert.equal(unmapped.all, 'src/new.ts is not in the coverage map (run npm run check:map)');
+  },
+  async importersCountOnlyStatementsThatReadAValue() {
+    const files = {
+      'src/core/x.ts': [
+        "export const SIDES = ['top'];",
+        'export function parse(v: string) { return v; }',
+        'export const compose = (a: string): string => a;',
+        'export type Side = string;',
+      ].join('\n'),
+      'src/core/index.ts': 'export const ROOT = 1;',
+      // A constant (with a function beside it), across lines: counts.
+      'src/ui/value.ts': "import {\n  parse,\n  SIDES,\n  type Side,\n} from '../core/x.js';",
+      // Functions only, types only, a type-only statement, a side-effect import: none count.
+      'src/ui/calls.ts': "import { parse, compose as c } from '../core/x.js';",
+      'src/ui/types.ts': "import { type Side } from '../core/x.js';\nimport type { Side as S } from '../core/x.js';",
+      'src/ui/loads.ts': "import '../core/x.js';\nimport { html } from 'lit';",
+      // The module as a whole: a namespace, a re-export of everything, a dynamic import.
+      'src/ui/ns.ts': "import * as border from '../core/x.js';",
+      'src/ui/again.ts': "export * from '../core/x.js';",
+      'src/ui/later.ts': "const load = () => import('../core/x.js');",
+      // A directory import resolves to its index.
+      'src/ui/dir.ts': "import { ROOT } from '../core';",
+    };
+    assert.deepEqual(srcImporters('/repo', files), {
+      'src/core/x.ts': ['src/ui/again.ts', 'src/ui/later.ts', 'src/ui/ns.ts', 'src/ui/value.ts'],
+      'src/core/index.ts': ['src/ui/dir.ts'],
+    });
   },
   async aSrcFileInNoEntrySelectsAll() {
     const selection = affected(['src/ui/y.ts', 'src/new.ts']);

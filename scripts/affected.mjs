@@ -23,14 +23,26 @@
  * hides which `src/` files it executed, so a page that ran one is recorded with the bundle's path
  * as a marker and is selected for every `src/` change.
  *
+ * **Module-level code is credited to no one.** The bundler hoists every module's top level into
+ * the bundle wrapper, which the map skips, so a file is recorded only where one of its functions
+ * ran. A constant or table (`SIDES` in src/core/border.ts) is read by the modules that import it,
+ * on pages that may never call a function of the file itself. So a changed `src/` file also
+ * selects the pages covering each file that imports one of its values directly (`srcImporters`:
+ * a static scan that leaves out type-only, side-effect and functions-only imports). Measured on
+ * the map of 2026-11-25: border.ts goes from 12 pages to all 108 (styles-panel.ts, run by every
+ * page, reads `SIDES`), a leaf control such as border-editor.ts stays at 36. One level, not the
+ * transitive closure, which reaches a module every page runs from nearly any file. What it still
+ * misses is a value handed on through a second module (A's constant copied into B's table, read
+ * by C) or one the scan misreads as a function: the full suite catches those.
+ *
  * The cache is `node_modules/.cache/heo-check/coverage.json`, beside the timings cache
  * (`scripts/timings.mjs`): ignored by git, per worktree, harmless to delete.
  * Format: `{ "version": 1, "recordedAt": "<ISO date>", "fixtures": { "<fixtureName>": ["src/…"] } }`.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { SourceMap } from 'node:module';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { dirname, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FIXTURES, fixtureName } from './fixtures.mjs';
 
@@ -217,6 +229,97 @@ export function unmappedBundles(scriptCoverages, repoRoot) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* src/ -> its importers                                                      */
+/* -------------------------------------------------------------------------- */
+const SOURCE_FILE = /\.(ts|tsx|mts|js|mjs)$/;
+/**
+ * One static `import`/`export … from` statement or `import()`: group 1 the keyword, 2 a
+ * statement-level `type `, 3 the clause before `from` (empty for a bare `import '<spec>'`),
+ * 4 the specifier; group 5 the specifier of an `import('<spec>')`.
+ */
+const IMPORT =
+  /(?:^|[;\n}])\s*(import|export)\s+(type\s+)?(?:([^;'"]*?)\s*from\s*)?['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)/g;
+const NAME = '[A-Za-z_$][\\w$]*';
+/** Top-level `function f` / `export function f` and `export const f = (…) => | function`, by name. */
+const FUNCTION_DECLARATION = new RegExp(`^(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\s*\\*?\\s*(${NAME})`, 'gm');
+const FUNCTION_CONST = new RegExp(
+  `^export\\s+const\\s+(${NAME})\\s*=\\s*(?:async\\s+)?(?:function\\b|\\([^)]*\\)\\s*(?::[^=;]+)?=>|${NAME}\\s*=>)`,
+  'gm',
+);
+const functionsOf = (text) =>
+  new Set([...text.matchAll(FUNCTION_DECLARATION), ...text.matchAll(FUNCTION_CONST)].map((match) => match[1]));
+/**
+ * The names a statement's clause binds at run time, or `null` when it binds the whole module
+ * (a default or namespace import, `export *`, `import()`). `[]` for a bare side-effect import
+ * and for a clause whose names are all `type`.
+ */
+function valueNames(keyword, clause) {
+  if (clause === undefined) return keyword === 'import' ? [] : null;
+  const braces = clause.match(/\{([^}]*)\}/);
+  const outside = clause.replace(/\{[^}]*\}/, '').replace(/,/g, ' ').trim();
+  if (outside) return null; // `X`, `* as X`, `*`: the module as a whole
+  return (braces?.[1] ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part && !/^type\s/.test(part))
+    .map((part) => part.split(/\s+as\s+/)[0].trim());
+}
+const listSources = (dir) => {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries.flatMap((e) =>
+    e.isDirectory() ? listSources(`${dir}/${e.name}`) : SOURCE_FILE.test(e.name) ? [`${dir}/${e.name}`] : [],
+  );
+};
+/**
+ * Every `src/` file's direct importers that read one of its module-level values,
+ * `{ "src/core/border.ts": ["src/ui/controls/border-editor.ts", …] }`, from a static scan of
+ * relative specifiers (`./x.js` resolves to `x.ts`, a directory to its index).
+ *
+ * Left out, because they cannot read a module-level value the map misses: package imports,
+ * type-only statements and names, bare side-effect imports (`import './x.js'`: what the module
+ * does when it loads, it does on every page that loads the bundle, whoever imports it), and
+ * statements that import only the target's top-level functions (a function that runs is
+ * credited to its own file). Anything else (a constant, a class, a name the scan cannot place,
+ * a default or namespace import, a re-export) counts. `files` maps a repo-relative path to its
+ * text; by default every source file under `<repoRoot>/src`.
+ */
+export function srcImporters(repoRoot = process.cwd(), files = null) {
+  const texts =
+    files ??
+    Object.fromEntries(
+      listSources(`${repoRoot}/src`).map((abs) => [relative(repoRoot, abs).split(sep).join('/'), readFileSync(abs, 'utf8')]),
+    );
+  const known = new Set(Object.keys(texts));
+  const functions = new Map();
+  const functionsIn = (file) => {
+    if (!functions.has(file)) functions.set(file, functionsOf(texts[file]));
+    return functions.get(file);
+  };
+  const importers = {};
+  for (const [file, text] of Object.entries(texts)) {
+    for (const match of text.matchAll(IMPORT)) {
+      if (match[2]) continue;
+      const spec = match[4] ?? match[5];
+      if (!spec.startsWith('.')) continue;
+      const base = posix.join(posix.dirname(file), spec);
+      const target = [base.replace(/\.(m?js)$/, (_, ext) => (ext === 'mjs' ? '.mts' : '.ts')), `${base}.ts`, `${base}/index.ts`, base]
+        .find((candidate) => known.has(candidate));
+      if (!target || target === file) continue;
+      const names = match[5] ? null : valueNames(match[1], match[3]);
+      if (names && names.every((name) => functionsIn(target).has(name))) continue;
+      const list = (importers[target] ??= []);
+      if (!list.includes(file)) list.push(file);
+    }
+  }
+  for (const list of Object.values(importers)) list.sort();
+  return importers;
+}
+/* -------------------------------------------------------------------------- */
 /* The selection                                                              */
 /* -------------------------------------------------------------------------- */
 
@@ -232,19 +335,22 @@ const summarise = (reasons) =>
  *
  * Each path goes through the first rule that claims it:
  *  - `*.md` anywhere, `.kiro/`, `.agents/`, `demo/`: ignored.
- *  - `src/…`: the fixtures recorded as covering it; none, or no map, selects all. Any src/ change
- *    also selects every fixture with no entry yet, and every one that ran an unmapped bundle.
+ *  - `src/…`: the fixtures recorded as covering it, plus those covering any file that imports it
+ *    directly (`importers`, from `srcImporters`); none covering the file itself, or no map,
+ *    selects all. Any src/ change also selects every fixture with no entry yet, and every one
+ *    that ran an unmapped bundle.
  *  - a FIXTURES page: every fixture on that page (the shared and the strict variant).
  *  - a node suite `test/*.test.ts|mjs`: ignored, it has its own npm script.
  *  - anything else under `test/`: the fixtures whose page text names its path relative to
  *    `test/` (a script tag, a stylesheet link, a fetch string); none selects all.
  *  - anything else (scripts/, package.json, configs, unknown): selects all.
  *
- * `readPage(page)` returns a fixture page's HTML. Returns `{ selected, why, all, ignored }`:
+ * `readPage(page)` returns a fixture page's HTML. `importers` maps a src/ file to its direct
+ * importers (default none). Returns `{ selected, why, all, ignored }`:
  * `why` maps a selected fixture's name to its reasons, `all` is why the whole suite was chosen
  * (null when it was not), `ignored` lists the paths no rule needs a fixture for, with the note.
  */
-export function selectAffected({ changed, fixtures, coverage, readPage }) {
+export function selectAffected({ changed, fixtures, coverage, readPage, importers = {} }) {
   const reasons = new Map();
   const add = (fixture, reason) => {
     const name = fixtureName(fixture);
@@ -276,9 +382,14 @@ export function selectAffected({ changed, fixtures, coverage, readPage }) {
       ignored.push(`${path} (not part of the suite)`);
     } else if (path.startsWith('src/')) {
       srcChanged = true;
-      const covering = entries ? fixtures.filter((f) => entries[fixtureName(f)]?.includes(path)) : [];
+      const covers = (file) => (entries ? fixtures.filter((f) => entries[fixtureName(f)]?.includes(file)) : []);
+      const covering = covers(path);
       if (!covering.length) alls.push(`${path} is not in the coverage map (run npm run check:map)`);
       for (const fixture of covering) add(fixture, `covers ${path}`);
+      // Its module-level values are read through the files that import it (see the header).
+      for (const importer of importers[path] ?? []) {
+        for (const fixture of covers(importer)) add(fixture, `covers ${importer}, which imports ${path}`);
+      }
     } else if (fixtures.some((f) => f.page === path)) {
       for (const fixture of fixtures.filter((f) => f.page === path)) add(fixture, 'its page changed');
     } else if (NODE_SUITE.test(path)) {

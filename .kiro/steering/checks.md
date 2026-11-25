@@ -11,8 +11,9 @@ and exits on its own with a summary line (`all green` or `N failed:`) and a non-
   a11y-contrast-dark/-light); such a run reports `partialRun`, prints `PARTIAL RUN`, and never counts
   as a pass.
 - `npm run check:changed` runs only the pages the diff against HEAD can reach (by the coverage map),
-  for the inner loop, never the gate: a file the map cannot place selects the whole suite, and the
-  run ends with a `CHANGED-ONLY` line. `npm run check:map` refreshes the map (~3 minutes); re-run it
+  for the inner loop, never the gate: a file the map cannot place selects the whole suite, the
+  run ends with a `CHANGED-ONLY` line, and a run that picked no page prints `nothing selected`
+  instead of `all green`. `npm run check:map` refreshes the map (~3 minutes); re-run it
   after adding src files or pages.
 - Run the full `npm run check` once per task, at the end, diffed against the stored `baseline.log`.
   Reviewers read that log rather than re-running the suite.
