@@ -27,7 +27,7 @@
  * (`scripts/timings.mjs`, under `node_modules/.cache/`), and the next run starts the longest
  * first by those times, falling back to the manifest's `weight`; a page with neither starts
  * first. Delete the cache to fall back to `weight` alone. With it, the full suite's fixture phase
- * is about 200 s for 108 pages; the fast tier's about 13 s for 31.
+ * is about 150 s for 108 pages; the fast tier's about 12 s for 31.
  *
  * The suite always runs whole pages. A payload carrying `partialRun` (a page run with an
  * `?only=` section filter, `test/sections.js`) fails, so a filtered page can never pass here.

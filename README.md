@@ -1511,8 +1511,10 @@ page built from web components.
 npm run dev            # demo fixture with the Vite plugin, port 5180
 npm run typecheck      # tsc --noEmit
 npm run build          # library + plugin + type declarations
-npm run check          # build, then the whole browser suite (108 pages) — about 3.5 minutes
-npm run check:fast     # typecheck, the node tests and 31 cheap pages — about 35 seconds
+npm run check          # build, then the whole browser suite (108 pages) — under 3 minutes
+npm run check:fast     # typecheck, the node tests and 31 cheap pages — about 30 seconds
+npm run check:changed  # only the pages the diff can reach; inner loop, never the gate
+npm run check:map      # record which src/ files each page runs, for check:changed
 node scripts/browser-check.mjs test/background-editor.html 150000 --only typing
                        # one section of a large page; reports partialRun, never a pass
 npm run check:timing   # time every fixture one at a time, and say what is slow

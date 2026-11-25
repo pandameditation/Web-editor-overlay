@@ -122,6 +122,12 @@ Every behaviour change gets assertions in a browser fixture. Follow the existing
 - Progress goes into `#progress`, which the harness watches to report where a hang occurred.
 - Run with `node scripts/browser-check.mjs test/<file>.html <timeoutMs>`.
 
+Settle with `await HeoSettle.quiet(ms)` from `test/settle.js`, loaded before the bundle: it returns
+as soon as nothing scheduled or animating can still change the page within `ms`. Cross a history
+merge window with `engine.history.sealStep()`, not a 2.7 s sleep. Fixed waits are only for holds
+(a pressed key or pointer) and for asserting that something does not happen over time, through
+`HeoSettle.fixed(ms)`, with a one-line comment saying why.
+
 A probe that wrote a full `RESULTS:…:END` on every progress step made the harness read the first
 partial payload and stop. Progress and verdict are different channels.
 
@@ -212,19 +218,26 @@ it to a real assertion before finishing.
 2. `npm run build` (or `build:lib` for a quick loop)
 3. The targeted fixture: `node scripts/browser-check.mjs test/<file>.html <ms>`, with
    `--only <section>[,<section>]` on a large page (see "Inner loops" below)
-4. The full suite: `npm run check` — about 3.5 minutes (~215 s wall, ~200 s of it the 108 fixtures).
+4. The full suite: `npm run check` — under 3 minutes (~165 s wall, ~150 s of it the 108 fixtures).
    See "Running the suite" below.
 
 **Running the suite.** `check-all.mjs` exits on its own: it prints `N fixtures in Xs, 6 at a time`
 followed by `all green` or `N failed:`, and exits non-zero on failure. So:
 
 - Run it in the **foreground** with an explicit timeout: `npm run check > /tmp/new.log 2>&1` with a
-  420 s tool timeout (600 s at most). Then read the exit code and `tail -5 /tmp/new.log`.
+  360 s tool timeout (600 s at most). Then read the exit code and `tail -5 /tmp/new.log`.
 - **Never** start it in the background and wait with `sleep N` or a polling loop. A fixed sleep costs
   minutes per run for no information.
-- **Inner loops** (each implement / fix iteration): `npm run check:fast` (~35 s: typecheck, the node
+- **Inner loops** (each implement / fix iteration): `npm run check:fast` (~30 s: typecheck, the node
   tests and the 31 pages that each take 5 s or less) plus the targeted fixture(s) for what you changed.
   Do not run the full suite every iteration.
+- **`npm run check:changed`** runs only the fixtures the diff against HEAD can reach
+  (`--base <ref>` for another ref, `--list` to print the selection and its reasons). It picks by the
+  coverage map; a changed file the map cannot place (new, or never covered) selects the whole suite
+  and says why, and the run ends with a `CHANGED-ONLY` line. Inner loop only, never the gate. A leaf
+  control still reaches about a third of the suite; core files reach all of it.
+- **`npm run check:map`** records that map (~3 minutes, the whole suite under coverage). Re-run it
+  after adding src files or pages: until then they select everything.
 - **On a large page, run only the section you are working on**:
   `node scripts/browser-check.mjs test/background-editor.html 150000 --only typing` (or
   `test/<file>.html?only=typing`). background-editor, color-picker, border-editor, styles-sources and
@@ -235,7 +248,8 @@ followed by `all green` or `N failed:`, and exits non-zero on failure. So:
 - **Scheduling uses a timings cache.** Every `check`/`check:fast` run saves each finished page's time
   to `node_modules/.cache/heo-check/timings.json` (ignored by git, per worktree) and starts the
   longest pages first by those times next run. A page the cache does not know falls back to its
-  `weight` in `scripts/fixtures.mjs`; delete the file to fall back to `weight` alone.
+  `weight` in `scripts/fixtures.mjs`; delete the file to fall back to `weight` alone. The coverage
+  map sits next to it, `node_modules/.cache/heo-check/coverage.json`.
 - **The full `npm run check` runs once per task**, at the end, compared against the baseline.
   Reviewers read that log instead of re-running the suite.
 - **Record a baseline only when the starting tree changed** since the last stored `baseline.log`
