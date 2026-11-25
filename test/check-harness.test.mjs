@@ -1,18 +1,50 @@
 /**
- * Tests the suite runner's own logic: the scheduling order and the timings cache.
+ * Tests the suite runner's own logic: the scheduling order, the timings cache and the section
+ * filter pages use for `?only=`.
  *
  * Plain Node, no browser: `scheduled()` and `loadTimings`/`saveTimings` are pure enough to drive
- * with made-up fixtures and a temporary file. Run with: npm run test:harness
+ * with made-up fixtures and a temporary file, and `test/sections.js` runs in a `node:vm` context
+ * with a stub window, document and location. Run with: npm run test:harness
  */
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createContext, runInContext } from 'node:vm';
 import { scheduled } from '../scripts/fixtures.mjs';
 import { loadTimings, saveTimings } from '../scripts/timings.mjs';
 
 const page = (name, extra = {}) => ({ page: `test/${name}.html`, budget: 1000, ...extra });
 const order = (fixtures, times) => scheduled(fixtures, times).map((f) => f.page.slice(5, -5));
+
+const SECTIONS_SOURCE = readFileSync(new URL('./sections.js', import.meta.url), 'utf8');
+
+/**
+ * `HeoSections.create` for a page at `search`, loaded the way a page loads it. `progress` is the
+ * stub `#progress` element, so a test can see what `run` wrote there.
+ */
+function sectionsAt(search) {
+  const progress = { textContent: '' };
+  const window = {};
+  const context = createContext({
+    window,
+    document: { getElementById: (id) => (id === 'progress' ? progress : null) },
+    location: { search },
+    performance: { now: () => 0 },
+    URLSearchParams,
+  });
+  runInContext(SECTIONS_SOURCE, context);
+  return { create: (spec) => window.HeoSections.create(spec), progress };
+}
+
+const CHAIN = {
+  names: ['layout', 'gradient', 'stops', 'radial', 'read', 'typing'],
+  needs: { stops: ['gradient'], radial: ['stops'] },
+  always: ['layout'],
+};
+
+/** The names `run` lets through, asked in declared order as a page does. */
+const ranOf = (sections) => CHAIN.names.filter((name) => sections.run(name));
 
 /** A scratch directory for one test, removed afterwards. */
 async function inTemp(run) {
@@ -108,6 +140,51 @@ const tests = {
       saveTimings([{ name: 'a', ms: 3, ok: true }], [page('a')], file);
       assert.deepEqual(loadTimings(file), new Map([['a', 3]]));
     });
+  },
+  async anUnfilteredRunRunsEverySection() {
+    const { create, progress } = sectionsAt('');
+    const sections = create(CHAIN);
+    assert.equal(sections.filtered, false);
+    assert.deepEqual(ranOf(sections), CHAIN.names);
+    assert.equal(progress.textContent, 'typing');
+    const results = sections.report({});
+    assert.equal('partialRun' in results, false);
+    assert.deepEqual(Object.keys(results.__sectionMs), CHAIN.names);
+    // Another query parameter is not a filter.
+    assert.equal(sectionsAt('?debug=1').create(CHAIN).filtered, false);
+  },
+  async onlyRunsTheSectionItsNeedsAndAlways() {
+    const sections = sectionsAt('?only=radial').create(CHAIN);
+    assert.equal(sections.filtered, true);
+    assert.equal(sections.wants('typing'), false);
+    // radial needs stops, which needs gradient; layout always runs.
+    assert.deepEqual(ranOf(sections), ['layout', 'gradient', 'stops', 'radial']);
+    assert.deepEqual(ranOf(sectionsAt('?only= typing , read').create(CHAIN)), ['layout', 'read', 'typing']);
+    assert.throws(() => sections.run('nope'), /not a declared section/);
+  },
+  async anUnknownSectionThrows() {
+    const { create } = sectionsAt('?only=typing,nope');
+    assert.throws(
+      () => create(CHAIN),
+      (error) =>
+        error.message === '?only= names unknown section(s) "nope"; this page has: layout, gradient, stops, radial, read, typing',
+    );
+  },
+  async reportListsRanAndSkippedInDeclaredOrder() {
+    const sections = sectionsAt('?only=typing,stops').create(CHAIN);
+    ranOf(sections);
+    const results = sections.report({ typing: { works: true } });
+    // Through JSON: the object comes from the vm's realm, whose arrays have another prototype.
+    assert.deepEqual(JSON.parse(JSON.stringify(results.partialRun)), {
+      aFullRun: false,
+      only: ['typing', 'stops'],
+      ran: ['layout', 'gradient', 'stops', 'typing'],
+      skipped: ['radial', 'read'],
+    });
+    assert.deepEqual(Object.keys(results.__sectionMs), ['layout', 'gradient', 'stops', 'typing']);
+    // The only boolean the filter adds is the false one that makes the roll-up fail.
+    const booleans = JSON.stringify({ p: results.partialRun, s: results.__sectionMs }).match(/true|false/g);
+    assert.deepEqual(booleans, ['false']);
   },
 };
 

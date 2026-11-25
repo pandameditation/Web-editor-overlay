@@ -6,7 +6,12 @@
  * afterwards. Driving it over the DevTools protocol instead means the script can
  * poll for a completion marker and shut Chrome down deterministically.
  *
- * Usage: node scripts/browser-check.mjs <file-or-url> [timeoutMs]
+ * Usage: node scripts/browser-check.mjs <file-or-url>[?only=a,b] [timeoutMs] [--only a,b] [--shot file.png]
+ *
+ * The timeout is the first number after the target (default 45000), so the flags can come in any
+ * order. `--only` (or an `?only=` query on the target) runs part of a page that declares sections
+ * with `test/sections.js`; such a run reports `partialRun` and prints a PARTIAL RUN line, because
+ * it is not a full pass.
  *
  * Trusted keys: the page gets `window.__heoPressKeys`, as described in `trusted-keys.mjs`.
  */
@@ -26,13 +31,29 @@ const CHROME_CANDIDATES = [
   '/usr/bin/chromium-browser',
 ];
 
+const USAGE = 'usage: node scripts/browser-check.mjs <file-or-url>[?only=a,b] [timeoutMs] [--only a,b] [--shot file.png]';
 const target = process.argv[2];
-const timeoutMs = Number(process.argv[3] ?? 45_000);
+/** A flag's value, or null when the flag is absent. */
+const flagValue = (name) => {
+  const index = process.argv.indexOf(name);
+  return index > -1 ? process.argv[index + 1] : null;
+};
 /** Optional `--shot <file.png>`: capture the viewport once the page reports done. */
-const shotIndex = process.argv.indexOf('--shot');
-const shotPath = shotIndex > -1 ? process.argv[shotIndex + 1] : null;
-if (!target) {
-  console.error('usage: node scripts/browser-check.mjs <file-or-url> [timeoutMs]');
+const shotPath = flagValue('--shot');
+/** Optional `--only <names>`: run only these sections of the page (see test/sections.js). */
+const only = flagValue('--only');
+/** The first number after the target that is not a flag's value, wherever the flags sit. */
+let timeoutArg;
+for (let i = 3; i < process.argv.length; i++) {
+  if (process.argv[i] === '--shot' || process.argv[i] === '--only') i++;
+  else if (/^\d+$/.test(process.argv[i])) {
+    timeoutArg = process.argv[i];
+    break;
+  }
+}
+const timeoutMs = Number(timeoutArg ?? 45_000);
+if (!target || target.startsWith('--') || (process.argv.includes('--only') && !only)) {
+  console.error(USAGE);
   process.exit(2);
 }
 
@@ -220,9 +241,17 @@ async function main() {
   if (target.startsWith('http') || target.startsWith('file:')) {
     url = target;
   } else {
-    const absolute = resolve(process.cwd(), target);
+    // A query (`test/x.html?only=typing`) is not part of the file name.
+    const queryAt = target.indexOf('?');
+    const file = queryAt > -1 ? target.slice(0, queryAt) : target;
+    const absolute = resolve(process.cwd(), file);
     if (!existsSync(absolute)) throw new Error(`No such file: ${absolute}`);
-    url = pathToFileURL(absolute).href;
+    url = pathToFileURL(absolute).href + (queryAt > -1 ? target.slice(queryAt) : '');
+  }
+  if (only) {
+    const withOnly = new URL(url);
+    withOnly.searchParams.set('only', only);
+    url = withOnly.href;
   }
   // Blank first, then navigated: the key binding has to exist before the page's own scripts run.
   const created = await fetch(
@@ -314,6 +343,16 @@ async function main() {
   }
 
   console.log(payload);
+  if (payload.includes('"partialRun"')) {
+    let line = 'PARTIAL RUN. Not a full pass.';
+    try {
+      const { ran, skipped } = JSON.parse(payload).partialRun;
+      line = `PARTIAL RUN: ran ${ran.join(', ')}; skipped ${skipped.join(', ')}. Not a full pass.`;
+    } catch {
+      /* the bare line still says it */
+    }
+    console.log(line);
+  }
   if (logs.length) {
     console.log('\n--- browser log ---');
     console.log(logs.join('\n'));

@@ -53,6 +53,7 @@
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script src="sections.js"></script>
   <script>
     (async () => {
       const results = {};
@@ -86,7 +87,16 @@
       };
       // Past the history's merge window, so the next commit is an entry of its own.
       const apart = () => settle(2700);
+      // `?only=` runs part of the page (test/sections.js).
+      let sections = null;
       try {
+        sections = HeoSections.create({
+          names: ['open', 'contrast', 'area', 'fields', 'slider', 'escape', 'line', 'background', 'image', 'large', 'blank'],
+          // These press a text colour's swatch, which closes the picker `open` left open instead of
+          // opening one; escape is the section that closes it.
+          needs: { line: ['escape'], image: ['escape'], large: ['escape'], blank: ['escape'] },
+          always: ['open'],
+        });
         const api = window.HtmlEditorOverlay.mount({ theme: 'light', presets: false, detectScriptContent: false });
         const engine = api.engine;
         api.setEditing(true);
@@ -127,7 +137,7 @@
           await settle(300);
         };
 
-        progress.textContent = 'open';
+        sections.run('open');
         const grad = await select('grad');
         let field = row('typography', 'color');
         let picker = await open(field);
@@ -139,8 +149,7 @@
           theTokensAreSwatches: picker?.shadowRoot?.querySelectorAll('.swatch').length === 2,
         };
 
-        progress.textContent = 'contrast';
-        {
+        if (sections.run('contrast')) {
           // White on a black-to-yellow gradient: yellow is the worst, ~1.07:1.
           const text = inside(picker, '.contrast')?.textContent.replace(/\s+/g, ' ') ?? '';
           results.contrast = {
@@ -155,8 +164,7 @@
           };
         }
 
-        progress.textContent = 'area';
-        {
+        if (sections.run('area')) {
           const entries = engine.history.size;
           const area = inside(picker, '.area');
           // Drag to the bottom left corner: black.
@@ -175,8 +183,7 @@
           };
         }
 
-        progress.textContent = 'fields';
-        {
+        if (sections.run('fields')) {
           await apart();
           await type(picker, 'hex', '6366f1');
           const hexed = written();
@@ -209,8 +216,7 @@
           };
         }
 
-        progress.textContent = 'slider';
-        {
+        if (sections.run('slider')) {
           await apart();
           picker = field.shadowRoot.querySelector('heo-color-picker');
           const hue = inside(picker, '.slider.hue');
@@ -222,8 +228,7 @@
           };
         }
 
-        progress.textContent = 'escape';
-        {
+        if (sections.run('escape')) {
           // Escape closes the picker on the colour it shows, including one typed and not entered:
           // it is already on the page. Undo is the way back.
           await apart();
@@ -262,8 +267,7 @@
           };
         }
 
-        progress.textContent = 'line';
-        {
+        if (sections.run('line')) {
           // Grey on white: a line splits the square into passing and failing colours.
           await select('plain');
           field = row('typography', 'color');
@@ -278,8 +282,7 @@
           await settle(200);
         }
 
-        progress.textContent = 'background';
-        {
+        if (sections.run('background')) {
           // A background is measured against the text colour.
           await select('plain');
           sroot().querySelector('heo-background-editor')?.closest('heo-section')?.shadowRoot?.querySelector('button')?.click();
@@ -297,8 +300,7 @@
           await settle(200);
         }
 
-        progress.textContent = 'image';
-        {
+        if (sections.run('image')) {
           await select('pic');
           field = row('typography', 'color');
           picker = await open(field);
@@ -313,8 +315,7 @@
           await settle(200);
         }
 
-        progress.textContent = 'large';
-        {
+        if (sections.run('large')) {
           await select('big');
           field = row('typography', 'color');
           picker = await open(field);
@@ -328,8 +329,7 @@
           await settle(200);
         }
 
-        progress.textContent = 'blank';
-        {
+        if (sections.run('blank')) {
           // A slightly missed click inside a popup (a label, its padding) must not close it.
           const press = (x, y) => mouse({ type: 'move', x, y }, { type: 'down', x, y }, { type: 'up', x, y });
           const centre = (el) => { const r = el.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
@@ -376,6 +376,7 @@
         results.threw = String((e && e.stack) || e);
       }
       results.browserErrors = { ok: errors.length === 0, errors };
+      sections?.report(results);
       const failed = Object.entries(results)
         .filter(([, group]) => group && typeof group === 'object')
         .filter(([, group]) => Object.values(group).some((value) => value === false))

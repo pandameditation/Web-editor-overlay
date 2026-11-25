@@ -34,6 +34,7 @@
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script src="sections.js"></script>
   <script>
     (async () => {
       const results = {};
@@ -51,7 +52,13 @@
         }
         return null;
       };
+      // `?only=` runs part of the page (test/sections.js).
+      let sections = null;
       try {
+        sections = HeoSections.create({
+          names: ['layout', 'preview', 'compose', 'fold', 'rule', 'edges', 'rule-sides', 'offset', 'side-picker', 'search'],
+          always: ['layout'],
+        });
         const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
         const engine = api.engine;
         api.setEditing(true);
@@ -77,7 +84,7 @@
           return el;
         };
 
-        progress.textContent = 'layout';
+        sections.run('layout');
         const a = await select('a');
         {
           const shadow = editor()?.shadowRoot;
@@ -97,9 +104,8 @@
           };
         }
 
-        progress.textContent = 'preview';
         // Exploring a colour paints the page and commits nothing; leaving it puts the page back.
-        {
+        if (sections.run('preview')) {
           const entries = engine.history.size;
           await send('border-color', 'value-input', 'lime');
           const painted = getComputedStyle(a).borderTopColor === 'rgb(0, 255, 0)' && getComputedStyle(a).borderTopStyle === 'solid';
@@ -117,8 +123,7 @@
           };
         }
 
-        progress.textContent = 'compose';
-        {
+        if (sections.run('compose')) {
           // A colour for a line that is not there: one shorthand, drawn solid and 1px.
           await send('border-color', 'value-change', 'var(--brand)');
           const first = style(a);
@@ -145,13 +150,12 @@
           };
         }
 
-        progress.textContent = 'fold';
         /*
          * A part the block declares on its own is a real declaration: a row, in the border's family.
          * Editing through the editor writes the line as one shorthand and folds the part into it, so
          * the two no longer compete by order.
          */
-        {
+        if (sections.run('fold')) {
           const b = await select('b');
           const listedAsFamily = rows('border').startsWith('border,border-color,outline');
           await send('border-width', 'value-change', '4px');
@@ -163,10 +167,9 @@
           };
         }
 
-        progress.textContent = 'rule';
         // A rule's border is edited where it is written, and its parts are not listed as rows: their
         // trash used to remove the whole shorthand.
-        {
+        if (sections.run('rule')) {
           const c = await select('c');
           const rule = document.getElementById('site').sheet.cssRules[1];
           const noPartRows = rows('border') === 'border,outline,border-radius';
@@ -179,12 +182,11 @@
           };
         }
 
-        progress.textContent = 'edges';
         /*
          * One side edited on its own. Against a border, a side writes only the longhands that differ,
          * so it goes on following the border's other parts; with no border, it is its own shorthand.
          */
-        {
+        if (sections.run('edges')) {
           const d = await select('d');
           const shadow = () => editor()?.shadowRoot;
           const pick = async (side) => {
@@ -255,10 +257,9 @@
           };
         }
 
-        progress.textContent = 'rule sides';
         // In a rule, a side is written into the rule and follows the rule's border. A rule's side
         // under a border written inline is beaten by it, as CSS says: the glyph stops claiming it.
-        {
+        if (sections.run('rule-sides')) {
           const c = await select('c');
           const rules = document.getElementById('site').sheet.cssRules;
           editor()?.shadowRoot?.querySelector('.glyph button[data-side="bottom"]')?.click();
@@ -290,8 +291,7 @@
           };
         }
 
-        progress.textContent = 'offset';
-        {
+        if (sections.run('offset')) {
           const a = await select('a');
           const gap = () => editor()?.shadowRoot?.querySelector('.gap');
           const before = gap()?.getBoundingClientRect().height ?? 0;
@@ -304,10 +304,9 @@
           };
         }
 
-        progress.textContent = 'side picker';
         // The side picker is a target, not an icon: it was a 22px glyph with 3px bars, impossible to hit.
         // And the frame's edges show they can be pressed before any hover.
-        {
+        if (sections.run('side-picker')) {
           await select('d');
           const shadow = () => editor()?.shadowRoot;
           editor().scrollIntoView({ block: 'center' });
@@ -363,8 +362,7 @@
             clickingItAgainGoesBackToAll: edgeAgainReturns,
           };
         }
-        progress.textContent = 'search';
-        {
+        if (sections.run('search')) {
           engine.store.value; // keep the selection
           const search = sroot().querySelector('heo-search-field');
           search?.dispatchEvent(new CustomEvent('search-input', { detail: { value: 'outline' }, bubbles: true, composed: true }));
@@ -379,6 +377,7 @@
         results.threw = String((e && e.stack) || e);
       }
       results.browserErrors = { ok: errors.length === 0, errors };
+      sections?.report(results);
       const failed = Object.entries(results)
         .filter(([, group]) => group && typeof group === 'object')
         .filter(([, group]) => Object.values(group).some((value) => value === false))

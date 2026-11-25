@@ -394,9 +394,15 @@ async function runAll(browsers, fixtures, limit, times) {
 
 /* -------------------------------------------------------------------------- */
 
+/** A page that ran with an `?only=` filter (test/sections.js) checked part of itself. */
+const isPartial = (payload) => payload !== null && payload.includes('"partialRun"');
+
 /** A payload reports failure if it says so, or if it never got to say anything. */
 function payloadFailed(payload) {
   if (payload === null) return true;
+  // A partial run is never a pass, whatever its assertions said. The suite never filters, so this
+  // only fires if a page filters by default.
+  if (isPartial(payload)) return true;
   // Read as text rather than parsed: a fixture that produced malformed JSON has failed too, and
   // saying so beats throwing inside the reporter.
   if (/"ok"\s*:\s*false/.test(payload)) return true;
@@ -450,7 +456,8 @@ for (const result of all) {
     console.log(result.logs.join('\n'));
   }
   if (!result.ok || payloadFailed(result.payload)) {
-    failures.push({ name: result.name, reason: result.reason ?? 'reported a failing assertion' });
+    const reason = isPartial(result.payload) ? 'ran only part of the page (an ?only= filter)' : 'reported a failing assertion';
+    failures.push({ name: result.name, reason: result.reason ?? reason });
   }
 }
 

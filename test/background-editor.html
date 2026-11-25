@@ -35,6 +35,7 @@
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script src="sections.js"></script>
   <script>
     (async () => {
       const results = {};
@@ -52,7 +53,14 @@
         }
         return null;
       };
+      // `?only=` runs part of the page (test/sections.js); the first eight sections build on one element.
+      let sections = null;
       try {
+        sections = HeoSections.create({
+          names: ['layout', 'gradient', 'stops', 'radial', 'image', 'canvas', 'placement', 'paint', 'read', 'colour', 'fold', 'longhands', 'typing', 'search'],
+          needs: { stops: ['gradient'], radial: ['stops'], image: ['radial'], canvas: ['image'], placement: ['canvas'], paint: ['placement'] },
+          always: ['layout'],
+        });
         const api = window.HtmlEditorOverlay.mount({ theme: 'dark', presets: false, detectScriptContent: false });
         const engine = api.engine;
         api.setEditing(true);
@@ -113,7 +121,7 @@
         const pickColor = proto.pickColor;
         proto.pickColor = function () { picks.push(this.dataset.stop); };
 
-        progress.textContent = 'layout';
+        sections.run('layout');
         const a = await select('a');
         // The section starts closed; open it, as a user would.
         const section = () => editor()?.closest('heo-section');
@@ -127,8 +135,7 @@
           theShorthandIsARow: rows() === 'background',
         };
 
-        progress.textContent = 'gradient';
-        {
+        if (sections.run('gradient')) {
           const entries = engine.history.size;
           shadow().querySelector('[data-add="gradient"]').click();
           await settle(300);
@@ -169,8 +176,7 @@
           };
         }
 
-        progress.textContent = 'stops';
-        {
+        if (sections.run('stops')) {
           await apart();
           // Drag the first stop to 75%: past the middle one, which reorders the gradient.
           const track = shadow().querySelector('.track');
@@ -218,8 +224,7 @@
           };
         }
 
-        progress.textContent = 'radial';
-        {
+        if (sections.run('radial')) {
           await apart();
           await segment('Gradient kind', 'radial');
           const radial = style(a);
@@ -233,8 +238,7 @@
           };
         }
 
-        progress.textContent = 'image';
-        {
+        if (sections.run('image')) {
           await apart();
           const entries = engine.history.size;
           shadow().querySelector('[data-add="image"]').click();
@@ -259,8 +263,7 @@
           };
         }
 
-        progress.textContent = 'canvas';
-        {
+        if (sections.run('canvas')) {
           await apart();
           // The address field was focused when the layer was added, and its list hangs over the
           // drawing: a press outside it, on the layer's row, closes it as it would for a user.
@@ -298,8 +301,7 @@
           };
         }
 
-        progress.textContent = 'placement';
-        {
+        if (sections.run('placement')) {
           await apart();
           await send(field('background-blend-mode'), 'value-change', 'multiply');
           const blended = style(a);
@@ -327,13 +329,12 @@
           results.placementNeedsAnImage.removingTheImageClosesIt = !shadow().querySelector('.canvas');
         }
 
-        progress.textContent = 'paint';
         /*
          * Paint, for every layer and not only an image: what it paints into (a ring of the drawing,
          * or the Aa for the letters) and what it does when the page scrolls. Clip and attachment
          * were an image's only, attachment behind "More", and the letters were not offered at all.
          */
-        {
+        if (sections.run('paint')) {
           await apart();
           shadow().querySelector('.layer[data-layer="0"]').click();
           await settle(250);
@@ -424,8 +425,7 @@
           };
         }
 
-        progress.textContent = 'read';
-        {
+        if (sections.run('read')) {
           await select('b');
           const layer = shadow()?.querySelectorAll('.layer');
           shadow()?.querySelector('.layer[data-layer="0"]')?.click();
@@ -438,9 +438,8 @@
           };
         }
 
-        progress.textContent = 'colour';
         // A rule's colour stays a colour: no shorthand is written for a change to the colour alone.
-        {
+        if (sections.run('colour')) {
           const c = await select('c');
           const rule = document.getElementById('site').sheet.cssRules[0];
           await send(field('background-color'), 'value-change', 'blue');
@@ -450,9 +449,8 @@
           };
         }
 
-        progress.textContent = 'fold';
         // A longhand the block declares on its own is folded into the shorthand the editor writes.
-        {
+        if (sections.run('fold')) {
           const d = await select('d');
           const listed = rows() === 'background,background-size';
           const sized = shadow()?.querySelector('heo-segmented[label="Size"]');
@@ -471,8 +469,7 @@
           results.fold.undoPutsBothBack = style(d) === 'background: linear-gradient(90deg, red 0%, blue 100%); background-size: 50% auto';
         }
 
-        progress.textContent = 'longhands';
-        {
+        if (sections.run('longhands')) {
           /*
            * A rule that writes its gradient as background-image: the edit goes into that longhand,
            * in that rule. Written as a shorthand at the background row's place instead, it went
@@ -495,8 +492,7 @@
           results.longhands.undoPutsItBack = /90deg/.test(rule.style.backgroundImage);
         }
 
-        progress.textContent = 'typing';
-        {
+        if (sections.run('typing')) {
           const e = await select('e');
           await apart();
           const entries = engine.history.size;
@@ -545,8 +541,7 @@
           await settle(250);
         }
 
-        progress.textContent = 'search';
-        {
+        if (sections.run('search')) {
           const search = sroot().querySelector('heo-search-field');
           search?.dispatchEvent(new CustomEvent('search-input', { detail: { value: 'blend' }, bubbles: true, composed: true }));
           await settle(400);
@@ -559,6 +554,7 @@
         results.threw = String((e && e.stack) || e);
       }
       results.browserErrors = { ok: errors.length === 0, errors };
+      sections?.report(results);
       const failed = Object.entries(results)
         .filter(([, group]) => group && typeof group === 'object')
         .filter(([, group]) => Object.values(group).some((value) => value === false))

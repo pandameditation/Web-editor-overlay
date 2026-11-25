@@ -108,6 +108,7 @@
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script src="sections.js"></script>
   <script>
     (async () => {
       const results = {};
@@ -133,6 +134,12 @@
         await wait(ms);
       };
       try {
+        // `?only=` runs part of the page (test/sections.js).
+        const sections = HeoSections.create({
+          names: ['tokens', 'promote', 'header', 'sources', 'emptySize', 'addState', 'effective', 'detach'],
+          // The cards part writes into the header's group; emptySize into the cards part's.
+          needs: { sources: ['header'], emptySize: ['sources'] },
+        });
         const api = window.HtmlEditorOverlay.mount({
           theme: 'dark',
           presets: false,
@@ -184,9 +191,8 @@
         /* ------------------------------------------------------------------ *
          * Tokens' class card, now built from the shared header, row and adder.
          * ------------------------------------------------------------------ */
-        progress.textContent = 'tokens';
-        results.tokens = {};
-        {
+        if (sections.run('tokens')) {
+          results.tokens = {};
           const historyBefore = engine.history.size;
           let card = await openCard('.card');
           commitIn(rowFor(card, 'font-weight'), '700');
@@ -262,9 +268,8 @@
         /* ------------------------------------------------------------------ *
          * The shorthand side control is not the !important toggle (D6, M8).
          * ------------------------------------------------------------------ */
-        progress.textContent = 'promote';
-        results.promote = {};
-        {
+        if (sections.run('promote')) {
+          results.promote = {};
           engine.classes.upsert({
             name: 'pair',
             declarations: { padding: '4px', 'padding-left': '0px' },
@@ -310,8 +315,7 @@
         /* ------------------------------------------------------------------ *
          * The Styles panel's header: the element and its classes, nothing else (R3).
          * ------------------------------------------------------------------ */
-        progress.textContent = 'header';
-        {
+        if (sections.run('header')) {
           api.select(target);
           engine.setDockTab('styles');
           await settle(300);
@@ -464,8 +468,8 @@
         /* ------------------------------------------------------------------ *
          * The cards: where the element's styles are written (R17–R21, R23, R29).
          * ------------------------------------------------------------------ */
-        progress.textContent = 'sources';
-        {
+        // The helpers the cards part and the sections after it share, run for any of them.
+        if (['sources', 'emptySize', 'addState', 'effective', 'detach'].some((name) => sections.wants(name))) {
           const sroot = () => deep('heo-styles-panel').shadowRoot;
           // Every card opens from its chip in the element header, one at a time, in a popover.
           const card = (key) => sroot().querySelector(`.cardpop .cls[data-card="${CSS.escape(key)}"]`);
@@ -513,958 +517,961 @@
           engine.setDockTab('styles');
           await settle(400);
 
-          /*
-           * The header's class name opens its card in a popover under the name, editable there:
-           * the header is where every card opens from.
-           */
-          const chipName = () => sroot().querySelector('.ident .cchip[data-class="featured"] .name');
-          chipName()?.click();
-          await settle(300);
-          const popped = () => sroot().querySelector('.cardpop[data-card-pop=".featured"]');
-          const poppedCard = popped()?.querySelector('.cls[data-card=".featured"]');
-          const chipBox = chipName()?.getBoundingClientRect();
-          const popBox = popped()?.getBoundingClientRect();
-          results.header.nameOpensItsCardInAPopover =
-            Boolean(poppedCard) && popped()?.matches(':popover-open') === true &&
-            poppedCard.querySelector(':scope > header')?.getAttribute('aria-expanded') === 'true' &&
-            Boolean(poppedCard.querySelector('heo-value-field[data-property="border"]')) &&
-            // Right against the chip, on whichever side has the room: this window is short, and the
-            // popover is placed above when there is no room below it.
-            (Math.abs(popBox.top - chipBox.bottom) <= 8 || Math.abs(popBox.bottom - chipBox.top) <= 8);
-          // Edited in place: a value typed there lands in the class's rule.
-          const historyBefore = engine.history.size;
-          popped()?.querySelector('heo-value-field[data-property="border"]')?.dispatchEvent(
-            new CustomEvent('value-change', { detail: { value: '2px solid #a5b4fc' }, bubbles: true, composed: true }));
-          await settle(200);
-          results.header.thePopoverEditsTheClass =
-            engine.history.size === historyBefore + 1 && Boolean(popped()) &&
-            siteRule('.featured')?.style.getPropertyValue('border') === '2px solid rgb(165, 180, 252)';
-          engine.undo();
-          await settle(200);
-          // With a class's card open from its chip, the general "Paste CSS…" opens on that class; a
-          // real press arrives as a pointerdown first, which must not close the card under it.
-          {
-            // The general one is the Other card's (decision 15).
-            const general = sroot().querySelector('heo-section[data-card="other"] [data-act="paste"]');
-            general?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
-            await settle(60);
-            general?.click();
-          }
-          await settle(200);
-          results.header.generalPasteFollowsTheOpenClass =
-            engine.store.value.cssPaste?.destination === 'class' && engine.store.value.cssPaste?.className === 'featured';
-          engine.cancelCssPaste();
-          await settle(150);
-          // Escape closes it and gives focus back to the name.
-          key(popped(), 'Escape');
-          await settle(200);
-          results.header.escapeClosesItBackToTheName =
-            !popped() && sroot().activeElement === chipName();
-          // The name is a toggle: pressed while its card is open, it closes it.
-          chipName()?.click();
-          await settle(250);
-          const reopened = Boolean(popped()) && chipName()?.getAttribute('aria-expanded') === 'true';
-          chipName()?.click();
-          await settle(250);
-          results.header.nameIsAToggle =
-            reopened && !popped() && chipName()?.getAttribute('aria-expanded') === 'false';
-          /*
-           * Focus around the card, with the harness's real Tab: opening keeps focus on the name,
-           * Tab goes into the card, and closing it from its own header comes back to the name
-           * instead of dropping focus on the page.
-           */
-          {
-            let keySeq = 0;
-            const keyWaiters = new Map();
-            window.__heoKeysDone = (id) => { keyWaiters.get(id)?.(); keyWaiters.delete(id); };
-            const keys = (...names) => new Promise((resolve) => {
-              const id = ++keySeq;
-              keyWaiters.set(id, resolve);
-              window.__heoPressKeys(JSON.stringify({ id, keys: names }));
-            }).then(() => settle(150));
-            const deepFocus = () => {
-              let node = document.activeElement;
-              while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
-              return node;
-            };
-            chipName()?.focus();
-            chipName()?.click();
-            await settle(250);
-            const stays = Boolean(popped()) && deepFocus() === chipName();
-            await keys('Tab');
-            const intoTheCard = deepFocus() === popped()?.querySelector('.cls > header');
-            popped()?.querySelector('.cls > header')?.click();
-            await settle(250);
-            results.header.openingKeepsFocusOnTheName = stays;
-            results.header.tabFromTheNameGoesIntoTheCard = intoTheCard;
-            results.header.closingFromTheCardHeaderReturnsToTheName = !popped() && deepFocus() === chipName();
-          }
-
-          /*
-           * The element's own styles: the tag chip opens its style attribute and its id's rules in
-           * the same popover a class name uses; the id chip, quietly tinted, opens only its rules and
-           * its cross takes the id off.
-           */
-          {
-            const tag = () => sroot().querySelector('.ident .el-chip');
-            const idName = () => sroot().querySelector('.ident .cchip.id .name');
-            const ownPop = () => sroot().querySelector('.cardpop[data-card-pop="element"]');
-            const idPop = () => sroot().querySelector('.cardpop[data-card-pop="id"]');
-            const bg = (el) => (el ? getComputedStyle(el).backgroundColor : '');
-            const classChip = sroot().querySelector('.ident .cchip[data-class="card"]');
-            results.header.idChipStandsApart =
-              bg(idName()?.parentElement) !== bg(tag()) && bg(idName()?.parentElement) !== bg(classChip) &&
-              bg(idName()?.parentElement) !== 'rgba(0, 0, 0, 0)' &&
-              // The same chip as a class otherwise: its face, size and weight.
-              ['fontSize', 'fontWeight', 'fontFamily', 'height'].every((prop) =>
-                getComputedStyle(idName())[prop] === getComputedStyle(classChip.querySelector('.name'))[prop]);
-            tag()?.click();
-            await settle(300);
-            results.header.tagOpensTheInlineStyle =
-              ownPop()?.matches(':popover-open') === true && tag()?.getAttribute('aria-expanded') === 'true' &&
-              Boolean(ownPop()?.querySelector('.cls[data-card="inline"] heo-value-field'));
-            key(ownPop(), 'Escape');
-            await settle(200);
-            results.header.tagIsAToggleAndEscapeReturnsToIt = !ownPop() && sroot().activeElement === tag();
-            idName()?.click();
-            await settle(300);
-            // No rule for #target on this page: the popover says so and offers an adder for one.
-            const noRule = Boolean(idPop()?.querySelector('.none [data-heo-part="adder"]')) &&
-              /No rule is written for #target yet/.test(textOf(idPop()));
-            engine.createDesignRule('#target', { outline: '1px dashed red' });
-            await settle(300);
-            results.header.idOpensItsRules =
-              noRule && idName()?.getAttribute('aria-expanded') === 'true' &&
-              Boolean(idPop()?.querySelector('.cls[data-card="#target"] heo-value-field[data-property="outline"]')) &&
-              !idPop()?.querySelector('.cls[data-card="inline"]') && !idPop()?.querySelector('.none');
-            idName()?.click();
-            await settle(200);
-            tag()?.click();
-            await settle(300);
-            const ownCards = Array.from(ownPop()?.querySelectorAll(':scope > .cls') ?? []).map((one) => one.dataset.card);
-            results.header.tagShowsInlineThenIdRules = ownCards.join(',') === 'inline,#target';
-            tag()?.click();
-            await settle(200);
-            engine.removeDesignRule('#target');
-            await settle(200);
-            const historyAtKill = engine.history.size;
-            sroot().querySelector('.ident .cchip.id .kill')?.click();
-            await settle(200);
-            const gone = !target.id && !sroot().querySelector('.ident .cchip.id') &&
-              engine.history.size === historyAtKill + 1 && sroot().activeElement === tag();
-            engine.undo();
-            await settle(200);
-            results.header.idCrossRemovesTheId = gone && target.id === 'target' && Boolean(idName());
-          }
-
-          /* No Sources section: the cards, by category. */
-          results.sources = {
-            noSourcesSection:
-              !Array.from(sroot().querySelectorAll('heo-section')).some((one) => one.heading === 'Sources') &&
-              Boolean(sroot().querySelector('.cards-view heo-section[data-card]')),
-          };
-          /*
-           * Every card ends with "Paste CSS", on the same line as "Detach styles from class" when
-           * there is one, and the dialog opens on that card: its class (already applied, so the
-           * box is ticked and off), its rule, or the inline style.
-           */
-          {
-            const pasteDialog = () => deep('heo-css-paste-dialog')?.shadowRoot;
-            const openPaste = async (k) => {
-              await pop(k);
-              card(k)?.querySelector(':scope > .body > .actions [data-act="paste-here"]')?.click();
-              await settle(200);
-              const open = engine.store.value.cssPaste;
-              const box = pasteDialog()?.querySelector('.destination .check input');
-              const seen = { destination: open?.destination, className: open?.className, selector: open?.selector, applyClass: open?.applyClass, boxDisabled: box?.disabled, boxChecked: box?.checked, label: textOf(pasteDialog()?.querySelector('.destination .check')) };
-              engine.cancelCssPaste();
-              await settle(150);
-              return seen;
-            };
-            let everyCard = true;
-            for (const k of ['inline', '.card', '.featured', '.card.featured', 'section p']) {
-              everyCard = everyCard && Boolean((await pop(k))?.querySelector(':scope > .body > .actions [data-act="paste-here"]'));
-            }
-            await pop('.card');
-            const sameRow = Boolean(card('.card')?.querySelector(':scope > .body > .actions [data-act="paste-here"] ~ [data-act="detach"]'));
-            const asClass = await openPaste('.card');
-            const asRule = await openPaste('section p');
-            const asInline = await openPaste('inline');
-            results.sources.everyCardHasPasteCss = everyCard && sameRow;
-            results.sources.aClassCardPastesIntoItsClass =
-              asClass.destination === 'class' && asClass.className === 'card' && asClass.applyClass === false &&
-              asClass.boxDisabled === true && asClass.boxChecked === true && /Already applied to/.test(asClass.label);
-            results.sources.aRuleCardPastesIntoItsRule = asRule.destination === 'rule' && asRule.selector === 'section p';
-            results.sources.theInlineCardPastesInline = asInline.destination === 'inline';
-          }
-
-          /* Cards: the Tokens class card. */
-          const cardHeader = (k) => card(k)?.querySelector(':scope > header');
-          const meta = (k) => textOf(cardHeader(k)?.querySelector('.meta'));
-          const looks = {};
-          for (const k of ['.card', '.featured', '.promo .card', 'section p', 'inline']) {
-            await pop(k);
-            const pillEl = cardHeader(k)?.querySelector('.meta .uses');
-            looks[k] = {
-              named: Boolean(cardHeader(k)?.querySelector('.n')) && Boolean(cardHeader(k)?.querySelector('.meta')),
-              bg: cardHeader(k) ? getComputedStyle(cardHeader(k)).backgroundColor : '',
-              meta: meta(k),
-              pill: textOf(pillEl),
-              pillClass: pillEl ? Array.from(pillEl.classList).join(' ') : '',
-              pillBg: pillEl ? getComputedStyle(pillEl).backgroundColor : '',
-              pillRound: pillEl ? parseFloat(getComputedStyle(pillEl).borderTopLeftRadius) >= 7 && pillEl.getBoundingClientRect().height <= 15 : false,
-            };
-          }
-          results.cards = {
-            /*
-             * The Tokens class card, by its header: the popover is the card's frame, so its header
-             * reads on the popover surface rather than Tokens' header band. Every card the same.
-             */
-            useTheTokensClassCard:
-              ['.card', '.featured', 'section p', 'inline'].every((k) => looks[k].named) &&
-              new Set(['.card', '.featured', 'section p', 'inline'].map((k) => looks[k].bg)).size === 1 &&
-              Boolean(tokensHeaderBg),
-            // N rules across what is in effect • N× elements the selector matches; none for inline.
-            metaCountsRulesAndElements:
-              looks['.card'].meta === `${familyDeclarations('.card')} rules • 4×` &&
-              looks['.featured'].meta === `${familyDeclarations('.featured')} rules • 1×` &&
-              looks['.promo .card'].meta === '1 rule • 4×' &&
-              looks.inline.meta === '2 rules',
-          };
-          /* The uses count is a pill, its colour read before its number: green for one, orange for more. */
-          results.cards.usesIsAPill =
-            looks['.card'].pill === '4×' && /\bmany\b/.test(looks['.card'].pillClass) &&
-            looks['.featured'].pill === '1×' && /\bone\b/.test(looks['.featured'].pillClass) &&
-            !looks.inline.pill && looks['.card'].pillRound &&
-            looks['.card'].pillBg !== looks['.featured'].pillBg && looks['.card'].pillBg !== 'rgba(0, 0, 0, 0)';
-          await pop('section p');
-          const file = () => cardHeader('section p')?.querySelector('.file');
-          const restDisplay = file() ? getComputedStyle(file()).display : 'missing';
-          cardHeader('section p').focus();
-          await settle(60);
-          results.cards.fileOnlyOnHover =
-            restDisplay === 'none' && getComputedStyle(file()).display !== 'none' && textOf(file()).length > 0;
-          // One card per selector family: the chips name families, never a state or size.
-          sroot().querySelector('.ident .cchip.rules')?.click();
-          await settle(120);
-          const allKeys = [
-            ...Array.from(sroot().querySelectorAll('.ident .cchip[data-class]')).map((one) => `.${one.dataset.class}`),
-            ...Array.from(sroot().querySelectorAll('.ident .cchip.rule')).map((one) => one.dataset.rule),
-          ];
-          await pop('.card');
-          results.cards.oneCardPerSelectorFamily =
-            allKeys.length === 5 && new Set(allKeys).size === allKeys.length &&
-            !allKeys.some((k) => /:/.test(k)) &&
-            Boolean(card('.card')?.querySelector('.slots [data-cond="state::hover"]'));
-          // A class no readable rule defines gets a card that offers to define it.
-          target.classList.add('ghost');
-          await settle(300);
-          const ghost = await pop('.ghost');
-          const define = Array.from(ghost?.querySelectorAll('button') ?? []).find((one) => /Define \.ghost/.test(one.textContent));
-          const offered = ghost?.hasAttribute('data-unknown') && Boolean(define);
-          define?.click();
-          await settle(300);
-          results.cards.unknownClassOffersDefine =
-            offered && Boolean(engine.classes.get('ghost')) &&
-            !card('.ghost')?.hasAttribute('data-unknown') &&
-            /No declarations yet\./.test(textOf(card('.ghost')));
-          target.classList.remove('ghost');
-          engine.classes.remove('ghost');
-          await settle(200);
-
-          /* Card bodies. */
-          await pop('.featured');
-          const featuredBlocks = blocks('.featured').map((one) => one.dataset.block).join(',');
-          const featuredFocus = Boolean(card('.featured')?.querySelector('.slots [data-cond="state::focus-within"]'));
-          // A pseudo-element is a pill on the card's bar, as on the panel's strip; picked, its block alone.
-          const beforePill = () => card('.featured')?.querySelector('.slots [data-cond="state:::before"]');
-          const pillIsAPseudo = beforePill()?.classList.contains('pseudo') && !beforePill()?.classList.contains('state');
-          beforePill()?.click();
-          await settle(150);
-          const pickedBlocks = blocks('.featured').map((one) => one.dataset.block).join(',');
-          const featuredPseudo = textOf(block('.featured', '::before')?.querySelector('.kindtxt'));
-          const pseudoHint = textOf(body('.featured')?.querySelector('.slot-hint'));
-          card('.featured')?.querySelector('.slots .base')?.click();
-          await settle(150);
-          await pop('.card');
-          const cardBody = body('.card');
-          results.cardBody = {
-            // Straight into the declarations: strip, then the base block's rows, no selector label.
-            noRepeatedSelectorLabel:
-              cardBody?.firstElementChild?.matches('.slots') &&
-              cardBody?.children[1]?.matches('.block[data-block="base"]') &&
-              cardBody?.children[1]?.firstElementChild?.matches('.decls') &&
-              !cardBody?.children[1]?.querySelector('.blabel'),
-            /*
-             * Under Base: the base block alone. States and pseudo-elements are pills on the bar, as on
-             * the panel's strip; cards used to draw a pseudo-element as a block under Base instead.
-             */
-            pseudoElementsAndStatesArePillsOnTheBar:
-              blocks('.card').map((one) => one.dataset.block).join(',') === 'base' &&
-              featuredBlocks === 'base' && featuredFocus && Boolean(pillIsAPseudo),
-            pickingAPseudoElementShowsItsBlockAlone:
-              pickedBlocks === '::before' && featuredPseudo === 'pseudo-element' &&
-              /^The element's ::before — drawn with it once it has content/.test(pseudoHint),
-            noSeparatePseudoElementAdder: !sroot().querySelector('.cls .add-prop') ||
-              !Array.from(sroot().querySelectorAll('.cls .add-prop')).some((one) => /pseudo-element/i.test(textOf(one))),
-          };
-          /*
-           * A card's rows on the element's cascade. Base read 7/11 and nothing said which four lost,
-           * or to what: each beaten row is struck with the panel's "hidden by" pill under its name,
-           * and its name opens a read-only ladder from what wins down to this card's declaration.
-           */
-          {
-            const baseCount = textOf(card('.card')?.querySelector('[data-heo-part="strip"] .base .c'));
-            const [won, all] = baseCount.split('/').map(Number);
-            const hiddenRows = () => Array.from(block('.card', 'base')?.querySelectorAll('.decl.hidden') ?? []);
-            const nameOf = (row) => row?.querySelector('.p')?.textContent.trim();
-            const padRow = () => hiddenRows().find((row) => nameOf(row) === 'padding');
-            const live = innerWidth >= 768 ? '≥768px' : '≤767px';
-            const struckInput = (row) => getComputedStyle(row.querySelector('heo-value-field').shadowRoot.querySelector('input')).textDecorationLine === 'line-through';
-            const oneLinePerLoser =
-              Number.isFinite(won) && hiddenRows().length === all - won && hiddenRows().length > 0 &&
-              hiddenRows().every((row) => /^hidden by /.test(textOf(row.querySelector('.hidby'))) && struckInput(row)) &&
-              textOf(padRow()?.querySelector('.hidby')) === `hidden by ${live}`;
-            padRow()?.querySelector('.dots')?.click();
-            await settle(200);
-            const ro = () => sroot().querySelector('.pop[data-readonly]');
-            const rungs = Array.from(ro()?.querySelectorAll('.ladder > .lr') ?? []);
-            const struck = (one) => getComputedStyle(one.querySelector('.cv')).textDecorationLine.includes('line-through');
-            const ladder =
-              ro()?.matches(':popover-open') === true && rungs.length === 2 &&
-              rungs[0].classList.contains('win') && Boolean(rungs[0].querySelector('.now')) &&
-              textOf(rungs[0].querySelector('.sz')) === live && !struck(rungs[0]) &&
-              rungs[1].classList.contains('me') && textOf(rungs[1].querySelector('.mine')) === 'this card' && struck(rungs[1]);
-            // Read-only, and nothing but the ladder: no radios, fields, result line or note.
-            const onlyTheLadder = Boolean(ro()) &&
-              !ro().querySelector('[role="radio"], heo-value-field, .res, .note, .open') &&
-              Boolean(card('.card'));
-            key(ro(), 'Escape');
-            await settle(200);
-            const escapeBack = !ro() && Boolean(card('.card')) && sroot().activeElement === padRow()?.querySelector('.dots');
-            // A row that applies: plain, and its ladder is its own rung, winning.
-            const winner = Array.from(block('.card', 'base')?.querySelectorAll('.decl:not(.hidden)') ?? [])
-              .find((row) => nameOf(row) === 'font-weight');
-            winner?.querySelector('.dots')?.click();
-            await settle(200);
-            const alone = Array.from(ro()?.querySelectorAll('.ladder > .lr') ?? []);
-            const applies = Boolean(winner) && !winner.querySelector('.hidby') && alone.length === 1 &&
-              alone[0].classList.contains('me') && alone[0].classList.contains('win') && Boolean(alone[0].querySelector('.now'));
-            key(ro(), 'Escape');
-            await settle(200);
-            results.cardBody.aBeatenRowIsStruckWithWhatBeatsIt = oneLinePerLoser;
-            results.cardBody.itsNameOpensTheLadderDownToIt = ladder;
-            results.cardBody.theCardsLadderIsReadOnly = onlyTheLadder;
-            results.cardBody.escapeClosesItBackToTheName = escapeBack;
-            results.cardBody.aRowThatAppliesIsItsOwnWinningRung = applies;
-          }
-          // Picking a size says where it applies and how far it reaches.
-          card('.card')?.querySelector('.slots [data-slot="tablet"]')?.click();
-          await settle(150);
-          const hint = textOf(body('.card')?.querySelector('.slot-hint'));
-          results.cardBody.slotHintSaysReach =
-            new RegExp(`^Only at ≥768px — ${innerWidth >= 768 ? 'in effect' : 'not'} at ${innerWidth}px\\. Adds to or overrides Base there, for all 4 elements\\.$`).test(hint) &&
-            blocks('.card').map((one) => one.dataset.block).join(',') === 'base';
-          // The ≥768px :hover rule is a condition of its own: its block alone, read as a hover.
-          card('.card')?.querySelector('.slots [data-cond="state::hover@tablet"]')?.click();
-          await settle(150);
-          results.cardBody.aStateUnderASizeIsItsOwnCondition =
-            blocks('.card').map((one) => one.dataset.block).join(',') === ':hover' &&
-            Boolean(rowIn(block('.card', ':hover'), 'box-shadow')) &&
-            /^Only on :hover, at ≥768px/.test(textOf(body('.card')?.querySelector('.slot-hint')));
-          // A state at no media query: picked on the bar, where its trash is.
-          card('.card')?.querySelector('.slots [data-cond="state::hover"]')?.click();
-          await settle(150);
-          // The trash on a page rule's state block empties it; the rule stays in the file.
-          let before = engine.history.size;
-          block('.card', ':hover')?.querySelector('.blabel .kill')?.click();
-          await settle(200);
-          results.cardBody.trashEmptiesAFileRule =
-            engine.history.size === before + 1 &&
-            Boolean(siteRule('.card:hover')) && siteRule('.card:hover').style.length === 0 &&
-            !block('.card', ':hover');
-          engine.undo();
-          await settle(200);
-          // The trash on a rule the editor made removes it.
-          engine.addDeclaration({ kind: 'new-rule', selector: '.card:active', media: null }, 'opacity', '0.9');
-          await settle(200);
-          card('.card')?.querySelector('.slots [data-cond="state::active"]')?.click();
-          await settle(150);
-          const active = block('.card', ':active');
-          before = engine.history.size;
-          active?.querySelector('.blabel .kill')?.click();
-          await settle(200);
-          results.cardBody.trashRemovesThatRule =
-            Boolean(active) && engine.history.size === before + 1 &&
-            !engine.rules.list().some((rule) => rule.selector === '.card:active') &&
-            !block('.card', ':active');
-          engine.undo();
-          engine.undo();
-          await settle(200);
-          card('.card')?.querySelector('.slots .base')?.click();
-          await settle(150);
-          /* Card rows write their own declaration. */
-          results.cardRows = {
-            // The row's name is its one way into the cascade, as on the panel: no dot or moon beside it.
-            nameIsTheOnlyCascadeControl: !sroot().querySelector('.cardpop .cls .moon') &&
-              Array.from(sroot().querySelectorAll('.cardpop .cls .dots')).every((one) =>
-                one.matches('button[aria-haspopup="dialog"]') && Boolean(one.querySelector(':scope > .p'))),
-          };
-          await pop('.promo .card');
-          before = engine.history.size;
-          const promoColor = () => rowIn(body('.promo .card'), 'color')?.querySelector('heo-value-field');
-          promoColor()?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '#123456' }, bubbles: true, composed: true }));
-          await settle(200);
-          results.cardRows.writeThatDeclarationDirectly =
-            engine.history.size === before + 1 &&
-            siteRule('.promo .card')?.style.getPropertyValue('color') === 'rgb(18, 52, 86)' &&
-            siteRule('.promo .card')?.style.getPropertyPriority('color') === 'important' &&
-            target.style.color === 'rgb(185, 28, 28)';
-          engine.undo();
-          await settle(200);
-          await pop('.card');
-          const second = document.querySelectorAll('.card')[1];
-          const weight = () => rowIn(body('.card'), 'font-weight')?.querySelector('heo-value-field');
-          weight()?.dispatchEvent(new CustomEvent('value-input', { detail: { value: '800' }, bubbles: true, composed: true }));
-          await settle(150);
-          const previewed = getComputedStyle(second).fontWeight === '800';
-          before = engine.history.size;
-          engine.cancelPreview();
-          await settle(150);
-          results.cardRows.previewWhileTyping =
-            previewed && getComputedStyle(second).fontWeight === '600' && engine.history.size === before &&
-            weight()?.value === '600';
-          before = engine.history.size;
-          rowIn(body('.card'), 'text-transform')?.querySelector('.kill')?.click();
-          await settle(200);
-          results.cardRows.trashRemovesTheDeclaration =
-            engine.history.size === before + 1 &&
-            siteRule('.card')?.style.getPropertyValue('text-transform') === '' &&
-            !rowIn(body('.card'), 'text-transform');
-          engine.undo();
-          await settle(200);
-
-          /* The inline card (R21). */
-          await pop('inline');
-          const inline = () => card('inline');
-          const extract = () => Array.from(inline()?.querySelectorAll('.actions button') ?? []).find((one) => /Extract/.test(one.textContent));
-          results.inlineCard = {
-            listsInlineDeclarations:
-              rowsOf(inline()).map((row) => row.querySelector('.p').textContent.trim()).join(',') === 'color,font-size' &&
-              textOf(cardHeader('inline')?.querySelector('.n')) === 'Inline style',
-          };
-          extract()?.click();
-          await settle(200);
-          results.inlineCard.extractOpensTheDialog =
-            textOf(extract()) === 'Extract 2 into a class' &&
-            engine.store.value.extraction?.mode === 'class' && engine.store.value.extraction?.element === target;
-          engine.cancelExtraction();
-          api.select(item);
-          await settle(300);
-          await pop('inline');
-          results.inlineCard.extractDisabledWhenEmpty =
-            extract()?.disabled === true && !rowsOf(inline()).length &&
-            Boolean(inline()?.querySelector('[data-heo-part="adder"]'));
-          api.select(target);
-          await settle(300);
-
-          /* One adder everywhere (R23). */
-          const inlineHasAdder = Boolean((await pop('inline'))?.querySelector('[data-heo-part="adder"]'));
-          await pop('.card');
+          // Used by the cards part and by the sections after it.
           const addButton = (scope) => scope?.querySelector(':scope > .block-add .add-prop, :scope .block-add .add-prop');
-          results.adder = {
-            oneComponentEverywhere:
-              Boolean(sroot().querySelector('.block-add [data-heo-part="adder"][data-adder="other"]')) &&
-              Boolean(block('.card', 'base')?.querySelector('[data-heo-part="adder"]')) &&
-              inlineHasAdder &&
-              tokensHasAdder,
-          };
-          addButton(block('.card', 'base'))?.click();
-          await settle(200);
-          const cardAdder = () => block('.card', 'base')?.querySelector('.property-adder');
           // An adder's field, at either step: the name, then the value (not the new-class rung's name).
           const fieldOf = (adder) => adder?.querySelector('heo-value-field:not(.ncname)');
           const inputOf = (adder) => fieldOf(adder)?.shadowRoot?.querySelector('input[type="text"]');
           const stepOf = (adder) => adder?.dataset.step ?? null;
-          // How an open adder looks, measured: the panel's used to show a stray "add" line above
-          // its field, because only a card's row grid styled that label.
-          const adderLook = (adder) => {
-            const input = inputOf(adder);
-            if (!adder || !input) return null;
-            const box = adder.getBoundingClientRect();
-            const field = input.getBoundingClientRect();
-            const cs = getComputedStyle(adder);
-            return {
-              label: Boolean(adder.querySelector(':scope > .p')),
-              padding: cs.padding,
-              border: `${cs.borderTopStyle} ${cs.borderTopColor}`,
-              background: cs.backgroundColor,
-              inputTop: Math.round(field.top - box.top),
-              inputLeft: Math.round(field.left - box.left),
-            };
-          };
-          const cardLook = adderLook(cardAdder());
-          // The card is where it goes: its adder asks only for the property, then its value.
-          results.adder.aCardAdderAsksNoDestination =
-            stepOf(cardAdder()) === 'name' && !cardAdder()?.querySelector('.dest, .chip, heo-segmented');
-          // Validated with today's messages, and nothing is written while it is refused.
-          before = engine.history.size;
-          await typeInto(inputOf(cardAdder()), 'padding');
-          key(inputOf(cardAdder()), 'Enter');
-          await settle(150);
-          const duplicate = textOf(cardAdder()?.querySelector('.field-error'));
-          await typeInto(inputOf(cardAdder()), '');
-          key(inputOf(cardAdder()), 'Enter');
-          await settle(150);
-          const emptyMessage = textOf(cardAdder()?.querySelector('.field-error'));
-          results.adder.validatesWithTodaysMessages =
-            /padding/.test(duplicate) && /\.card/.test(duplicate) &&
-            emptyMessage === 'Type the property to add.' && engine.history.size === before;
-          // Seeded with what the element resolves to (section p's 0.01em, here), focused and selected.
-          const resolved = getComputedStyle(target).letterSpacing;
-          await typeInto(inputOf(cardAdder()), 'letter-spacing');
-          key(inputOf(cardAdder()), 'Enter');
-          await settle(300);
-          // The name opens its value, seeded and nothing written yet; Enter writes it, once.
-          const valueStep = stepOf(cardAdder()) === 'value' && fieldOf(cardAdder())?.dataset.property === 'letter-spacing';
-          const seeded = inputOf(cardAdder())?.value;
-          const nothingYet = engine.history.size === before;
-          const noSwitch = !fieldOf(cardAdder())?.head;
-          /*
-           * Its list opens whole: the seed is a suggestion, not a search. Read as a query, it filtered
-           * the list down to what contains "0.01em" until a blur committed it and the list came back.
-           */
-          fieldOf(cardAdder())?.openList();
-          await settle(150);
-          const groupsAtOpen = Array.from(fieldOf(cardAdder())?.shadowRoot?.querySelectorAll('.popup .group') ?? [])
-            .map((one) => textOf(one));
-          results.adder.theValueListOpensWhole =
-            groupsAtOpen.some((name) => !/^(computed|units|functions)$/i.test(name));
-          fieldOf(cardAdder())?.closePopup();
-          key(inputOf(cardAdder()), 'Enter');
-          await settle(300);
-          const added = rowIn(block('.card', 'base'), 'letter-spacing')?.querySelector('heo-value-field');
-          results.adder.nameThenValueThenOneWrite = valueStep && nothingYet && noSwitch;
-          results.adder.seedsTheResolvedValue =
-            seeded === resolved &&
-            engine.history.size === before + 1 &&
-            resolved !== 'normal' &&
-            siteRule('.card')?.style.getPropertyValue('letter-spacing') === resolved && added?.value === resolved;
-          // Then back to "+ Add property", for the next one.
-          await settle(100);
-          results.adder.focusReturnsToAddProperty = Boolean(added) && sroot().activeElement === addButton(block('.card', 'base'));
-          engine.undo();
-          await settle(200);
-          // A whole declaration typed as the name is written at once, as typed.
-          addButton(block('.card', 'base'))?.click();
-          await settle(200);
-          before = engine.history.size;
-          await typeInto(inputOf(cardAdder()), 'word-spacing: 3px');
-          key(inputOf(cardAdder()), 'Enter');
-          await settle(300);
-          results.adder.aWholeDeclarationIsWrittenAtOnce =
-            engine.history.size === before + 1 && siteRule('.card')?.style.getPropertyValue('word-spacing') === '3px' &&
-            !cardAdder();
-          engine.undo();
-          await settle(200);
-          // Typing "!important" after the same value, then the promote toggle off: the field once
-          // kept the typed text, because the value bound back to it had not changed.
-          {
-            const field = () => rowIn(block('.card', 'base'), 'margin')?.querySelector('heo-value-field');
-            const promote = () => rowIn(block('.card', 'base'), 'margin')?.querySelector('.promote');
-            const value = field()?.value;
-            const painted = siteRule('.card')?.style.getPropertyValue('margin');
-            const input = field()?.shadowRoot?.querySelector('input');
-            input?.focus();
-            await typeInto(input, `${value} !important`);
-            key(input, 'Enter');
-            await settle(200);
-            const pressed = promote()?.getAttribute('aria-pressed') === 'true' &&
-              siteRule('.card')?.style.getPropertyPriority('margin') === 'important';
-            input?.blur();
-            await settle(100);
-            promote()?.click();
-            await settle(200);
-            const shown = field()?.shadowRoot?.querySelector('input')?.value ?? '';
-            results.typedImportant = {};
-            results.typedImportant.showsAsPressed = pressed;
-            results.typedImportant.untogglingRemovesIt =
-              siteRule('.card')?.style.getPropertyPriority('margin') === '' &&
-              promote()?.getAttribute('aria-pressed') === 'false' &&
-              !/important/.test(shown) && !/important/.test(field()?.value ?? '') &&
-              field()?.important === false && shown === value &&
-              siteRule('.card')?.style.getPropertyValue('margin') === painted;
-            engine.undo();
-            engine.undo();
-            await settle(200);
-          }
-          // Escape closes an adder and leaves nothing behind.
-          await pop('.card');
-          addButton(block('.card', 'base'))?.click();
-          await settle(200);
-          await typeInto(inputOf(cardAdder()), 'margin');
-          before = engine.history.size;
-          // The first Escape closes the name list, the next the adder.
-          key(inputOf(cardAdder()), 'Escape');
-          await settle(120);
-          key(inputOf(cardAdder()), 'Escape');
-          await settle(200);
-          results.adder.escapeCancels =
-            !cardAdder() && Boolean(addButton(block('.card', 'base'))) && engine.history.size === before &&
-            engine.selected === target;
-          // Several destinations: the cascade ladder in the value step, the value in the picked rung.
-          // The panel's adder is the Other card's, opened first (cards start closed) to be measured.
-          {
-            const other = sroot().querySelector('heo-section[data-card="other"]');
-            if (other && !other.open) other.shadowRoot?.querySelector('.tile')?.click();
-            await settle(200);
-          }
-          sroot().querySelector('.block-add [data-adder="other"]')?.click();
-          await settle(200);
-          const effAdder = () => sroot().querySelector('.property-adder[data-adder="other"]');
-          const effLook = adderLook(effAdder());
-          results.adder.looksTheSameInOtherAndCards =
-            Boolean(cardLook) && Boolean(effLook) &&
-            !cardLook.label && !effLook.label &&
-            cardLook.border.startsWith('solid') &&
-            cardLook.padding === effLook.padding &&
-            cardLook.border === effLook.border &&
-            cardLook.background === effLook.background &&
-            effLook.inputTop <= 10 && Math.abs(cardLook.inputTop - effLook.inputTop) <= 2 &&
-            Math.abs(cardLook.inputLeft - effLook.inputLeft) <= 2;
-          // The name asks nothing about where.
-          const nameAsksNothing = !effAdder()?.querySelector('.dest, .chip, heo-segmented, .ladder');
-          await typeInto(inputOf(effAdder()), 'letter-spacing');
-          key(inputOf(effAdder()), 'Enter');
-          await settle(300);
-          const effRungs = () => Array.from(effAdder()?.querySelectorAll('.ladder > [data-place]') ?? []);
-          const adderPicked = () => effAdder()?.querySelector('.ladder [role="radio"][aria-checked="true"]');
-          const effResult = () => textOf(effAdder()?.querySelector('.open .res'));
-          // Every place letter-spacing can go, strongest first: the empty inline style above the
-          // classes, `section p` (which sets it now) under them, and the element's new class last.
-          results.adder.severalDestinationsAreTheLadderInTheValueStep =
-            nameAsksNothing && stepOf(effAdder()) === 'value' &&
-            effRungs().map((one) => textOf(one.querySelector('.pl'))).join(',') === 'inline,.featured,.card,section p,new class' &&
-            // Nothing writes it yet at Element, so inline is where it goes until another is picked.
-            adderPicked()?.dataset.place === 'inline';
-          // Each rung says how far it reaches, and the picked one what a value there would do.
-          results.adder.theResultLineSaysWhatThePickDoes =
-            effResult() === 'A value here will apply, over section p · only this element' &&
-            effRungs().map((one) => textOf(one.querySelector('.uses'))).join(',') === '1×,1×,4×,4×,1×';
-          // The arrows step the pick, as in any radio group; the result follows it.
-          key(adderPicked(), 'ArrowDown');
-          await settle(200);
-          key(adderPicked(), 'ArrowDown');
-          await settle(200);
-          results.adder.arrowKeysStepThePick =
-            adderPicked()?.dataset.place === '.card|base' &&
-            effResult() === 'A value here will apply, over section p · changes 4 elements';
-          // Escape closes the list first, then the adder.
-          fieldOf(effAdder())?.openList();
-          await settle(200);
-          key(inputOf(effAdder()), 'Escape');
-          await settle(200);
-          const listShutFirst = !fieldOf(effAdder())?.listIsOpen && Boolean(effAdder());
-          key(inputOf(effAdder()), 'Escape');
-          await settle(200);
-          results.keys = {
-            escapeClosesInnermostFirst: listShutFirst && !effAdder(),
-          };
-          // The adder under a picked size: the same shared adder, so the same box. Pinned here too,
-          // since only the element's adder was compared before and a size could drift alone.
-          const effSlot = () => sroot().querySelector('[data-strip="panel"] [data-slot="tablet"]');
-          effSlot()?.click();
-          await settle(200);
-          sroot().querySelector('.block-add button[data-adder="other"]')?.click();
-          await settle(200);
-          const sizeAdder = () => sroot().querySelector('.property-adder[data-adder="other"]');
-          const sizeLook = adderLook(sizeAdder());
-          results.adder.looksTheSameInASizeGroup =
-            Boolean(cardLook) && Boolean(sizeLook) && !sizeLook.label &&
-            cardLook.padding === sizeLook.padding &&
-            cardLook.border === sizeLook.border &&
-            cardLook.background === sizeLook.background &&
-            Math.abs(cardLook.inputTop - sizeLook.inputTop) <= 2 &&
-            Math.abs(cardLook.inputLeft - sizeLook.inputLeft) <= 2;
-          key(inputOf(sizeAdder()), 'Escape');
-          await settle(200);
-          // Picking the size shown again goes back to All sizes, as the rest of this page expects.
-          effSlot()?.click();
-          await settle(200);
-          results.adder.sizeGroupClosesBehindItself =
-            !sizeAdder() && !sroot().querySelector('.ctxline');
-          // "a new class" makes an automatic class for this element.
-          sroot().querySelector('.block-add [data-adder="other"]')?.click();
-          await settle(200);
-          await typeInto(inputOf(effAdder()), 'letter-spacing');
-          key(inputOf(effAdder()), 'Enter');
-          await settle(300);
-          effAdder()?.querySelector('.ladder .lr.new .pick')?.click();
-          await settle(200);
-          const classesBefore = Array.from(target.classList);
-          before = engine.history.size;
-          key(inputOf(effAdder()), 'Enter');
-          await settle(300);
-          const fresh = Array.from(target.classList).filter((name) => !classesBefore.includes(name));
-          results.adder.newClassDestinationMakesAnAutomaticClass =
-            fresh.length === 1 && engine.isAutomaticClass(fresh[0], target) && engine.history.size === before + 1;
-          engine.undo();
-          await settle(200);
-          // A size with no rule for the family yet: its query typed into the bar's "+" lands on that
-          // size, then the adder creates the media rule.
-          await pop('.featured');
-          card('.featured')?.querySelector('.slots .add')?.click();
-          await settle(250);
-          {
-            const search = sroot().querySelector('.menu.condpop[data-menu="strip-.featured"] heo-value-field');
-            const input = search?.shadowRoot?.querySelector('input');
-            if (input) {
-              await typeInto(input, '(max-width: 767px)');
-              key(input, 'Enter');
-              await settle(250);
-            }
-          }
-          addButton(block('.featured', 'base'))?.click();
-          await settle(200);
-          const featuredAdder = () => block('.featured', 'base')?.querySelector('.property-adder');
-          await typeInto(inputOf(featuredAdder()), 'outline-offset');
-          before = engine.history.size;
-          key(inputOf(featuredAdder()), 'Enter');
-          await settle(300);
-          key(inputOf(featuredAdder()), 'Enter');
-          await settle(300);
-          const made = engine.rules.list().find((rule) => rule.selector === '.featured' && rule.media);
-          results.adder.createsTheMediaRuleWhenMissing =
-            engine.history.size === before + 1 &&
-            Boolean(made) && /max-width:\s*767px/.test(made.media) && 'outline-offset' in made.declarations &&
-            Boolean(rowIn(block('.featured', 'base'), 'outline-offset'));
-          engine.undo();
-          card('.featured')?.querySelector('.slots .base')?.click();
-          await settle(200);
-
-          /* The size strip (R12). */
-          await pop('.card');
           const strip = (k) => card(k)?.querySelector('[data-heo-part="strip"]');
           const slotButton = (k, slot) => strip(k)?.querySelector(`[data-slot="${slot}"]`);
-          // Counted per condition: a state under a size is its own; a pseudo-element counts nowhere.
-          const conditionOf = (entry) => {
-            const slot = model().slotOf(entry);
-            if (entry.state.includes('::')) return null;
-            if (!entry.state) return slot;
-            return slot === 'base' ? `state:${entry.state}` : `state:${entry.state}@${slot}`;
-          };
-          const slotCount = (k, slot) => model().entries
-            .filter((entry) => entry.family === k && conditionOf(entry) === slot)
-            .reduce((sum, entry) => sum + entry.declarations.length, 0);
-          // A count is a bare number in its marker; a size on screen with part of it beaten reads `won/all`.
-          const countIs = (button, n) => new RegExp(`^(\\d+/)?${n}$`).test(textOf(button?.querySelector('.c')));
-          results.strip = {
-            sameComponentInThePanelAndCards:
-              Boolean(sroot().querySelector('[data-heo-part="strip"][data-strip="panel"]')) &&
-              strip('.card')?.matches('.slots[role="group"]'),
-            countsPerSlot:
-              // Base is always on screen: its marker is yellow, and says how much of it wins.
-              countIs(strip('.card')?.querySelector('.base'), slotCount('.card', 'base')) &&
-              Boolean(strip('.card')?.querySelector('.base .c.live')) &&
-              countIs(slotButton('.card', 'phone'), slotCount('.card', 'phone')) &&
-              countIs(slotButton('.card', 'tablet'), slotCount('.card', 'tablet')) &&
-              slotCount('.card', 'tablet') === 1 &&
-              textOf(slotButton('.card', 'state::hover@tablet')?.querySelector('.c')) === '1' &&
-              !/\+/.test(textOf(strip('.card'))?.replace(/\+$/, '') ?? ''),
-            // A size that declares nothing has no button; ⋮ has it.
-            emptySizesAreNotOnTheBar: !slotButton('.card', 'laptop') && !slotButton('.card', 'desktop'),
-          };
-          /*
-           * A pseudo-element is not its media's count. Cards drew it as a block under its media and
-           * added its declarations to Base's: .featured::before's two made Base read 0/3 for a
-           * class whose one Base declaration is the element's own.
-           */
-          {
-            await pop('.featured');
-            const own = slotCount('.featured', 'base');
-            const pseudoHasTwo = model().entries.some((entry) =>
-              entry.family === '.featured' && entry.state === '::before' && entry.declarations.length === 2);
-            results.strip.aPseudoElementIsNotCountedInBase =
-              pseudoHasTwo && Boolean(strip('.featured')) &&
-              countIs(strip('.featured')?.querySelector('.base'), own) &&
-              !new RegExp(`/?${own + 2}$`).test(textOf(strip('.featured')?.querySelector('.base .c')));
+          if (sections.run('sources')) {
             /*
-             * Drawn whenever the element is, so it reads like Base: unpicked, the same outline and ink
-             * as Base unpicked, with Base's yellow "on screen" marker; picked, Base's colour as a tint
-             * (no hue of its own, and not the state violet).
+             * The header's class name opens its card in a popover under the name, editable there:
+             * the header is where every card opens from.
              */
-            const pill = (cond) => strip('.featured')?.querySelector(`[data-cond="${cond}"]`);
-            const baseOf = () => strip('.featured')?.querySelector('.base');
-            pill('state::focus-within')?.click();
-            await settle(150);
-            const look = (el) => el ? `${getComputedStyle(el).boxShadow}|${getComputedStyle(el).color}` : 'missing';
-            const outlinedAsBase = look(pill('state:::before')) === look(baseOf()) &&
-              Boolean(pill('state:::before')?.querySelector('.c.live'));
-            pill('state:::before')?.click();
-            await settle(150);
-            const probe = document.createElement('span');
-            probe.style.cssText = 'background: var(--heo-accent-soft); color: var(--heo-accent-text)';
-            sroot().append(probe);
-            const tint = getComputedStyle(probe);
-            const picked = pill('state:::before');
-            // Picked, it is drawn with its ×, as one pill: the tint is on that pill.
-            const pickedPill = picked?.closest('.cchip-on') ?? picked;
-            const pickedInBaseColour = Boolean(picked) && picked.getAttribute('aria-pressed') === 'true' &&
-              getComputedStyle(pickedPill).backgroundColor === tint.backgroundColor &&
-              getComputedStyle(picked).color === tint.color;
-            probe.remove();
-            baseOf()?.click();
-            await settle(150);
-            results.strip.aPseudoElementIsOutlinedAsBaseWithItsMarker = outlinedAsBase;
-            results.strip.aPickedPseudoElementTakesBasesColour = pickedInBaseColour;
-            // A ::after with no content draws nothing: drawn disabled, as a size not on screen.
-            const sheet = document.createElement('style');
-            sheet.textContent = '.featured::after { color: red; }';
-            document.head.append(sheet);
-            api.select(item);
-            await settle(250);
-            api.select(target);
+            const chipName = () => sroot().querySelector('.ident .cchip[data-class="featured"] .name');
+            chipName()?.click();
             await settle(300);
-            await pop('.featured');
-            const after = pill('state:::after');
-            results.strip.aPseudoElementThatDrawsNothingIsDrawnDisabled =
-              Boolean(after) && after.classList.contains('notnow') && !after.querySelector('.c.live') &&
-              /not drawn/.test(after.title) && Boolean(pill('state:::before')?.querySelector('.c.live'));
-            sheet.remove();
-            api.select(item);
+            const popped = () => sroot().querySelector('.cardpop[data-card-pop=".featured"]');
+            const poppedCard = popped()?.querySelector('.cls[data-card=".featured"]');
+            const chipBox = chipName()?.getBoundingClientRect();
+            const popBox = popped()?.getBoundingClientRect();
+            results.header.nameOpensItsCardInAPopover =
+              Boolean(poppedCard) && popped()?.matches(':popover-open') === true &&
+              poppedCard.querySelector(':scope > header')?.getAttribute('aria-expanded') === 'true' &&
+              Boolean(poppedCard.querySelector('heo-value-field[data-property="border"]')) &&
+              // Right against the chip, on whichever side has the room: this window is short, and the
+              // popover is placed above when there is no room below it.
+              (Math.abs(popBox.top - chipBox.bottom) <= 8 || Math.abs(popBox.bottom - chipBox.top) <= 8);
+            // Edited in place: a value typed there lands in the class's rule.
+            const historyBefore = engine.history.size;
+            popped()?.querySelector('heo-value-field[data-property="border"]')?.dispatchEvent(
+              new CustomEvent('value-change', { detail: { value: '2px solid #a5b4fc' }, bubbles: true, composed: true }));
+            await settle(200);
+            results.header.thePopoverEditsTheClass =
+              engine.history.size === historyBefore + 1 && Boolean(popped()) &&
+              siteRule('.featured')?.style.getPropertyValue('border') === '2px solid rgb(165, 180, 252)';
+            engine.undo();
+            await settle(200);
+            // With a class's card open from its chip, the general "Paste CSS…" opens on that class; a
+            // real press arrives as a pointerdown first, which must not close the card under it.
+            {
+              // The general one is the Other card's (decision 15).
+              const general = sroot().querySelector('heo-section[data-card="other"] [data-act="paste"]');
+              general?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, composed: true }));
+              await settle(60);
+              general?.click();
+            }
+            await settle(200);
+            results.header.generalPasteFollowsTheOpenClass =
+              engine.store.value.cssPaste?.destination === 'class' && engine.store.value.cssPaste?.className === 'featured';
+            engine.cancelCssPaste();
+            await settle(150);
+            // Escape closes it and gives focus back to the name.
+            key(popped(), 'Escape');
+            await settle(200);
+            results.header.escapeClosesItBackToTheName =
+              !popped() && sroot().activeElement === chipName();
+            // The name is a toggle: pressed while its card is open, it closes it.
+            chipName()?.click();
             await settle(250);
-            api.select(target);
-            await settle(300);
+            const reopened = Boolean(popped()) && chipName()?.getAttribute('aria-expanded') === 'true';
+            chipName()?.click();
+            await settle(250);
+            results.header.nameIsAToggle =
+              reopened && !popped() && chipName()?.getAttribute('aria-expanded') === 'false';
+            /*
+             * Focus around the card, with the harness's real Tab: opening keeps focus on the name,
+             * Tab goes into the card, and closing it from its own header comes back to the name
+             * instead of dropping focus on the page.
+             */
+            {
+              let keySeq = 0;
+              const keyWaiters = new Map();
+              window.__heoKeysDone = (id) => { keyWaiters.get(id)?.(); keyWaiters.delete(id); };
+              const keys = (...names) => new Promise((resolve) => {
+                const id = ++keySeq;
+                keyWaiters.set(id, resolve);
+                window.__heoPressKeys(JSON.stringify({ id, keys: names }));
+              }).then(() => settle(150));
+              const deepFocus = () => {
+                let node = document.activeElement;
+                while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
+                return node;
+              };
+              chipName()?.focus();
+              chipName()?.click();
+              await settle(250);
+              const stays = Boolean(popped()) && deepFocus() === chipName();
+              await keys('Tab');
+              const intoTheCard = deepFocus() === popped()?.querySelector('.cls > header');
+              popped()?.querySelector('.cls > header')?.click();
+              await settle(250);
+              results.header.openingKeepsFocusOnTheName = stays;
+              results.header.tabFromTheNameGoesIntoTheCard = intoTheCard;
+              results.header.closingFromTheCardHeaderReturnsToTheName = !popped() && deepFocus() === chipName();
+            }
+
+            /*
+             * The element's own styles: the tag chip opens its style attribute and its id's rules in
+             * the same popover a class name uses; the id chip, quietly tinted, opens only its rules and
+             * its cross takes the id off.
+             */
+            {
+              const tag = () => sroot().querySelector('.ident .el-chip');
+              const idName = () => sroot().querySelector('.ident .cchip.id .name');
+              const ownPop = () => sroot().querySelector('.cardpop[data-card-pop="element"]');
+              const idPop = () => sroot().querySelector('.cardpop[data-card-pop="id"]');
+              const bg = (el) => (el ? getComputedStyle(el).backgroundColor : '');
+              const classChip = sroot().querySelector('.ident .cchip[data-class="card"]');
+              results.header.idChipStandsApart =
+                bg(idName()?.parentElement) !== bg(tag()) && bg(idName()?.parentElement) !== bg(classChip) &&
+                bg(idName()?.parentElement) !== 'rgba(0, 0, 0, 0)' &&
+                // The same chip as a class otherwise: its face, size and weight.
+                ['fontSize', 'fontWeight', 'fontFamily', 'height'].every((prop) =>
+                  getComputedStyle(idName())[prop] === getComputedStyle(classChip.querySelector('.name'))[prop]);
+              tag()?.click();
+              await settle(300);
+              results.header.tagOpensTheInlineStyle =
+                ownPop()?.matches(':popover-open') === true && tag()?.getAttribute('aria-expanded') === 'true' &&
+                Boolean(ownPop()?.querySelector('.cls[data-card="inline"] heo-value-field'));
+              key(ownPop(), 'Escape');
+              await settle(200);
+              results.header.tagIsAToggleAndEscapeReturnsToIt = !ownPop() && sroot().activeElement === tag();
+              idName()?.click();
+              await settle(300);
+              // No rule for #target on this page: the popover says so and offers an adder for one.
+              const noRule = Boolean(idPop()?.querySelector('.none [data-heo-part="adder"]')) &&
+                /No rule is written for #target yet/.test(textOf(idPop()));
+              engine.createDesignRule('#target', { outline: '1px dashed red' });
+              await settle(300);
+              results.header.idOpensItsRules =
+                noRule && idName()?.getAttribute('aria-expanded') === 'true' &&
+                Boolean(idPop()?.querySelector('.cls[data-card="#target"] heo-value-field[data-property="outline"]')) &&
+                !idPop()?.querySelector('.cls[data-card="inline"]') && !idPop()?.querySelector('.none');
+              idName()?.click();
+              await settle(200);
+              tag()?.click();
+              await settle(300);
+              const ownCards = Array.from(ownPop()?.querySelectorAll(':scope > .cls') ?? []).map((one) => one.dataset.card);
+              results.header.tagShowsInlineThenIdRules = ownCards.join(',') === 'inline,#target';
+              tag()?.click();
+              await settle(200);
+              engine.removeDesignRule('#target');
+              await settle(200);
+              const historyAtKill = engine.history.size;
+              sroot().querySelector('.ident .cchip.id .kill')?.click();
+              await settle(200);
+              const gone = !target.id && !sroot().querySelector('.ident .cchip.id') &&
+                engine.history.size === historyAtKill + 1 && sroot().activeElement === tag();
+              engine.undo();
+              await settle(200);
+              results.header.idCrossRemovesTheId = gone && target.id === 'target' && Boolean(idName());
+            }
+
+            /* No Sources section: the cards, by category. */
+            results.sources = {
+              noSourcesSection:
+                !Array.from(sroot().querySelectorAll('heo-section')).some((one) => one.heading === 'Sources') &&
+                Boolean(sroot().querySelector('.cards-view heo-section[data-card]')),
+            };
+            /*
+             * Every card ends with "Paste CSS", on the same line as "Detach styles from class" when
+             * there is one, and the dialog opens on that card: its class (already applied, so the
+             * box is ticked and off), its rule, or the inline style.
+             */
+            {
+              const pasteDialog = () => deep('heo-css-paste-dialog')?.shadowRoot;
+              const openPaste = async (k) => {
+                await pop(k);
+                card(k)?.querySelector(':scope > .body > .actions [data-act="paste-here"]')?.click();
+                await settle(200);
+                const open = engine.store.value.cssPaste;
+                const box = pasteDialog()?.querySelector('.destination .check input');
+                const seen = { destination: open?.destination, className: open?.className, selector: open?.selector, applyClass: open?.applyClass, boxDisabled: box?.disabled, boxChecked: box?.checked, label: textOf(pasteDialog()?.querySelector('.destination .check')) };
+                engine.cancelCssPaste();
+                await settle(150);
+                return seen;
+              };
+              let everyCard = true;
+              for (const k of ['inline', '.card', '.featured', '.card.featured', 'section p']) {
+                everyCard = everyCard && Boolean((await pop(k))?.querySelector(':scope > .body > .actions [data-act="paste-here"]'));
+              }
+              await pop('.card');
+              const sameRow = Boolean(card('.card')?.querySelector(':scope > .body > .actions [data-act="paste-here"] ~ [data-act="detach"]'));
+              const asClass = await openPaste('.card');
+              const asRule = await openPaste('section p');
+              const asInline = await openPaste('inline');
+              results.sources.everyCardHasPasteCss = everyCard && sameRow;
+              results.sources.aClassCardPastesIntoItsClass =
+                asClass.destination === 'class' && asClass.className === 'card' && asClass.applyClass === false &&
+                asClass.boxDisabled === true && asClass.boxChecked === true && /Already applied to/.test(asClass.label);
+              results.sources.aRuleCardPastesIntoItsRule = asRule.destination === 'rule' && asRule.selector === 'section p';
+              results.sources.theInlineCardPastesInline = asInline.destination === 'inline';
+            }
+
+            /* Cards: the Tokens class card. */
+            const cardHeader = (k) => card(k)?.querySelector(':scope > header');
+            const meta = (k) => textOf(cardHeader(k)?.querySelector('.meta'));
+            const looks = {};
+            for (const k of ['.card', '.featured', '.promo .card', 'section p', 'inline']) {
+              await pop(k);
+              const pillEl = cardHeader(k)?.querySelector('.meta .uses');
+              looks[k] = {
+                named: Boolean(cardHeader(k)?.querySelector('.n')) && Boolean(cardHeader(k)?.querySelector('.meta')),
+                bg: cardHeader(k) ? getComputedStyle(cardHeader(k)).backgroundColor : '',
+                meta: meta(k),
+                pill: textOf(pillEl),
+                pillClass: pillEl ? Array.from(pillEl.classList).join(' ') : '',
+                pillBg: pillEl ? getComputedStyle(pillEl).backgroundColor : '',
+                pillRound: pillEl ? parseFloat(getComputedStyle(pillEl).borderTopLeftRadius) >= 7 && pillEl.getBoundingClientRect().height <= 15 : false,
+              };
+            }
+            results.cards = {
+              /*
+               * The Tokens class card, by its header: the popover is the card's frame, so its header
+               * reads on the popover surface rather than Tokens' header band. Every card the same.
+               */
+              useTheTokensClassCard:
+                ['.card', '.featured', 'section p', 'inline'].every((k) => looks[k].named) &&
+                new Set(['.card', '.featured', 'section p', 'inline'].map((k) => looks[k].bg)).size === 1 &&
+                Boolean(tokensHeaderBg),
+              // N rules across what is in effect • N× elements the selector matches; none for inline.
+              metaCountsRulesAndElements:
+                looks['.card'].meta === `${familyDeclarations('.card')} rules • 4×` &&
+                looks['.featured'].meta === `${familyDeclarations('.featured')} rules • 1×` &&
+                looks['.promo .card'].meta === '1 rule • 4×' &&
+                looks.inline.meta === '2 rules',
+            };
+            /* The uses count is a pill, its colour read before its number: green for one, orange for more. */
+            results.cards.usesIsAPill =
+              looks['.card'].pill === '4×' && /\bmany\b/.test(looks['.card'].pillClass) &&
+              looks['.featured'].pill === '1×' && /\bone\b/.test(looks['.featured'].pillClass) &&
+              !looks.inline.pill && looks['.card'].pillRound &&
+              looks['.card'].pillBg !== looks['.featured'].pillBg && looks['.card'].pillBg !== 'rgba(0, 0, 0, 0)';
+            await pop('section p');
+            const file = () => cardHeader('section p')?.querySelector('.file');
+            const restDisplay = file() ? getComputedStyle(file()).display : 'missing';
+            cardHeader('section p').focus();
+            await settle(60);
+            results.cards.fileOnlyOnHover =
+              restDisplay === 'none' && getComputedStyle(file()).display !== 'none' && textOf(file()).length > 0;
+            // One card per selector family: the chips name families, never a state or size.
+            sroot().querySelector('.ident .cchip.rules')?.click();
+            await settle(120);
+            const allKeys = [
+              ...Array.from(sroot().querySelectorAll('.ident .cchip[data-class]')).map((one) => `.${one.dataset.class}`),
+              ...Array.from(sroot().querySelectorAll('.ident .cchip.rule')).map((one) => one.dataset.rule),
+            ];
             await pop('.card');
+            results.cards.oneCardPerSelectorFamily =
+              allKeys.length === 5 && new Set(allKeys).size === allKeys.length &&
+              !allKeys.some((k) => /:/.test(k)) &&
+              Boolean(card('.card')?.querySelector('.slots [data-cond="state::hover"]'));
+            // A class no readable rule defines gets a card that offers to define it.
+            target.classList.add('ghost');
+            await settle(300);
+            const ghost = await pop('.ghost');
+            const define = Array.from(ghost?.querySelectorAll('button') ?? []).find((one) => /Define \.ghost/.test(one.textContent));
+            const offered = ghost?.hasAttribute('data-unknown') && Boolean(define);
+            define?.click();
+            await settle(300);
+            results.cards.unknownClassOffersDefine =
+              offered && Boolean(engine.classes.get('ghost')) &&
+              !card('.ghost')?.hasAttribute('data-unknown') &&
+              /No declarations yet\./.test(textOf(card('.ghost')));
+            target.classList.remove('ghost');
+            engine.classes.remove('ghost');
+            await settle(200);
+
+            /* Card bodies. */
+            await pop('.featured');
+            const featuredBlocks = blocks('.featured').map((one) => one.dataset.block).join(',');
+            const featuredFocus = Boolean(card('.featured')?.querySelector('.slots [data-cond="state::focus-within"]'));
+            // A pseudo-element is a pill on the card's bar, as on the panel's strip; picked, its block alone.
+            const beforePill = () => card('.featured')?.querySelector('.slots [data-cond="state:::before"]');
+            const pillIsAPseudo = beforePill()?.classList.contains('pseudo') && !beforePill()?.classList.contains('state');
+            beforePill()?.click();
+            await settle(150);
+            const pickedBlocks = blocks('.featured').map((one) => one.dataset.block).join(',');
+            const featuredPseudo = textOf(block('.featured', '::before')?.querySelector('.kindtxt'));
+            const pseudoHint = textOf(body('.featured')?.querySelector('.slot-hint'));
+            card('.featured')?.querySelector('.slots .base')?.click();
+            await settle(150);
+            await pop('.card');
+            const cardBody = body('.card');
+            results.cardBody = {
+              // Straight into the declarations: strip, then the base block's rows, no selector label.
+              noRepeatedSelectorLabel:
+                cardBody?.firstElementChild?.matches('.slots') &&
+                cardBody?.children[1]?.matches('.block[data-block="base"]') &&
+                cardBody?.children[1]?.firstElementChild?.matches('.decls') &&
+                !cardBody?.children[1]?.querySelector('.blabel'),
+              /*
+               * Under Base: the base block alone. States and pseudo-elements are pills on the bar, as on
+               * the panel's strip; cards used to draw a pseudo-element as a block under Base instead.
+               */
+              pseudoElementsAndStatesArePillsOnTheBar:
+                blocks('.card').map((one) => one.dataset.block).join(',') === 'base' &&
+                featuredBlocks === 'base' && featuredFocus && Boolean(pillIsAPseudo),
+              pickingAPseudoElementShowsItsBlockAlone:
+                pickedBlocks === '::before' && featuredPseudo === 'pseudo-element' &&
+                /^The element's ::before — drawn with it once it has content/.test(pseudoHint),
+              noSeparatePseudoElementAdder: !sroot().querySelector('.cls .add-prop') ||
+                !Array.from(sroot().querySelectorAll('.cls .add-prop')).some((one) => /pseudo-element/i.test(textOf(one))),
+            };
+            /*
+             * A card's rows on the element's cascade. Base read 7/11 and nothing said which four lost,
+             * or to what: each beaten row is struck with the panel's "hidden by" pill under its name,
+             * and its name opens a read-only ladder from what wins down to this card's declaration.
+             */
+            {
+              const baseCount = textOf(card('.card')?.querySelector('[data-heo-part="strip"] .base .c'));
+              const [won, all] = baseCount.split('/').map(Number);
+              const hiddenRows = () => Array.from(block('.card', 'base')?.querySelectorAll('.decl.hidden') ?? []);
+              const nameOf = (row) => row?.querySelector('.p')?.textContent.trim();
+              const padRow = () => hiddenRows().find((row) => nameOf(row) === 'padding');
+              const live = innerWidth >= 768 ? '≥768px' : '≤767px';
+              const struckInput = (row) => getComputedStyle(row.querySelector('heo-value-field').shadowRoot.querySelector('input')).textDecorationLine === 'line-through';
+              const oneLinePerLoser =
+                Number.isFinite(won) && hiddenRows().length === all - won && hiddenRows().length > 0 &&
+                hiddenRows().every((row) => /^hidden by /.test(textOf(row.querySelector('.hidby'))) && struckInput(row)) &&
+                textOf(padRow()?.querySelector('.hidby')) === `hidden by ${live}`;
+              padRow()?.querySelector('.dots')?.click();
+              await settle(200);
+              const ro = () => sroot().querySelector('.pop[data-readonly]');
+              const rungs = Array.from(ro()?.querySelectorAll('.ladder > .lr') ?? []);
+              const struck = (one) => getComputedStyle(one.querySelector('.cv')).textDecorationLine.includes('line-through');
+              const ladder =
+                ro()?.matches(':popover-open') === true && rungs.length === 2 &&
+                rungs[0].classList.contains('win') && Boolean(rungs[0].querySelector('.now')) &&
+                textOf(rungs[0].querySelector('.sz')) === live && !struck(rungs[0]) &&
+                rungs[1].classList.contains('me') && textOf(rungs[1].querySelector('.mine')) === 'this card' && struck(rungs[1]);
+              // Read-only, and nothing but the ladder: no radios, fields, result line or note.
+              const onlyTheLadder = Boolean(ro()) &&
+                !ro().querySelector('[role="radio"], heo-value-field, .res, .note, .open') &&
+                Boolean(card('.card'));
+              key(ro(), 'Escape');
+              await settle(200);
+              const escapeBack = !ro() && Boolean(card('.card')) && sroot().activeElement === padRow()?.querySelector('.dots');
+              // A row that applies: plain, and its ladder is its own rung, winning.
+              const winner = Array.from(block('.card', 'base')?.querySelectorAll('.decl:not(.hidden)') ?? [])
+                .find((row) => nameOf(row) === 'font-weight');
+              winner?.querySelector('.dots')?.click();
+              await settle(200);
+              const alone = Array.from(ro()?.querySelectorAll('.ladder > .lr') ?? []);
+              const applies = Boolean(winner) && !winner.querySelector('.hidby') && alone.length === 1 &&
+                alone[0].classList.contains('me') && alone[0].classList.contains('win') && Boolean(alone[0].querySelector('.now'));
+              key(ro(), 'Escape');
+              await settle(200);
+              results.cardBody.aBeatenRowIsStruckWithWhatBeatsIt = oneLinePerLoser;
+              results.cardBody.itsNameOpensTheLadderDownToIt = ladder;
+              results.cardBody.theCardsLadderIsReadOnly = onlyTheLadder;
+              results.cardBody.escapeClosesItBackToTheName = escapeBack;
+              results.cardBody.aRowThatAppliesIsItsOwnWinningRung = applies;
+            }
+            // Picking a size says where it applies and how far it reaches.
+            card('.card')?.querySelector('.slots [data-slot="tablet"]')?.click();
+            await settle(150);
+            const hint = textOf(body('.card')?.querySelector('.slot-hint'));
+            results.cardBody.slotHintSaysReach =
+              new RegExp(`^Only at ≥768px — ${innerWidth >= 768 ? 'in effect' : 'not'} at ${innerWidth}px\\. Adds to or overrides Base there, for all 4 elements\\.$`).test(hint) &&
+              blocks('.card').map((one) => one.dataset.block).join(',') === 'base';
+            // The ≥768px :hover rule is a condition of its own: its block alone, read as a hover.
+            card('.card')?.querySelector('.slots [data-cond="state::hover@tablet"]')?.click();
+            await settle(150);
+            results.cardBody.aStateUnderASizeIsItsOwnCondition =
+              blocks('.card').map((one) => one.dataset.block).join(',') === ':hover' &&
+              Boolean(rowIn(block('.card', ':hover'), 'box-shadow')) &&
+              /^Only on :hover, at ≥768px/.test(textOf(body('.card')?.querySelector('.slot-hint')));
+            // A state at no media query: picked on the bar, where its trash is.
+            card('.card')?.querySelector('.slots [data-cond="state::hover"]')?.click();
+            await settle(150);
+            // The trash on a page rule's state block empties it; the rule stays in the file.
+            let before = engine.history.size;
+            block('.card', ':hover')?.querySelector('.blabel .kill')?.click();
+            await settle(200);
+            results.cardBody.trashEmptiesAFileRule =
+              engine.history.size === before + 1 &&
+              Boolean(siteRule('.card:hover')) && siteRule('.card:hover').style.length === 0 &&
+              !block('.card', ':hover');
+            engine.undo();
+            await settle(200);
+            // The trash on a rule the editor made removes it.
+            engine.addDeclaration({ kind: 'new-rule', selector: '.card:active', media: null }, 'opacity', '0.9');
+            await settle(200);
+            card('.card')?.querySelector('.slots [data-cond="state::active"]')?.click();
+            await settle(150);
+            const active = block('.card', ':active');
+            before = engine.history.size;
+            active?.querySelector('.blabel .kill')?.click();
+            await settle(200);
+            results.cardBody.trashRemovesThatRule =
+              Boolean(active) && engine.history.size === before + 1 &&
+              !engine.rules.list().some((rule) => rule.selector === '.card:active') &&
+              !block('.card', ':active');
+            engine.undo();
+            engine.undo();
+            await settle(200);
+            card('.card')?.querySelector('.slots .base')?.click();
+            await settle(150);
+            /* Card rows write their own declaration. */
+            results.cardRows = {
+              // The row's name is its one way into the cascade, as on the panel: no dot or moon beside it.
+              nameIsTheOnlyCascadeControl: !sroot().querySelector('.cardpop .cls .moon') &&
+                Array.from(sroot().querySelectorAll('.cardpop .cls .dots')).every((one) =>
+                  one.matches('button[aria-haspopup="dialog"]') && Boolean(one.querySelector(':scope > .p'))),
+            };
+            await pop('.promo .card');
+            before = engine.history.size;
+            const promoColor = () => rowIn(body('.promo .card'), 'color')?.querySelector('heo-value-field');
+            promoColor()?.dispatchEvent(new CustomEvent('value-change', { detail: { value: '#123456' }, bubbles: true, composed: true }));
+            await settle(200);
+            results.cardRows.writeThatDeclarationDirectly =
+              engine.history.size === before + 1 &&
+              siteRule('.promo .card')?.style.getPropertyValue('color') === 'rgb(18, 52, 86)' &&
+              siteRule('.promo .card')?.style.getPropertyPriority('color') === 'important' &&
+              target.style.color === 'rgb(185, 28, 28)';
+            engine.undo();
+            await settle(200);
+            await pop('.card');
+            const second = document.querySelectorAll('.card')[1];
+            const weight = () => rowIn(body('.card'), 'font-weight')?.querySelector('heo-value-field');
+            weight()?.dispatchEvent(new CustomEvent('value-input', { detail: { value: '800' }, bubbles: true, composed: true }));
+            await settle(150);
+            const previewed = getComputedStyle(second).fontWeight === '800';
+            before = engine.history.size;
+            engine.cancelPreview();
+            await settle(150);
+            results.cardRows.previewWhileTyping =
+              previewed && getComputedStyle(second).fontWeight === '600' && engine.history.size === before &&
+              weight()?.value === '600';
+            before = engine.history.size;
+            rowIn(body('.card'), 'text-transform')?.querySelector('.kill')?.click();
+            await settle(200);
+            results.cardRows.trashRemovesTheDeclaration =
+              engine.history.size === before + 1 &&
+              siteRule('.card')?.style.getPropertyValue('text-transform') === '' &&
+              !rowIn(body('.card'), 'text-transform');
+            engine.undo();
+            await settle(200);
+
+            /* The inline card (R21). */
+            await pop('inline');
+            const inline = () => card('inline');
+            const extract = () => Array.from(inline()?.querySelectorAll('.actions button') ?? []).find((one) => /Extract/.test(one.textContent));
+            results.inlineCard = {
+              listsInlineDeclarations:
+                rowsOf(inline()).map((row) => row.querySelector('.p').textContent.trim()).join(',') === 'color,font-size' &&
+                textOf(cardHeader('inline')?.querySelector('.n')) === 'Inline style',
+            };
+            extract()?.click();
+            await settle(200);
+            results.inlineCard.extractOpensTheDialog =
+              textOf(extract()) === 'Extract 2 into a class' &&
+              engine.store.value.extraction?.mode === 'class' && engine.store.value.extraction?.element === target;
+            engine.cancelExtraction();
+            api.select(item);
+            await settle(300);
+            await pop('inline');
+            results.inlineCard.extractDisabledWhenEmpty =
+              extract()?.disabled === true && !rowsOf(inline()).length &&
+              Boolean(inline()?.querySelector('[data-heo-part="adder"]'));
+            api.select(target);
+            await settle(300);
+
+            /* One adder everywhere (R23). */
+            const inlineHasAdder = Boolean((await pop('inline'))?.querySelector('[data-heo-part="adder"]'));
+            await pop('.card');
+            results.adder = {
+              oneComponentEverywhere:
+                Boolean(sroot().querySelector('.block-add [data-heo-part="adder"][data-adder="other"]')) &&
+                Boolean(block('.card', 'base')?.querySelector('[data-heo-part="adder"]')) &&
+                inlineHasAdder &&
+                tokensHasAdder,
+            };
+            addButton(block('.card', 'base'))?.click();
+            await settle(200);
+            const cardAdder = () => block('.card', 'base')?.querySelector('.property-adder');
+            // How an open adder looks, measured: the panel's used to show a stray "add" line above
+            // its field, because only a card's row grid styled that label.
+            const adderLook = (adder) => {
+              const input = inputOf(adder);
+              if (!adder || !input) return null;
+              const box = adder.getBoundingClientRect();
+              const field = input.getBoundingClientRect();
+              const cs = getComputedStyle(adder);
+              return {
+                label: Boolean(adder.querySelector(':scope > .p')),
+                padding: cs.padding,
+                border: `${cs.borderTopStyle} ${cs.borderTopColor}`,
+                background: cs.backgroundColor,
+                inputTop: Math.round(field.top - box.top),
+                inputLeft: Math.round(field.left - box.left),
+              };
+            };
+            const cardLook = adderLook(cardAdder());
+            // The card is where it goes: its adder asks only for the property, then its value.
+            results.adder.aCardAdderAsksNoDestination =
+              stepOf(cardAdder()) === 'name' && !cardAdder()?.querySelector('.dest, .chip, heo-segmented');
+            // Validated with today's messages, and nothing is written while it is refused.
+            before = engine.history.size;
+            await typeInto(inputOf(cardAdder()), 'padding');
+            key(inputOf(cardAdder()), 'Enter');
+            await settle(150);
+            const duplicate = textOf(cardAdder()?.querySelector('.field-error'));
+            await typeInto(inputOf(cardAdder()), '');
+            key(inputOf(cardAdder()), 'Enter');
+            await settle(150);
+            const emptyMessage = textOf(cardAdder()?.querySelector('.field-error'));
+            results.adder.validatesWithTodaysMessages =
+              /padding/.test(duplicate) && /\.card/.test(duplicate) &&
+              emptyMessage === 'Type the property to add.' && engine.history.size === before;
+            // Seeded with what the element resolves to (section p's 0.01em, here), focused and selected.
+            const resolved = getComputedStyle(target).letterSpacing;
+            await typeInto(inputOf(cardAdder()), 'letter-spacing');
+            key(inputOf(cardAdder()), 'Enter');
+            await settle(300);
+            // The name opens its value, seeded and nothing written yet; Enter writes it, once.
+            const valueStep = stepOf(cardAdder()) === 'value' && fieldOf(cardAdder())?.dataset.property === 'letter-spacing';
+            const seeded = inputOf(cardAdder())?.value;
+            const nothingYet = engine.history.size === before;
+            const noSwitch = !fieldOf(cardAdder())?.head;
+            /*
+             * Its list opens whole: the seed is a suggestion, not a search. Read as a query, it filtered
+             * the list down to what contains "0.01em" until a blur committed it and the list came back.
+             */
+            fieldOf(cardAdder())?.openList();
+            await settle(150);
+            const groupsAtOpen = Array.from(fieldOf(cardAdder())?.shadowRoot?.querySelectorAll('.popup .group') ?? [])
+              .map((one) => textOf(one));
+            results.adder.theValueListOpensWhole =
+              groupsAtOpen.some((name) => !/^(computed|units|functions)$/i.test(name));
+            fieldOf(cardAdder())?.closePopup();
+            key(inputOf(cardAdder()), 'Enter');
+            await settle(300);
+            const added = rowIn(block('.card', 'base'), 'letter-spacing')?.querySelector('heo-value-field');
+            results.adder.nameThenValueThenOneWrite = valueStep && nothingYet && noSwitch;
+            results.adder.seedsTheResolvedValue =
+              seeded === resolved &&
+              engine.history.size === before + 1 &&
+              resolved !== 'normal' &&
+              siteRule('.card')?.style.getPropertyValue('letter-spacing') === resolved && added?.value === resolved;
+            // Then back to "+ Add property", for the next one.
+            await settle(100);
+            results.adder.focusReturnsToAddProperty = Boolean(added) && sroot().activeElement === addButton(block('.card', 'base'));
+            engine.undo();
+            await settle(200);
+            // A whole declaration typed as the name is written at once, as typed.
+            addButton(block('.card', 'base'))?.click();
+            await settle(200);
+            before = engine.history.size;
+            await typeInto(inputOf(cardAdder()), 'word-spacing: 3px');
+            key(inputOf(cardAdder()), 'Enter');
+            await settle(300);
+            results.adder.aWholeDeclarationIsWrittenAtOnce =
+              engine.history.size === before + 1 && siteRule('.card')?.style.getPropertyValue('word-spacing') === '3px' &&
+              !cardAdder();
+            engine.undo();
+            await settle(200);
+            // Typing "!important" after the same value, then the promote toggle off: the field once
+            // kept the typed text, because the value bound back to it had not changed.
+            {
+              const field = () => rowIn(block('.card', 'base'), 'margin')?.querySelector('heo-value-field');
+              const promote = () => rowIn(block('.card', 'base'), 'margin')?.querySelector('.promote');
+              const value = field()?.value;
+              const painted = siteRule('.card')?.style.getPropertyValue('margin');
+              const input = field()?.shadowRoot?.querySelector('input');
+              input?.focus();
+              await typeInto(input, `${value} !important`);
+              key(input, 'Enter');
+              await settle(200);
+              const pressed = promote()?.getAttribute('aria-pressed') === 'true' &&
+                siteRule('.card')?.style.getPropertyPriority('margin') === 'important';
+              input?.blur();
+              await settle(100);
+              promote()?.click();
+              await settle(200);
+              const shown = field()?.shadowRoot?.querySelector('input')?.value ?? '';
+              results.typedImportant = {};
+              results.typedImportant.showsAsPressed = pressed;
+              results.typedImportant.untogglingRemovesIt =
+                siteRule('.card')?.style.getPropertyPriority('margin') === '' &&
+                promote()?.getAttribute('aria-pressed') === 'false' &&
+                !/important/.test(shown) && !/important/.test(field()?.value ?? '') &&
+                field()?.important === false && shown === value &&
+                siteRule('.card')?.style.getPropertyValue('margin') === painted;
+              engine.undo();
+              engine.undo();
+              await settle(200);
+            }
+            // Escape closes an adder and leaves nothing behind.
+            await pop('.card');
+            addButton(block('.card', 'base'))?.click();
+            await settle(200);
+            await typeInto(inputOf(cardAdder()), 'margin');
+            before = engine.history.size;
+            // The first Escape closes the name list, the next the adder.
+            key(inputOf(cardAdder()), 'Escape');
+            await settle(120);
+            key(inputOf(cardAdder()), 'Escape');
+            await settle(200);
+            results.adder.escapeCancels =
+              !cardAdder() && Boolean(addButton(block('.card', 'base'))) && engine.history.size === before &&
+              engine.selected === target;
+            // Several destinations: the cascade ladder in the value step, the value in the picked rung.
+            // The panel's adder is the Other card's, opened first (cards start closed) to be measured.
+            {
+              const other = sroot().querySelector('heo-section[data-card="other"]');
+              if (other && !other.open) other.shadowRoot?.querySelector('.tile')?.click();
+              await settle(200);
+            }
+            sroot().querySelector('.block-add [data-adder="other"]')?.click();
+            await settle(200);
+            const effAdder = () => sroot().querySelector('.property-adder[data-adder="other"]');
+            const effLook = adderLook(effAdder());
+            results.adder.looksTheSameInOtherAndCards =
+              Boolean(cardLook) && Boolean(effLook) &&
+              !cardLook.label && !effLook.label &&
+              cardLook.border.startsWith('solid') &&
+              cardLook.padding === effLook.padding &&
+              cardLook.border === effLook.border &&
+              cardLook.background === effLook.background &&
+              effLook.inputTop <= 10 && Math.abs(cardLook.inputTop - effLook.inputTop) <= 2 &&
+              Math.abs(cardLook.inputLeft - effLook.inputLeft) <= 2;
+            // The name asks nothing about where.
+            const nameAsksNothing = !effAdder()?.querySelector('.dest, .chip, heo-segmented, .ladder');
+            await typeInto(inputOf(effAdder()), 'letter-spacing');
+            key(inputOf(effAdder()), 'Enter');
+            await settle(300);
+            const effRungs = () => Array.from(effAdder()?.querySelectorAll('.ladder > [data-place]') ?? []);
+            const adderPicked = () => effAdder()?.querySelector('.ladder [role="radio"][aria-checked="true"]');
+            const effResult = () => textOf(effAdder()?.querySelector('.open .res'));
+            // Every place letter-spacing can go, strongest first: the empty inline style above the
+            // classes, `section p` (which sets it now) under them, and the element's new class last.
+            results.adder.severalDestinationsAreTheLadderInTheValueStep =
+              nameAsksNothing && stepOf(effAdder()) === 'value' &&
+              effRungs().map((one) => textOf(one.querySelector('.pl'))).join(',') === 'inline,.featured,.card,section p,new class' &&
+              // Nothing writes it yet at Element, so inline is where it goes until another is picked.
+              adderPicked()?.dataset.place === 'inline';
+            // Each rung says how far it reaches, and the picked one what a value there would do.
+            results.adder.theResultLineSaysWhatThePickDoes =
+              effResult() === 'A value here will apply, over section p · only this element' &&
+              effRungs().map((one) => textOf(one.querySelector('.uses'))).join(',') === '1×,1×,4×,4×,1×';
+            // The arrows step the pick, as in any radio group; the result follows it.
+            key(adderPicked(), 'ArrowDown');
+            await settle(200);
+            key(adderPicked(), 'ArrowDown');
+            await settle(200);
+            results.adder.arrowKeysStepThePick =
+              adderPicked()?.dataset.place === '.card|base' &&
+              effResult() === 'A value here will apply, over section p · changes 4 elements';
+            // Escape closes the list first, then the adder.
+            fieldOf(effAdder())?.openList();
+            await settle(200);
+            key(inputOf(effAdder()), 'Escape');
+            await settle(200);
+            const listShutFirst = !fieldOf(effAdder())?.listIsOpen && Boolean(effAdder());
+            key(inputOf(effAdder()), 'Escape');
+            await settle(200);
+            results.keys = {
+              escapeClosesInnermostFirst: listShutFirst && !effAdder(),
+            };
+            // The adder under a picked size: the same shared adder, so the same box. Pinned here too,
+            // since only the element's adder was compared before and a size could drift alone.
+            const effSlot = () => sroot().querySelector('[data-strip="panel"] [data-slot="tablet"]');
+            effSlot()?.click();
+            await settle(200);
+            sroot().querySelector('.block-add button[data-adder="other"]')?.click();
+            await settle(200);
+            const sizeAdder = () => sroot().querySelector('.property-adder[data-adder="other"]');
+            const sizeLook = adderLook(sizeAdder());
+            results.adder.looksTheSameInASizeGroup =
+              Boolean(cardLook) && Boolean(sizeLook) && !sizeLook.label &&
+              cardLook.padding === sizeLook.padding &&
+              cardLook.border === sizeLook.border &&
+              cardLook.background === sizeLook.background &&
+              Math.abs(cardLook.inputTop - sizeLook.inputTop) <= 2 &&
+              Math.abs(cardLook.inputLeft - sizeLook.inputLeft) <= 2;
+            key(inputOf(sizeAdder()), 'Escape');
+            await settle(200);
+            // Picking the size shown again goes back to All sizes, as the rest of this page expects.
+            effSlot()?.click();
+            await settle(200);
+            results.adder.sizeGroupClosesBehindItself =
+              !sizeAdder() && !sroot().querySelector('.ctxline');
+            // "a new class" makes an automatic class for this element.
+            sroot().querySelector('.block-add [data-adder="other"]')?.click();
+            await settle(200);
+            await typeInto(inputOf(effAdder()), 'letter-spacing');
+            key(inputOf(effAdder()), 'Enter');
+            await settle(300);
+            effAdder()?.querySelector('.ladder .lr.new .pick')?.click();
+            await settle(200);
+            const classesBefore = Array.from(target.classList);
+            before = engine.history.size;
+            key(inputOf(effAdder()), 'Enter');
+            await settle(300);
+            const fresh = Array.from(target.classList).filter((name) => !classesBefore.includes(name));
+            results.adder.newClassDestinationMakesAnAutomaticClass =
+              fresh.length === 1 && engine.isAutomaticClass(fresh[0], target) && engine.history.size === before + 1;
+            engine.undo();
+            await settle(200);
+            // A size with no rule for the family yet: its query typed into the bar's "+" lands on that
+            // size, then the adder creates the media rule.
+            await pop('.featured');
+            card('.featured')?.querySelector('.slots .add')?.click();
+            await settle(250);
+            {
+              const search = sroot().querySelector('.menu.condpop[data-menu="strip-.featured"] heo-value-field');
+              const input = search?.shadowRoot?.querySelector('input');
+              if (input) {
+                await typeInto(input, '(max-width: 767px)');
+                key(input, 'Enter');
+                await settle(250);
+              }
+            }
+            addButton(block('.featured', 'base'))?.click();
+            await settle(200);
+            const featuredAdder = () => block('.featured', 'base')?.querySelector('.property-adder');
+            await typeInto(inputOf(featuredAdder()), 'outline-offset');
+            before = engine.history.size;
+            key(inputOf(featuredAdder()), 'Enter');
+            await settle(300);
+            key(inputOf(featuredAdder()), 'Enter');
+            await settle(300);
+            const made = engine.rules.list().find((rule) => rule.selector === '.featured' && rule.media);
+            results.adder.createsTheMediaRuleWhenMissing =
+              engine.history.size === before + 1 &&
+              Boolean(made) && /max-width:\s*767px/.test(made.media) && 'outline-offset' in made.declarations &&
+              Boolean(rowIn(block('.featured', 'base'), 'outline-offset'));
+            engine.undo();
+            card('.featured')?.querySelector('.slots .base')?.click();
+            await settle(200);
+
+            /* The size strip (R12). */
+            await pop('.card');
+            // Counted per condition: a state under a size is its own; a pseudo-element counts nowhere.
+            const conditionOf = (entry) => {
+              const slot = model().slotOf(entry);
+              if (entry.state.includes('::')) return null;
+              if (!entry.state) return slot;
+              return slot === 'base' ? `state:${entry.state}` : `state:${entry.state}@${slot}`;
+            };
+            const slotCount = (k, slot) => model().entries
+              .filter((entry) => entry.family === k && conditionOf(entry) === slot)
+              .reduce((sum, entry) => sum + entry.declarations.length, 0);
+            // A count is a bare number in its marker; a size on screen with part of it beaten reads `won/all`.
+            const countIs = (button, n) => new RegExp(`^(\\d+/)?${n}$`).test(textOf(button?.querySelector('.c')));
+            results.strip = {
+              sameComponentInThePanelAndCards:
+                Boolean(sroot().querySelector('[data-heo-part="strip"][data-strip="panel"]')) &&
+                strip('.card')?.matches('.slots[role="group"]'),
+              countsPerSlot:
+                // Base is always on screen: its marker is yellow, and says how much of it wins.
+                countIs(strip('.card')?.querySelector('.base'), slotCount('.card', 'base')) &&
+                Boolean(strip('.card')?.querySelector('.base .c.live')) &&
+                countIs(slotButton('.card', 'phone'), slotCount('.card', 'phone')) &&
+                countIs(slotButton('.card', 'tablet'), slotCount('.card', 'tablet')) &&
+                slotCount('.card', 'tablet') === 1 &&
+                textOf(slotButton('.card', 'state::hover@tablet')?.querySelector('.c')) === '1' &&
+                !/\+/.test(textOf(strip('.card'))?.replace(/\+$/, '') ?? ''),
+              // A size that declares nothing has no button; ⋮ has it.
+              emptySizesAreNotOnTheBar: !slotButton('.card', 'laptop') && !slotButton('.card', 'desktop'),
+            };
+            /*
+             * A pseudo-element is not its media's count. Cards drew it as a block under its media and
+             * added its declarations to Base's: .featured::before's two made Base read 0/3 for a
+             * class whose one Base declaration is the element's own.
+             */
+            {
+              await pop('.featured');
+              const own = slotCount('.featured', 'base');
+              const pseudoHasTwo = model().entries.some((entry) =>
+                entry.family === '.featured' && entry.state === '::before' && entry.declarations.length === 2);
+              results.strip.aPseudoElementIsNotCountedInBase =
+                pseudoHasTwo && Boolean(strip('.featured')) &&
+                countIs(strip('.featured')?.querySelector('.base'), own) &&
+                !new RegExp(`/?${own + 2}$`).test(textOf(strip('.featured')?.querySelector('.base .c')));
+              /*
+               * Drawn whenever the element is, so it reads like Base: unpicked, the same outline and ink
+               * as Base unpicked, with Base's yellow "on screen" marker; picked, Base's colour as a tint
+               * (no hue of its own, and not the state violet).
+               */
+              const pill = (cond) => strip('.featured')?.querySelector(`[data-cond="${cond}"]`);
+              const baseOf = () => strip('.featured')?.querySelector('.base');
+              pill('state::focus-within')?.click();
+              await settle(150);
+              const look = (el) => el ? `${getComputedStyle(el).boxShadow}|${getComputedStyle(el).color}` : 'missing';
+              const outlinedAsBase = look(pill('state:::before')) === look(baseOf()) &&
+                Boolean(pill('state:::before')?.querySelector('.c.live'));
+              pill('state:::before')?.click();
+              await settle(150);
+              const probe = document.createElement('span');
+              probe.style.cssText = 'background: var(--heo-accent-soft); color: var(--heo-accent-text)';
+              sroot().append(probe);
+              const tint = getComputedStyle(probe);
+              const picked = pill('state:::before');
+              // Picked, it is drawn with its ×, as one pill: the tint is on that pill.
+              const pickedPill = picked?.closest('.cchip-on') ?? picked;
+              const pickedInBaseColour = Boolean(picked) && picked.getAttribute('aria-pressed') === 'true' &&
+                getComputedStyle(pickedPill).backgroundColor === tint.backgroundColor &&
+                getComputedStyle(picked).color === tint.color;
+              probe.remove();
+              baseOf()?.click();
+              await settle(150);
+              results.strip.aPseudoElementIsOutlinedAsBaseWithItsMarker = outlinedAsBase;
+              results.strip.aPickedPseudoElementTakesBasesColour = pickedInBaseColour;
+              // A ::after with no content draws nothing: drawn disabled, as a size not on screen.
+              const sheet = document.createElement('style');
+              sheet.textContent = '.featured::after { color: red; }';
+              document.head.append(sheet);
+              api.select(item);
+              await settle(250);
+              api.select(target);
+              await settle(300);
+              await pop('.featured');
+              const after = pill('state:::after');
+              results.strip.aPseudoElementThatDrawsNothingIsDrawnDisabled =
+                Boolean(after) && after.classList.contains('notnow') && !after.querySelector('.c.live') &&
+                /not drawn/.test(after.title) && Boolean(pill('state:::before')?.querySelector('.c.live'));
+              sheet.remove();
+              api.select(item);
+              await settle(250);
+              api.select(target);
+              await settle(300);
+              await pop('.card');
+            }
+            const notNow = innerWidth < 768 ? slotButton('.card', 'tablet') : slotButton('.card', 'phone');
+            const nowButton = innerWidth < 768 ? slotButton('.card', 'phone') : slotButton('.card', 'tablet');
+            // Not in effect at this width: drawn disabled (dashed, the faint ink), never faded, and still
+            // a button; the size on screen has its marker in yellow.
+            results.strip.notNowIsDrawnDisabled =
+              notNow?.classList.contains('notnow') && !nowButton?.classList.contains('notnow') &&
+              getComputedStyle(notNow).borderTopStyle === 'dashed' &&
+              getComputedStyle(notNow).opacity === '1' && !notNow.disabled &&
+              getComputedStyle(notNow).color !== getComputedStyle(nowButton).color &&
+              nowButton?.classList.contains('live') && Boolean(nowButton.querySelector('.c.live'));
+            // print declares something, so it is on the bar with its count; "+" offers only the rest.
+            const more = () => strip('.card')?.querySelector('.add');
+            more()?.click();
+            await settle(200);
+            const stripMenu = () => sroot().querySelector('.menu[data-menu="strip-.card"]');
+            const mediaField = () => stripMenu()?.querySelector('heo-value-field');
+            const listed = Array.from(mediaField()?.shadowRoot?.querySelectorAll('.option') ?? []).map((one) => textOf(one));
+            results.strip.otherMediaIsOnTheBarAndMoreHasTheRest =
+              textOf(slotButton('.card', 'other:print')) === 'print1' &&
+              listed.some((one) => one.startsWith(':focus')) && !listed.some((one) => one.startsWith(':hover')) &&
+              listed.some((one) => one.startsWith('Custom width')) && !listed.some((one) => /@media print\b/.test(one));
+            const mediaInput = () => mediaField()?.shadowRoot?.querySelector('input');
+            await settle(150);
+            // Offered as it opens: the common queries that are not sizes, by what they answer, and
+            // nothing the strip already has (print); sizes are in "Custom width…", not listed here.
+            const mediaOptions = () => Array.from(mediaField()?.shadowRoot?.querySelectorAll('.option') ?? [])
+              .map((one) => one.textContent.replace(/\s+/g, ' ').trim());
+            const openedWith = mediaOptions();
+            results.strip.addMediaQuerySuggestsValidQueries =
+              sroot().activeElement === mediaField() &&
+              openedWith.some((one) => one.includes('@media (prefers-reduced-motion: reduce)')) &&
+              openedWith.some((one) => one.includes('@media (prefers-color-scheme: dark)')) &&
+              !openedWith.some((one) => /@media print\b/.test(one)) &&
+              !openedWith.some((one) => one.includes('(max-width: 767px)')) &&
+              !openedWith.some((one) => /^(Phone|Laptop)/.test(one));
+            await typeInto(mediaInput(), 'reduced');
+            results.strip.addMediaQuerySuggestionsNarrowAsTyped =
+              mediaOptions().length >= 1 && mediaOptions().every((one) => /reduced/i.test(one));
+            before = engine.history.size;
+            await typeInto(mediaInput(), 'screen and and');
+            key(mediaInput(), 'Enter');
+            await settle(200);
+            const refused = /isn't a media query this browser understands/.test(textOf(stripMenu()));
+            await typeInto(mediaInput(), '(prefers-color-scheme: dark)');
+            key(mediaInput(), 'Enter');
+            await settle(200);
+            results.strip.addMediaQueryValidates =
+              refused && !stripMenu() &&
+              slotButton('.card', 'other:(prefers-color-scheme: dark)')?.getAttribute('aria-pressed') === 'true' &&
+              /Only under @media \(prefers-color-scheme: dark\)/.test(textOf(body('.card')?.querySelector('.slot-hint'))) &&
+              engine.history.size === before;
+            // Not a size: no width in its wording, and the empty block says "media query".
+            const mediaHint = textOf(body('.card')?.querySelector('.slot-hint'));
+            results.strip.aPreferenceQueryIsNotWordedAsASize =
+              /in effect now|not in effect now/.test(mediaHint) && !/\d+px/.test(mediaHint) &&
+              /Nothing under this media query yet/.test(textOf(body('.card')));
+            card('.card')?.querySelector('.slots .base')?.click();
+            await settle(200);
+
+            /* The !important toggle (R29). */
+            const promoRows = rowsOf(await pop('.promo .card'));
+            const promoColorToggle = rowIn(body('.promo .card'), 'color')?.querySelector('.promote');
+            const promoLabel = promoColorToggle?.getAttribute('aria-label');
+            const promoPressed = promoColorToggle?.getAttribute('aria-pressed');
+            const cardRowsAll = () => [...promoRows, ...rowsOf(card('.card'))];
+            await pop('.card');
+            results.promote = {
+              ...results.promote,
+              isAToggleWithAriaPressed:
+                cardRowsAll().length > 10 &&
+                cardRowsAll().every((row) =>
+                  ['true', 'false'].includes(row.querySelector('button.promote')?.getAttribute('aria-pressed'))),
+              namesPropertyAndSource:
+                promoLabel === '!important on color in .promo .card' && promoPressed === 'true',
+            };
+            const everyCardRowHasOne = cardRowsAll().every((row) => row.querySelectorAll('.promote').length === 1);
+            sroot().querySelector('.rows[data-declarations="typography"] .row[data-property="color"] .dots')?.click();
+            await settle(250);
+            // The cascade menu's toggle sits with the picked rung's field: one, for the place being edited.
+            const rungCount = sroot().querySelectorAll('.pop .ladder > [data-place]').length;
+            results.promote.presentOnEveryCardRowAndThePickedRung =
+              everyCardRowHasOne &&
+              rungCount > 1 && sroot().querySelectorAll('.pop .open .promote').length === 1;
+            key(sroot().querySelector('.pop'), 'Escape');
+            await settle(200);
+            await pop('.card');
+            before = engine.history.size;
+            rowIn(body('.card'), 'opacity')?.querySelector('.promote')?.click();
+            await settle(200);
+            results.promote.togglesImportanceInPlace =
+              engine.history.size === before + 1 &&
+              siteRule('.card')?.style.getPropertyPriority('opacity') === 'important' &&
+              siteRule('.card')?.style.getPropertyValue('opacity') === '1' &&
+              rowIn(body('.card'), 'opacity')?.querySelector('.promote')?.getAttribute('aria-pressed') === 'true';
+            engine.undo();
+            await settle(200);
+
+            /* Keys. */
+            await pop('.card');
+            cardHeader('.card')?.focus();
+            key(cardHeader('.card'), 'Escape');
+            await settle(150);
+            results.keys.escapeNeverDeselects = engine.selected === target;
+            // Every control a card adds shows the focus ring when focused from the keyboard.
+            const ring = getComputedStyle(sroot().host).getPropertyValue('--heo-focus-ring').trim();
+            const ringOn = (control) => {
+              if (!control) return 'missing';
+              control.focus();
+              const style = getComputedStyle(control);
+              return control.matches(':focus-visible') && style.outlineStyle === 'solid' && style.outlineWidth === '2px';
+            };
+            await pop('.card');
+            const rings = [
+              slotButton('.card', 'phone'),
+              strip('.card')?.querySelector('.add'),
+              rowIn(body('.card'), 'opacity')?.querySelector('.promote'),
+              rowIn(body('.card'), 'opacity')?.querySelector('.kill'),
+              addButton(block('.card', 'base')),
+            ].map(ringOn);
+            await pop('.featured');
+            card('.featured')?.querySelector('.slots [data-cond="state:::before"]')?.click();
+            await settle(150);
+            rings.push(ringOn(block('.featured', '::before')?.querySelector('.blabel .kill')));
+            card('.featured')?.querySelector('.slots .base')?.click();
+            await settle(150);
+            results.keys.focusRingOnEveryControl = Boolean(ring) && rings.every((one) => one === true);
+            if (!results.keys.focusRingOnEveryControl) results.keys.rings = rings;
+            sroot().activeElement?.blur();
           }
-          const notNow = innerWidth < 768 ? slotButton('.card', 'tablet') : slotButton('.card', 'phone');
-          const nowButton = innerWidth < 768 ? slotButton('.card', 'phone') : slotButton('.card', 'tablet');
-          // Not in effect at this width: drawn disabled (dashed, the faint ink), never faded, and still
-          // a button; the size on screen has its marker in yellow.
-          results.strip.notNowIsDrawnDisabled =
-            notNow?.classList.contains('notnow') && !nowButton?.classList.contains('notnow') &&
-            getComputedStyle(notNow).borderTopStyle === 'dashed' &&
-            getComputedStyle(notNow).opacity === '1' && !notNow.disabled &&
-            getComputedStyle(notNow).color !== getComputedStyle(nowButton).color &&
-            nowButton?.classList.contains('live') && Boolean(nowButton.querySelector('.c.live'));
-          // print declares something, so it is on the bar with its count; "+" offers only the rest.
-          const more = () => strip('.card')?.querySelector('.add');
-          more()?.click();
-          await settle(200);
-          const stripMenu = () => sroot().querySelector('.menu[data-menu="strip-.card"]');
-          const mediaField = () => stripMenu()?.querySelector('heo-value-field');
-          const listed = Array.from(mediaField()?.shadowRoot?.querySelectorAll('.option') ?? []).map((one) => textOf(one));
-          results.strip.otherMediaIsOnTheBarAndMoreHasTheRest =
-            textOf(slotButton('.card', 'other:print')) === 'print1' &&
-            listed.some((one) => one.startsWith(':focus')) && !listed.some((one) => one.startsWith(':hover')) &&
-            listed.some((one) => one.startsWith('Custom width')) && !listed.some((one) => /@media print\b/.test(one));
-          const mediaInput = () => mediaField()?.shadowRoot?.querySelector('input');
-          await settle(150);
-          // Offered as it opens: the common queries that are not sizes, by what they answer, and
-          // nothing the strip already has (print); sizes are in "Custom width…", not listed here.
-          const mediaOptions = () => Array.from(mediaField()?.shadowRoot?.querySelectorAll('.option') ?? [])
-            .map((one) => one.textContent.replace(/\s+/g, ' ').trim());
-          const openedWith = mediaOptions();
-          results.strip.addMediaQuerySuggestsValidQueries =
-            sroot().activeElement === mediaField() &&
-            openedWith.some((one) => one.includes('@media (prefers-reduced-motion: reduce)')) &&
-            openedWith.some((one) => one.includes('@media (prefers-color-scheme: dark)')) &&
-            !openedWith.some((one) => /@media print\b/.test(one)) &&
-            !openedWith.some((one) => one.includes('(max-width: 767px)')) &&
-            !openedWith.some((one) => /^(Phone|Laptop)/.test(one));
-          await typeInto(mediaInput(), 'reduced');
-          results.strip.addMediaQuerySuggestionsNarrowAsTyped =
-            mediaOptions().length >= 1 && mediaOptions().every((one) => /reduced/i.test(one));
-          before = engine.history.size;
-          await typeInto(mediaInput(), 'screen and and');
-          key(mediaInput(), 'Enter');
-          await settle(200);
-          const refused = /isn't a media query this browser understands/.test(textOf(stripMenu()));
-          await typeInto(mediaInput(), '(prefers-color-scheme: dark)');
-          key(mediaInput(), 'Enter');
-          await settle(200);
-          results.strip.addMediaQueryValidates =
-            refused && !stripMenu() &&
-            slotButton('.card', 'other:(prefers-color-scheme: dark)')?.getAttribute('aria-pressed') === 'true' &&
-            /Only under @media \(prefers-color-scheme: dark\)/.test(textOf(body('.card')?.querySelector('.slot-hint'))) &&
-            engine.history.size === before;
-          // Not a size: no width in its wording, and the empty block says "media query".
-          const mediaHint = textOf(body('.card')?.querySelector('.slot-hint'));
-          results.strip.aPreferenceQueryIsNotWordedAsASize =
-            /in effect now|not in effect now/.test(mediaHint) && !/\d+px/.test(mediaHint) &&
-            /Nothing under this media query yet/.test(textOf(body('.card')));
-          card('.card')?.querySelector('.slots .base')?.click();
-          await settle(200);
-
-          /* The !important toggle (R29). */
-          const promoRows = rowsOf(await pop('.promo .card'));
-          const promoColorToggle = rowIn(body('.promo .card'), 'color')?.querySelector('.promote');
-          const promoLabel = promoColorToggle?.getAttribute('aria-label');
-          const promoPressed = promoColorToggle?.getAttribute('aria-pressed');
-          const cardRowsAll = () => [...promoRows, ...rowsOf(card('.card'))];
-          await pop('.card');
-          results.promote = {
-            ...results.promote,
-            isAToggleWithAriaPressed:
-              cardRowsAll().length > 10 &&
-              cardRowsAll().every((row) =>
-                ['true', 'false'].includes(row.querySelector('button.promote')?.getAttribute('aria-pressed'))),
-            namesPropertyAndSource:
-              promoLabel === '!important on color in .promo .card' && promoPressed === 'true',
-          };
-          const everyCardRowHasOne = cardRowsAll().every((row) => row.querySelectorAll('.promote').length === 1);
-          sroot().querySelector('.rows[data-declarations="typography"] .row[data-property="color"] .dots')?.click();
-          await settle(250);
-          // The cascade menu's toggle sits with the picked rung's field: one, for the place being edited.
-          const rungCount = sroot().querySelectorAll('.pop .ladder > [data-place]').length;
-          results.promote.presentOnEveryCardRowAndThePickedRung =
-            everyCardRowHasOne &&
-            rungCount > 1 && sroot().querySelectorAll('.pop .open .promote').length === 1;
-          key(sroot().querySelector('.pop'), 'Escape');
-          await settle(200);
-          await pop('.card');
-          before = engine.history.size;
-          rowIn(body('.card'), 'opacity')?.querySelector('.promote')?.click();
-          await settle(200);
-          results.promote.togglesImportanceInPlace =
-            engine.history.size === before + 1 &&
-            siteRule('.card')?.style.getPropertyPriority('opacity') === 'important' &&
-            siteRule('.card')?.style.getPropertyValue('opacity') === '1' &&
-            rowIn(body('.card'), 'opacity')?.querySelector('.promote')?.getAttribute('aria-pressed') === 'true';
-          engine.undo();
-          await settle(200);
-
-          /* Keys. */
-          await pop('.card');
-          cardHeader('.card')?.focus();
-          key(cardHeader('.card'), 'Escape');
-          await settle(150);
-          results.keys.escapeNeverDeselects = engine.selected === target;
-          // Every control a card adds shows the focus ring when focused from the keyboard.
-          const ring = getComputedStyle(sroot().host).getPropertyValue('--heo-focus-ring').trim();
-          const ringOn = (control) => {
-            if (!control) return 'missing';
-            control.focus();
-            const style = getComputedStyle(control);
-            return control.matches(':focus-visible') && style.outlineStyle === 'solid' && style.outlineWidth === '2px';
-          };
-          await pop('.card');
-          const rings = [
-            slotButton('.card', 'phone'),
-            strip('.card')?.querySelector('.add'),
-            rowIn(body('.card'), 'opacity')?.querySelector('.promote'),
-            rowIn(body('.card'), 'opacity')?.querySelector('.kill'),
-            addButton(block('.card', 'base')),
-          ].map(ringOn);
-          await pop('.featured');
-          card('.featured')?.querySelector('.slots [data-cond="state:::before"]')?.click();
-          await settle(150);
-          rings.push(ringOn(block('.featured', '::before')?.querySelector('.blabel .kill')));
-          card('.featured')?.querySelector('.slots .base')?.click();
-          await settle(150);
-          results.keys.focusRingOnEveryControl = Boolean(ring) && rings.every((one) => one === true);
-          if (!results.keys.focusRingOnEveryControl) results.keys.rings = rings;
-          sroot().activeElement?.blur();
           /* ---------------------------------------------------------------- *
            * States and pseudo-elements from the bar's "+" (R24, §5.7, §15 M1): nothing is
            * written until the first property lands.
@@ -1474,8 +1481,7 @@
            * at Always is not "already set" there. The adder used to check against the class's own
            * declarations and refused `color` with ".intro-detail @media (max-width: 100px) already sets color."
            */
-          progress.textContent = 'emptySize';
-          {
+          if (sections.run('emptySize')) {
             engine.classes.upsert({ name: 'intro-detail', declarations: { color: 'red' }, origin: 'user' });
             target.classList.add('intro-detail');
             await settle(300);
@@ -1508,235 +1514,235 @@
             engine.classes.remove('intro-detail');
             await settle(300);
           }
-          progress.textContent = 'addState';
-          const managed = () => document.getElementById('heo-design-rules')?.textContent ?? '';
-          const condField = (k) => sroot().querySelector(`.menu.condpop[data-menu="strip-${k}"] heo-value-field`);
-          const condInput = (k) => condField(k)?.shadowRoot?.querySelector('input');
-          const openAdderOf = (scope) => scope?.querySelector('.property-adder');
-          const addState = async (k, state) => {
-            // Picked already, with nothing under it: its empty block's "+ Add property".
-            const waitingBlock = body(k)?.querySelector(`.block[data-waiting="${CSS.escape(state)}"] .add-prop`);
-            if (waitingBlock) {
-              waitingBlock.click();
+          if (sections.run('addState')) {
+            const managed = () => document.getElementById('heo-design-rules')?.textContent ?? '';
+            const condField = (k) => sroot().querySelector(`.menu.condpop[data-menu="strip-${k}"] heo-value-field`);
+            const condInput = (k) => condField(k)?.shadowRoot?.querySelector('input');
+            const openAdderOf = (scope) => scope?.querySelector('.property-adder');
+            const addState = async (k, state) => {
+              // Picked already, with nothing under it: its empty block's "+ Add property".
+              const waitingBlock = body(k)?.querySelector(`.block[data-waiting="${CSS.escape(state)}"] .add-prop`);
+              if (waitingBlock) {
+                waitingBlock.click();
+                await settle(250);
+                return;
+              }
+              // A state or pseudo-element is a condition: added from the bar's "+", under the condition picked.
+              strip(k)?.querySelector('.add')?.click();
+              await settle(200);
+              if (state.startsWith('::')) {
+                await typeInto(condInput(k), state);
+                key(condInput(k), 'Enter');
+                await settle(250);
+                return;
+              }
+              Array.from(sroot().querySelector(`.menu[data-menu="strip-${k}"] heo-value-field`)?.shadowRoot?.querySelectorAll('.option') ?? [])
+                .find((one) => one.querySelector('.label, span')?.textContent.trim() === state || textOf(one).split(' ')[0] === state)?.click();
               await settle(250);
-              return;
-            }
-            // A state or pseudo-element is a condition: added from the bar's "+", under the condition picked.
-            strip(k)?.querySelector('.add')?.click();
-            await settle(200);
-            if (state.startsWith('::')) {
-              await typeInto(condInput(k), state);
-              key(condInput(k), 'Enter');
+            };
+            /** Name, Enter, then Enter on its seeded value: the adder's two steps. */
+            const addProperty = async (scope, property) => {
+              // Opened on a value already (a new ::before offers `content`): back to the name.
+              if (stepOf(openAdderOf(scope())) === 'value') {
+                openAdderOf(scope())?.querySelector('.rename')?.click();
+                await settle(200);
+              }
+              const input = inputOf(openAdderOf(scope()));
+              // No adder open is a failed assertion below, not a crash that hides every other result.
+              if (!input) return;
+              await typeInto(input, property);
+              key(inputOf(openAdderOf(scope())), 'Enter');
+              await settle(300);
+              key(inputOf(openAdderOf(scope())), 'Enter');
+              await settle(300);
+            };
+            const beforeOf = (el, property) => getComputedStyle(el, '::before').getPropertyValue(property);
+            results.addState = {};
+            await pop('.card');
+            {
+              /*
+               * The bar's "+" offers pseudo-elements on a card, as on the panel's strip: one popover for
+               * states, sizes and pseudo-elements, and no "+ Add pseudo-element" of its own (R24).
+               */
+              const plus = strip('.card')?.querySelector('.add');
+              const plusLabel = plus?.getAttribute('aria-label') ?? '';
+              plus?.click();
               await settle(250);
-              return;
+              const offered = Array.from(condField('.card')?.shadowRoot?.querySelectorAll('.option') ?? [])
+                .map((one) => one.textContent.replace(/\s+/g, ' ').trim());
+              key(condInput('.card'), 'Escape');
+              await settle(150);
+              results.addState.theBarsPlusOffersPseudoElements =
+                /pseudo-element/.test(plusLabel) &&
+                offered.some((one) => one.startsWith('::marker')) &&
+                offered.some((one) => one.startsWith('::after')) &&
+                offered.some((one) => one.startsWith(':active'));
             }
-            Array.from(sroot().querySelector(`.menu[data-menu="strip-${k}"] heo-value-field`)?.shadowRoot?.querySelectorAll('.option') ?? [])
-              .find((one) => one.querySelector('.label, span')?.textContent.trim() === state || textOf(one).split(' ')[0] === state)?.click();
-            await settle(250);
-          };
-          /** Name, Enter, then Enter on its seeded value: the adder's two steps. */
-          const addProperty = async (scope, property) => {
-            // Opened on a value already (a new ::before offers `content`): back to the name.
-            if (stepOf(openAdderOf(scope())) === 'value') {
-              openAdderOf(scope())?.querySelector('.rename')?.click();
+            {
+              // A state with no rule: a block with its adder open, and nothing on the page yet.
+              await pop('.card');
+              const history = engine.history.size;
+              const text = managed();
+              await addState('.card', ':active');
+              const pendingBlock = () => block('.card', ':active');
+              const shown = pendingBlock()?.classList.contains('pending') &&
+                /No declarations yet\./.test(textOf(pendingBlock()));
+              // The export's stylesheets, not its scripts: this page's own script names the selector.
+              const exportedCss = Array.from(new DOMParser().parseFromString(api.exportHTML(), 'text/html')
+                .querySelectorAll('style')).map((one) => one.textContent).join('\n');
+              const nothingYet = engine.history.size === history && managed() === text &&
+                !/\.card:active/.test(exportedCss);
+              results.addState.stateOpensItsAddProperty =
+                Boolean(openAdderOf(pendingBlock())) &&
+                sroot().activeElement === fieldOf(openAdderOf(pendingBlock()));
+              await addProperty(pendingBlock, 'opacity');
+              results.addState.pendingStateWritesNothingUntilAPropertyIsAdded =
+                shown && nothingYet && engine.history.size === history + 1 &&
+                /\.card:active\s*\{[^}]*opacity/.test(managed());
+              results.addState.createsTheStateRule =
+                Boolean(pendingBlock()) && !pendingBlock().classList.contains('pending') &&
+                Boolean(rowIn(pendingBlock(), 'opacity'));
+              engine.undo();
+              await settle(200);
+              // A state that already declares something is a button on the bar, not in "+".
+              strip('.card')?.querySelector('.add')?.click();
+              await settle(200);
+              await settle(150);
+              results.addState.aStateOnTheBarIsNotOfferedAgain =
+                Boolean(slotButton('.card', 'state::hover')) &&
+                !Array.from(sroot().querySelector('.menu[data-menu="strip-.card"] heo-value-field')?.shadowRoot?.querySelectorAll('.option') ?? [])
+                  .some((one) => textOf(one).split(' ')[0] === ':hover');
+              sroot().querySelector('.menu[data-menu="strip-.card"]')?.dispatchEvent(
+                new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+              await settle(150);
+              // Pending blocks belong to the selection they were added for.
+              await addState('.card', ':focus');
+              const there = Boolean(block('.card', ':focus'));
+              api.select(item);
+              await settle(250);
+              api.select(target);
+              await settle(300);
+              await pop('.card');
+              results.addState.pendingStateIsDroppedOnSelectionChange =
+                there && !block('.card', ':focus') && engine.history.size === history;
+            }
+            {
+              // An emptied page rule is reused, rather than a second .card:hover written elsewhere.
+              await pop('.card');
+              card('.card')?.querySelector('.slots [data-cond="state::hover"]')?.click();
+              await settle(150);
+              block('.card', ':hover')?.querySelector('.blabel .kill')?.click();
+              await settle(250);
+              const history = engine.history.size;
+              const emptied = siteRule('.card:hover')?.style.length === 0 && !block('.card', ':hover');
+              await addState('.card', ':hover');
+              const waiting = block('.card', ':hover')?.classList.contains('pending') &&
+                sroot().activeElement === fieldOf(openAdderOf(block('.card', ':hover')));
+              await addProperty(() => block('.card', ':hover'), 'opacity');
+              results.addState.reusesAnExistingEmptyRule =
+                emptied && waiting && engine.history.size === history + 1 &&
+                /opacity/.test(siteRule('.card:hover')?.style.cssText ?? '') &&
+                !/\.card:hover/.test(managed()) &&
+                engine.records.some((record) => record.detail?.selector === '.card:hover' && Boolean(record.detail?.rulePath));
+              engine.undo();
+              engine.undo();
+              await settle(250);
+            }
+            {
+              // In the card's current size: a phone :focus is written inside the phone media query.
+              await pop('.card');
+              card('.card')?.querySelector('.slots [data-slot="phone"]')?.click();
+              await settle(150);
+              await addState('.card', ':focus');
+              await addProperty(() => block('.card', ':focus'), 'opacity');
+              const made = engine.rules.list().find((rule) => rule.selector === '.card:focus');
+              results.addState.respectsTheCardsSize =
+                Boolean(made) && /max-width:\s*767px/.test(made.media ?? '') &&
+                /@media \(max-width: 767px\)\s*\{\s*\.card:focus/.test(managed());
+              engine.undo();
+              card('.card')?.querySelector('.slots .base')?.click();
               await settle(200);
             }
-            const input = inputOf(openAdderOf(scope()));
-            // No adder open is a failed assertion below, not a crash that hides every other result.
-            if (!input) return;
-            await typeInto(input, property);
-            key(inputOf(openAdderOf(scope())), 'Enter');
-            await settle(300);
-            key(inputOf(openAdderOf(scope())), 'Enter');
-            await settle(300);
-          };
-          const beforeOf = (el, property) => getComputedStyle(el, '::before').getPropertyValue(property);
-          results.addState = {};
-          await pop('.card');
-          {
-            /*
-             * The bar's "+" offers pseudo-elements on a card, as on the panel's strip: one popover for
-             * states, sizes and pseudo-elements, and no "+ Add pseudo-element" of its own (R24).
-             */
-            const plus = strip('.card')?.querySelector('.add');
-            const plusLabel = plus?.getAttribute('aria-label') ?? '';
-            plus?.click();
-            await settle(250);
-            const offered = Array.from(condField('.card')?.shadowRoot?.querySelectorAll('.option') ?? [])
-              .map((one) => one.textContent.replace(/\s+/g, ' ').trim());
-            key(condInput('.card'), 'Escape');
-            await settle(150);
-            results.addState.theBarsPlusOffersPseudoElements =
-              /pseudo-element/.test(plusLabel) &&
-              offered.some((one) => one.startsWith('::marker')) &&
-              offered.some((one) => one.startsWith('::after')) &&
-              offered.some((one) => one.startsWith(':active'));
-          }
-          {
-            // A state with no rule: a block with its adder open, and nothing on the page yet.
-            await pop('.card');
-            const history = engine.history.size;
-            const text = managed();
-            await addState('.card', ':active');
-            const pendingBlock = () => block('.card', ':active');
-            const shown = pendingBlock()?.classList.contains('pending') &&
-              /No declarations yet\./.test(textOf(pendingBlock()));
-            // The export's stylesheets, not its scripts: this page's own script names the selector.
-            const exportedCss = Array.from(new DOMParser().parseFromString(api.exportHTML(), 'text/html')
-              .querySelectorAll('style')).map((one) => one.textContent).join('\n');
-            const nothingYet = engine.history.size === history && managed() === text &&
-              !/\.card:active/.test(exportedCss);
-            results.addState.stateOpensItsAddProperty =
-              Boolean(openAdderOf(pendingBlock())) &&
-              sroot().activeElement === fieldOf(openAdderOf(pendingBlock()));
-            await addProperty(pendingBlock, 'opacity');
-            results.addState.pendingStateWritesNothingUntilAPropertyIsAdded =
-              shown && nothingYet && engine.history.size === history + 1 &&
-              /\.card:active\s*\{[^}]*opacity/.test(managed());
-            results.addState.createsTheStateRule =
-              Boolean(pendingBlock()) && !pendingBlock().classList.contains('pending') &&
-              Boolean(rowIn(pendingBlock(), 'opacity'));
-            engine.undo();
-            await settle(200);
-            // A state that already declares something is a button on the bar, not in "+".
-            strip('.card')?.querySelector('.add')?.click();
-            await settle(200);
-            await settle(150);
-            results.addState.aStateOnTheBarIsNotOfferedAgain =
-              Boolean(slotButton('.card', 'state::hover')) &&
-              !Array.from(sroot().querySelector('.menu[data-menu="strip-.card"] heo-value-field')?.shadowRoot?.querySelectorAll('.option') ?? [])
-                .some((one) => textOf(one).split(' ')[0] === ':hover');
-            sroot().querySelector('.menu[data-menu="strip-.card"]')?.dispatchEvent(
-              new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
-            await settle(150);
-            // Pending blocks belong to the selection they were added for.
-            await addState('.card', ':focus');
-            const there = Boolean(block('.card', ':focus'));
-            api.select(item);
-            await settle(250);
-            api.select(target);
-            await settle(300);
-            await pop('.card');
-            results.addState.pendingStateIsDroppedOnSelectionChange =
-              there && !block('.card', ':focus') && engine.history.size === history;
-          }
-          {
-            // An emptied page rule is reused, rather than a second .card:hover written elsewhere.
-            await pop('.card');
-            card('.card')?.querySelector('.slots [data-cond="state::hover"]')?.click();
-            await settle(150);
-            block('.card', ':hover')?.querySelector('.blabel .kill')?.click();
-            await settle(250);
-            const history = engine.history.size;
-            const emptied = siteRule('.card:hover')?.style.length === 0 && !block('.card', ':hover');
-            await addState('.card', ':hover');
-            const waiting = block('.card', ':hover')?.classList.contains('pending') &&
-              sroot().activeElement === fieldOf(openAdderOf(block('.card', ':hover')));
-            await addProperty(() => block('.card', ':hover'), 'opacity');
-            results.addState.reusesAnExistingEmptyRule =
-              emptied && waiting && engine.history.size === history + 1 &&
-              /opacity/.test(siteRule('.card:hover')?.style.cssText ?? '') &&
-              !/\.card:hover/.test(managed()) &&
-              engine.records.some((record) => record.detail?.selector === '.card:hover' && Boolean(record.detail?.rulePath));
-            engine.undo();
-            engine.undo();
-            await settle(250);
-          }
-          {
-            // In the card's current size: a phone :focus is written inside the phone media query.
-            await pop('.card');
-            card('.card')?.querySelector('.slots [data-slot="phone"]')?.click();
-            await settle(150);
-            await addState('.card', ':focus');
-            await addProperty(() => block('.card', ':focus'), 'opacity');
-            const made = engine.rules.list().find((rule) => rule.selector === '.card:focus');
-            results.addState.respectsTheCardsSize =
-              Boolean(made) && /max-width:\s*767px/.test(made.media ?? '') &&
-              /@media \(max-width: 767px\)\s*\{\s*\.card:focus/.test(managed());
-            engine.undo();
-            card('.card')?.querySelector('.slots .base')?.click();
-            await settle(200);
-          }
-          {
-            /*
-             * §15 M1: the selected .card.featured already shows a ::before (★, from .featured::before).
-             * Adding ::before to .card and then a colour must not add `content`, which would replace
-             * the star on this element; the block says why.
-             */
-            await pop('.card');
-            const history = engine.history.size;
-            await addState('.card', '::before');
-            // Straight to the value of `content`, offered as "" and selected: Enter takes it.
-            const draft = inputOf(openAdderOf(block('.card', '::before')));
-            const prefilled = stepOf(openAdderOf(block('.card', '::before'))) === 'value' &&
-              fieldOf(openAdderOf(block('.card', '::before')))?.dataset.property === 'content' &&
-              draft?.value === '""' && draft.selectionStart === 0 && draft.selectionEnd === 2;
-            const nothingYet = engine.history.size === history;
-            await addProperty(() => block('.card', '::before'), 'color');
-            const colour = rowIn(block('.card', '::before'), 'color')?.querySelector('heo-value-field');
-            const oneEntry = engine.history.size === history + 1;
-            colour?.dispatchEvent(new CustomEvent('value-change', { detail: { value: 'red' }, bubbles: true, composed: true }));
-            await settle(250);
-            const rule = (/\.card::before\s*\{([^}]*)\}/.exec(managed()) ?? [])[1] ?? '';
-            results.addState.beforeKeepsContentFromAnotherRule =
-              prefilled && nothingYet && oneEntry &&
-              /color:\s*red/.test(rule) && !/content/.test(rule) &&
-              beforeOf(target, 'content') === '"★"' &&
-              beforeOf(target, 'color') === 'rgb(255, 0, 0)' &&
-              textOf(block('.card', '::before')?.querySelector('.block-hint')) ===
-              'Not adding content: this element already has a ::before from .featured::before.';
-            engine.undo();
-            engine.undo();
-            await settle(250);
-            // Enter takes the offered `content`, which is what makes a new ::before render.
-            const second = document.querySelectorAll('.card')[1];
+            {
+              /*
+               * §15 M1: the selected .card.featured already shows a ::before (★, from .featured::before).
+               * Adding ::before to .card and then a colour must not add `content`, which would replace
+               * the star on this element; the block says why.
+               */
+              await pop('.card');
+              const history = engine.history.size;
+              await addState('.card', '::before');
+              // Straight to the value of `content`, offered as "" and selected: Enter takes it.
+              const draft = inputOf(openAdderOf(block('.card', '::before')));
+              const prefilled = stepOf(openAdderOf(block('.card', '::before'))) === 'value' &&
+                fieldOf(openAdderOf(block('.card', '::before')))?.dataset.property === 'content' &&
+                draft?.value === '""' && draft.selectionStart === 0 && draft.selectionEnd === 2;
+              const nothingYet = engine.history.size === history;
+              await addProperty(() => block('.card', '::before'), 'color');
+              const colour = rowIn(block('.card', '::before'), 'color')?.querySelector('heo-value-field');
+              const oneEntry = engine.history.size === history + 1;
+              colour?.dispatchEvent(new CustomEvent('value-change', { detail: { value: 'red' }, bubbles: true, composed: true }));
+              await settle(250);
+              const rule = (/\.card::before\s*\{([^}]*)\}/.exec(managed()) ?? [])[1] ?? '';
+              results.addState.beforeKeepsContentFromAnotherRule =
+                prefilled && nothingYet && oneEntry &&
+                /color:\s*red/.test(rule) && !/content/.test(rule) &&
+                beforeOf(target, 'content') === '"★"' &&
+                beforeOf(target, 'color') === 'rgb(255, 0, 0)' &&
+                textOf(block('.card', '::before')?.querySelector('.block-hint')) ===
+                'Not adding content: this element already has a ::before from .featured::before.';
+              engine.undo();
+              engine.undo();
+              await settle(250);
+              // Enter takes the offered `content`, which is what makes a new ::before render.
+              const second = document.querySelectorAll('.card')[1];
 
-            await addState('.card', '::before');
-            key(inputOf(openAdderOf(block('.card', '::before'))), 'Enter');
-            await settle(300);
-            results.addState.pseudoStartsWithEmptyContent =
-              engine.history.size === history + 1 &&
-              /\.card::before\s*\{\s*content:\s*""/.test(managed()) &&
-              beforeOf(second, 'content') === '""';
-            engine.undo();
-            await settle(250);
-            // ::after on elements with no other ::after: content "" goes in with the first property.
-            await addState('.card', '::after');
-            await addProperty(() => block('.card', '::after'), 'color');
-            const after = (/\.card::after\s*\{([^}]*)\}/.exec(managed()) ?? [])[1] ?? '';
-            results.addState.beforeGetsContentWithItsFirstOtherProperty =
-              engine.history.size === history + 1 && /content:\s*""/.test(after) && /color/.test(after);
-            engine.undo();
-            await settle(250);
-            card('.card')?.querySelector('.slots .base')?.click();
-            await settle(200);
-          }
-          {
-            // ::marker: nothing written until a property, and never `content` (it hides the bullet).
-            api.select(item);
-            await settle(300);
-            await pop('.item');
-            const history = engine.history.size;
-            const text = managed();
-            await addState('.item', '::marker');
-            const untouched = getComputedStyle(item, '::marker').content === 'normal' &&
-              managed() === text && engine.history.size === history && Boolean(block('.item', '::marker'));
-            await addProperty(() => block('.item', '::marker'), 'color');
-            const marker = (/\.item::marker\s*\{([^}]*)\}/.exec(managed()) ?? [])[1] ?? '';
-            results.addState.markerWritesNothingUntilAPropertyIsAdded =
-              untouched && engine.history.size === history + 1 && /color/.test(marker) && !/content/.test(marker) &&
-              getComputedStyle(item, '::marker').content === 'normal';
-            engine.undo();
-            api.select(target);
-            await settle(300);
+              await addState('.card', '::before');
+              key(inputOf(openAdderOf(block('.card', '::before'))), 'Enter');
+              await settle(300);
+              results.addState.pseudoStartsWithEmptyContent =
+                engine.history.size === history + 1 &&
+                /\.card::before\s*\{\s*content:\s*""/.test(managed()) &&
+                beforeOf(second, 'content') === '""';
+              engine.undo();
+              await settle(250);
+              // ::after on elements with no other ::after: content "" goes in with the first property.
+              await addState('.card', '::after');
+              await addProperty(() => block('.card', '::after'), 'color');
+              const after = (/\.card::after\s*\{([^}]*)\}/.exec(managed()) ?? [])[1] ?? '';
+              results.addState.beforeGetsContentWithItsFirstOtherProperty =
+                engine.history.size === history + 1 && /content:\s*""/.test(after) && /color/.test(after);
+              engine.undo();
+              await settle(250);
+              card('.card')?.querySelector('.slots .base')?.click();
+              await settle(200);
+            }
+            {
+              // ::marker: nothing written until a property, and never `content` (it hides the bullet).
+              api.select(item);
+              await settle(300);
+              await pop('.item');
+              const history = engine.history.size;
+              const text = managed();
+              await addState('.item', '::marker');
+              const untouched = getComputedStyle(item, '::marker').content === 'normal' &&
+                managed() === text && engine.history.size === history && Boolean(block('.item', '::marker'));
+              await addProperty(() => block('.item', '::marker'), 'color');
+              const marker = (/\.item::marker\s*\{([^}]*)\}/.exec(managed()) ?? [])[1] ?? '';
+              results.addState.markerWritesNothingUntilAPropertyIsAdded =
+                untouched && engine.history.size === history + 1 && /color/.test(marker) && !/content/.test(marker) &&
+                getComputedStyle(item, '::marker').content === 'normal';
+              engine.undo();
+              api.select(target);
+              await settle(300);
+            }
           }
 
           /* ---------------------------------------------------------------- *
            * The cards' rows: where a value goes, the strip, pseudo-elements, rows.
            * ---------------------------------------------------------------- */
-          progress.textContent = 'effective';
-          results.effective = {};
-          {
+          if (sections.run('effective')) {
+            results.effective = {};
             api.select(target);
             await settle(300);
             // Every card opened, as Effective styles stood open: a closed card's rows are not drawn.
@@ -1948,77 +1954,79 @@
           /* ---------------------------------------------------------------- *
            * Detach styles from class (R22).
            * ---------------------------------------------------------------- */
-          progress.textContent = 'detach';
-          const detachLink = () => body('.card')?.querySelector('.actions [data-act="detach"]');
-          const panelText = (choice) => textOf(body('.card')?.querySelector(`.detach [data-choice="${choice}"]`));
-          results.detach = {};
-          await pop('.card');
-          {
-            const before = textOf(detachLink());
-            const closed = detachLink()?.getAttribute('aria-expanded') === 'false';
-            detachLink()?.click();
-            await settle(200);
-            // A button like the panel's other actions, not a link, with no way out to Tokens left.
-            results.detach.linkIsRenamed =
-              before === 'Detach styles from class' && closed &&
-              detachLink()?.classList.contains('btn') && !detachLink()?.classList.contains('link') &&
-              !/Manage in Tokens/.test(textOf(body('.card'))) &&
-              textOf(detachLink()) === 'Never mind' && detachLink()?.getAttribute('aria-expanded') === 'true' &&
-              !/Just this element/.test(textOf(sroot().querySelector('heo-section')));
-            results.detach.copyWarnsAboutRulesElsewhere =
-              /Rules written for \.card elsewhere \(\.card\.featured, \.promo \.card\) stop applying here\./.test(panelText('copy')) &&
-              /its states and sizes included/.test(panelText('copy'));
-            results.detach.moveWarnsAboutLostVariants =
-              /Its ≤767px, ≥768px, print, :hover rules can't be written inline, so this element loses them\./.test(panelText('move'));
-            // Copy: a class with the base, plus one rule per size and state; swapped in place.
-            const list = document.createElement('style');
-            list.id = 'list-rule';
-            list.textContent = '.card:active, .card:focus { text-decoration: underline; }';
-            document.head.append(list);
-            await settle(200);
-            const history = engine.history.size;
-            Array.from(body('.card')?.querySelectorAll('.detach [data-choice="copy"] button') ?? [])
-              .find((one) => /Copy/.test(one.textContent))?.click();
-            await settle(300);
-            const fork = Array.from(target.classList).find((name) => name !== 'featured' && name !== 'card');
-            const rulesOf = engine.rules.list().filter((rule) => rule.selector.startsWith(`.${fork}`));
-            const has = (selector, media) => rulesOf.some((rule) =>
-              rule.selector === selector && (media ? (rule.media ?? '').includes(media) : !rule.media));
-            results.detach.copyCarriesStatesAndSizes =
-              Boolean(fork) && !target.classList.contains('card') && engine.history.size === history + 1 &&
-              engine.classes.get(fork)?.declarations.padding === '12px 16px' &&
-              has(`.${fork}`, 'max-width') && has(`.${fork}`, 'min-width') && has(`.${fork}`, 'print') &&
-              has(`.${fork}:hover`) && has(`.${fork}:hover`, 'min-width') &&
-              Boolean(card(`.${fork}`)) && sroot().querySelector('.cardpop')?.dataset.cardPop === `.${fork}`;
-            results.detach.copySplitsSelectorLists =
-              has(`.${fork}:active`) && has(`.${fork}:focus`) &&
-              !rulesOf.some((rule) => rule.selector.includes(','));
-            engine.undo();
-            list.remove();
-            await settle(300);
+          if (sections.run('detach')) {
+            const detachLink = () => body('.card')?.querySelector('.actions [data-act="detach"]');
+            const panelText = (choice) => textOf(body('.card')?.querySelector(`.detach [data-choice="${choice}"]`));
+            results.detach = {};
             await pop('.card');
-            // Move: only the unconditional declarations become inline; the class comes off.
-            if (detachLink()?.getAttribute('aria-expanded') !== 'true') {
+            {
+              const before = textOf(detachLink());
+              const closed = detachLink()?.getAttribute('aria-expanded') === 'false';
               detachLink()?.click();
               await settle(200);
+              // A button like the panel's other actions, not a link, with no way out to Tokens left.
+              results.detach.linkIsRenamed =
+                before === 'Detach styles from class' && closed &&
+                detachLink()?.classList.contains('btn') && !detachLink()?.classList.contains('link') &&
+                !/Manage in Tokens/.test(textOf(body('.card'))) &&
+                textOf(detachLink()) === 'Never mind' && detachLink()?.getAttribute('aria-expanded') === 'true' &&
+                !/Just this element/.test(textOf(sroot().querySelector('heo-section')));
+              results.detach.copyWarnsAboutRulesElsewhere =
+                /Rules written for \.card elsewhere \(\.card\.featured, \.promo \.card\) stop applying here\./.test(panelText('copy')) &&
+                /its states and sizes included/.test(panelText('copy'));
+              results.detach.moveWarnsAboutLostVariants =
+                /Its ≤767px, ≥768px, print, :hover rules can't be written inline, so this element loses them\./.test(panelText('move'));
+              // Copy: a class with the base, plus one rule per size and state; swapped in place.
+              const list = document.createElement('style');
+              list.id = 'list-rule';
+              list.textContent = '.card:active, .card:focus { text-decoration: underline; }';
+              document.head.append(list);
+              await settle(200);
+              const history = engine.history.size;
+              Array.from(body('.card')?.querySelectorAll('.detach [data-choice="copy"] button') ?? [])
+                .find((one) => /Copy/.test(one.textContent))?.click();
+              await settle(300);
+              const fork = Array.from(target.classList).find((name) => name !== 'featured' && name !== 'card');
+              const rulesOf = engine.rules.list().filter((rule) => rule.selector.startsWith(`.${fork}`));
+              const has = (selector, media) => rulesOf.some((rule) =>
+                rule.selector === selector && (media ? (rule.media ?? '').includes(media) : !rule.media));
+              results.detach.copyCarriesStatesAndSizes =
+                Boolean(fork) && !target.classList.contains('card') && engine.history.size === history + 1 &&
+                engine.classes.get(fork)?.declarations.padding === '12px 16px' &&
+                has(`.${fork}`, 'max-width') && has(`.${fork}`, 'min-width') && has(`.${fork}`, 'print') &&
+                has(`.${fork}:hover`) && has(`.${fork}:hover`, 'min-width') &&
+                Boolean(card(`.${fork}`)) && sroot().querySelector('.cardpop')?.dataset.cardPop === `.${fork}`;
+              results.detach.copySplitsSelectorLists =
+                has(`.${fork}:active`) && has(`.${fork}:focus`) &&
+                !rulesOf.some((rule) => rule.selector.includes(','));
+              engine.undo();
+              list.remove();
+              await settle(300);
+              await pop('.card');
+              // Move: only the unconditional declarations become inline; the class comes off.
+              if (detachLink()?.getAttribute('aria-expanded') !== 'true') {
+                detachLink()?.click();
+                await settle(200);
+              }
+              const styleBefore = target.getAttribute('style');
+              Array.from(body('.card')?.querySelectorAll('.detach [data-choice="move"] button') ?? [])
+                .find((one) => /Move/.test(one.textContent))?.click();
+              await settle(300);
+              results.detach.moveTakesOnlyTheBaseDeclarations =
+                !target.classList.contains('card') &&
+                target.style.getPropertyValue('padding') === '12px 16px' &&
+                target.style.getPropertyValue('font-weight') === '600' &&
+                target.style.getPropertyValue('color') === 'rgb(185, 28, 28)' &&
+                !target.style.getPropertyValue('box-shadow');
+              engine.undo();
+              await settle(300);
+              results.detach.moveTakesOnlyTheBaseDeclarations =
+                results.detach.moveTakesOnlyTheBaseDeclarations &&
+                target.classList.contains('card') && target.getAttribute('style') === styleBefore;
             }
-            const styleBefore = target.getAttribute('style');
-            Array.from(body('.card')?.querySelectorAll('.detach [data-choice="move"] button') ?? [])
-              .find((one) => /Move/.test(one.textContent))?.click();
-            await settle(300);
-            results.detach.moveTakesOnlyTheBaseDeclarations =
-              !target.classList.contains('card') &&
-              target.style.getPropertyValue('padding') === '12px 16px' &&
-              target.style.getPropertyValue('font-weight') === '600' &&
-              target.style.getPropertyValue('color') === 'rgb(185, 28, 28)' &&
-              !target.style.getPropertyValue('box-shadow');
-            engine.undo();
-            await settle(300);
-            results.detach.moveTakesOnlyTheBaseDeclarations =
-              results.detach.moveTakesOnlyTheBaseDeclarations &&
-              target.classList.contains('card') && target.getAttribute('style') === styleBefore;
           }
         }
+        sections.report(results);
         const failed = Object.entries(results)
           .filter(([, group]) => group && typeof group === 'object')
           .filter(([, group]) => Object.values(group).some((value) => value === false))
