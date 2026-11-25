@@ -1,0 +1,1996 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Tokens panel revamp</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+  Question: how should the Tokens panel look next to the new Styles cards?
+    1. Sections stay sections, but drawn like an open Styles card (hued head, thumbnail, icon chip,
+       count pill, summary line; rows as name | field | delete, uses under the name).
+    2. A new way to add a token (today: a "New token" section with a group picker).
+    3. One top area instead of today's two rows (counts chips + search/facet strip).
+  Variants (?variant=A|B|C, the bottom bar, or ← → with nothing focused):
+    A — Scoped search + inline add. One row: search, scope menu, overflow menu. Each section ends
+        with "+ Add spacing (next: space-2xl · 64px)"; empty kinds sit at the end as dashed sections.
+    B — Tabs like Cards | Applied + a New token sheet. Tokens | Classes | Rules segmented, collapse-all;
+        "+ Token" opens a sheet: pick the kind from art tiles, name, value, live preview,
+        optionally put it on the selected element.
+    C — Filter chips + create from what you type. Search, then one row of chips that are counts and
+        filters at once (This element · Tokens · Classes · Rules). Typing "accent: #22c55e" or a bare
+        value offers to create it; the element section lists the raw values that could be tokens.
+  Extra: ?theme=light, ?shot=add|menu (pre-opens the add flow / the menu, for screenshots).
+  Tokens: src/ui/tokens.ts. Card look: src/ui/controls/section.ts. ◐ switches theme.
+  -->
+  <style>
+    :root {
+      --heo-accent: #6366f1;
+      --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 18%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 55%, transparent);
+      --heo-bg: oklch(19% 0.014 265);
+      --heo-bg-glass: oklch(16% 0.014 265 / 92%);
+      --heo-raised: oklch(23.5% 0.016 265);
+      --heo-sunken: oklch(16% 0.012 265);
+      --heo-hover: oklch(28% 0.018 265);
+      --heo-active: oklch(32% 0.02 265);
+      --heo-text: oklch(96% 0.005 265);
+      --heo-text-dim: oklch(74% 0.012 265);
+      --heo-text-faint: oklch(64% 0.014 265);
+      --heo-line: oklch(100% 0 0 / 9%);
+      --heo-line-strong: oklch(100% 0 0 / 16%);
+      --heo-inset: inset 0 1px 0 oklch(100% 0 0 / 6%);
+      --heo-focus-ring: color-mix(in oklab, var(--heo-accent) 60%, white);
+      --heo-accent-text: var(--heo-focus-ring);
+      --heo-r-sm: 7px;
+      --heo-r-md: 10px;
+      --heo-r-lg: 14px;
+      --heo-shadow-sm: 0 1px 2px oklch(0% 0 0 / 30%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(0% 0 0 / 60%), 0 6px 16px oklch(0% 0 0 / 30%);
+      --heo-font: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --heo-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --card-ink: 80% 0.13;
+      --card-well-a: 36% 0.08;
+      --card-well-b: 22% 0.04;
+      --card-tint: 25.5% 0.03;
+      --card-line: 72% 0.12;
+      --card-chip: 32% 0.07;
+      --card-chip-ink: 86% 0.12;
+      --card-count: 80% 0.12;
+      --card-count-ink: 22% 0.05;
+    }
+
+    [data-theme='light'] {
+      --heo-bg: oklch(99% 0.002 265);
+      --heo-bg-glass: oklch(99% 0.002 265 / 94%);
+      --heo-raised: oklch(100% 0 0);
+      --heo-sunken: oklch(96.5% 0.004 265);
+      --heo-hover: oklch(95% 0.006 265);
+      --heo-active: oklch(92% 0.008 265);
+      --heo-text: oklch(24% 0.014 265);
+      --heo-text-dim: oklch(45% 0.014 265);
+      --heo-text-faint: oklch(52% 0.012 265);
+      --heo-line: oklch(20% 0.02 265 / 11%);
+      --heo-line-strong: oklch(20% 0.02 265 / 20%);
+      --heo-inset: inset 0 1px 0 oklch(100% 0 0 / 80%);
+      --heo-focus-ring: var(--heo-accent);
+      --heo-accent-text: color-mix(in oklab, var(--heo-accent) 80%, black);
+      --heo-shadow-sm: 0 1px 2px oklch(50% 0.03 265 / 12%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(50% 0.03 265 / 24%), 0 6px 16px oklch(50% 0.03 265 / 14%);
+      --card-ink: 58% 0.15;
+      --card-well-a: 95.5% 0.03;
+      --card-well-b: 89% 0.05;
+      --card-tint: 98.8% 0.01;
+      --card-line: 60% 0.14;
+      --card-chip: 93% 0.045;
+      --card-chip-ink: 45% 0.14;
+      --card-count: 46% 0.14;
+      --card-count-ink: 99% 0.005;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 316px;
+      gap: 24px;
+      padding: 20px 24px 90px;
+      background: linear-gradient(135deg, #eef1f6, #e3e8f1);
+      color: #1f2330;
+      font: 13px/1.5 var(--heo-font);
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+      color: inherit;
+    }
+
+    svg {
+      flex: none;
+    }
+
+    /* ---- Left: notes, the page, the state ---- */
+    .left {
+      display: grid;
+      align-content: start;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .left>h1 {
+      margin: 0;
+      font: 600 11px/1 var(--heo-font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+
+    .left>h2 {
+      margin: 0;
+      font: 650 20px/1.25 var(--heo-font);
+    }
+
+    .notes {
+      display: grid;
+      gap: 8px;
+      color: #333a48;
+      max-width: 760px;
+    }
+
+    .notes .q {
+      padding: 10px 12px;
+      border-left: 3px solid var(--heo-accent);
+      border-radius: 0 8px 8px 0;
+      background: #fff;
+    }
+
+    .notes ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .site {
+      padding: 28px 32px;
+      border-radius: 16px;
+      background: #fbfaf7;
+      box-shadow: 0 1px 2px rgb(15 23 42 / 6%), 0 20px 40px -24px rgb(15 23 42 / 25%);
+    }
+
+    .site .card {
+      max-width: 340px;
+      padding: 12px 16px;
+      color: #b91c1c;
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, .1);
+      font-size: 16px;
+      outline: 2px solid #6366f1;
+      outline-offset: 4px;
+    }
+
+    .site .btn {
+      display: inline-block;
+      margin-top: 18px;
+      padding: 8px 16px;
+      border-radius: 4px;
+      background: #4f46e5;
+      color: #fff;
+    }
+
+    pre.state {
+      margin: 0;
+      max-height: 260px;
+      overflow: auto;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: #0f1320;
+      color: #c7d2fe;
+      font: 11px/1.5 var(--heo-mono);
+    }
+
+    /* ---- The dock ---- */
+    .dock {
+      position: sticky;
+      top: 20px;
+      display: flex;
+      flex-direction: column;
+      height: calc(100vh - 40px);
+      overflow: hidden;
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-lg);
+      background: var(--heo-bg-glass);
+      box-shadow: var(--heo-shadow-lg), var(--heo-inset);
+      color: var(--heo-text);
+      font-family: var(--heo-font);
+      font-size: 12px;
+    }
+
+    .dhead {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px 2px;
+    }
+
+    .dhead b {
+      font-size: 14px;
+    }
+
+    .dhead small {
+      color: var(--heo-text-faint);
+      font: 10.5px var(--heo-mono);
+    }
+
+    .dtabs {
+      display: flex;
+      gap: 2px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--heo-line);
+    }
+
+    .dtab {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 26px;
+      padding: 0 8px;
+      border: 1px solid transparent;
+      border-radius: var(--heo-r-sm);
+      color: var(--heo-text-dim);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .dtab.on {
+      border-color: var(--heo-accent-line);
+      background: var(--heo-accent-soft);
+      color: var(--heo-text);
+    }
+
+    .scroll {
+      flex: 1;
+      overflow: auto;
+      padding: 10px 10px 24px;
+    }
+
+    .top {
+      display: grid;
+      gap: 8px;
+      padding: 10px 10px;
+      border-bottom: 1px solid var(--heo-line);
+      position: relative;
+    }
+
+    .search {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      height: 30px;
+      padding: 0 8px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-sunken);
+      color: var(--heo-text-faint);
+    }
+
+    .search:focus-within {
+      border-color: var(--heo-accent-line);
+      box-shadow: 0 0 0 3px var(--heo-accent-soft);
+    }
+
+    .search input {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      background: transparent;
+      color: var(--heo-text);
+      outline: none;
+      font-size: 12px;
+    }
+
+    .search .n {
+      color: var(--heo-text-faint);
+      font-size: 10px;
+    }
+
+    .ib {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-raised);
+      box-shadow: var(--heo-inset);
+      color: var(--heo-text-dim);
+      cursor: pointer;
+      position: relative;
+    }
+
+    .ib:hover {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+
+    .ib sup {
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      min-width: 15px;
+      padding: 0 4px;
+      border-radius: 999px;
+      background: var(--heo-active);
+      color: var(--heo-text-dim);
+      font-size: 9px;
+      line-height: 15px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 28px;
+      padding: 0 10px;
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-raised);
+      box-shadow: var(--heo-inset);
+      color: var(--heo-text-dim);
+      font-size: 11.5px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+
+    .btn.primary {
+      border-color: transparent;
+      background: var(--heo-accent);
+      color: #fff;
+    }
+
+    .btn.sm {
+      height: 24px;
+      padding: 0 8px;
+      font-size: 10.5px;
+    }
+
+    .btn.ghost {
+      border-color: transparent;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .btn:focus-visible,
+    .ib:focus-visible,
+    .head:focus-visible,
+    .chip:focus-visible,
+    .seg button:focus-visible,
+    .kind:focus-visible,
+    .addrow:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    .hint {
+      margin: 0;
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+
+    /* A: the row */
+    .arow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 6px;
+    }
+
+    .scope {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 30px;
+      padding: 0 8px;
+      border: 1px solid var(--heo-line);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-raised);
+      color: var(--heo-text);
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+
+    .scope b {
+      font-weight: 600;
+    }
+
+    .scope span {
+      color: var(--heo-text-faint);
+      font-size: 10px;
+    }
+
+    .menu {
+      position: absolute;
+      z-index: 5;
+      right: 10px;
+      top: 46px;
+      width: 210px;
+      padding: 5px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-md);
+      background: var(--heo-raised);
+      box-shadow: var(--heo-shadow-lg);
+    }
+
+    .menu button {
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+      width: 100%;
+      height: 28px;
+      padding: 0 8px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--heo-text);
+      font-size: 11.5px;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .menu button:hover {
+      background: var(--heo-hover);
+    }
+
+    .menu button[aria-checked='true'] {
+      color: var(--heo-accent-text);
+    }
+
+    .menu button span:last-child {
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+    }
+
+    .menu hr {
+      margin: 4px 2px;
+      border: 0;
+      border-top: 1px solid var(--heo-line);
+    }
+
+    /* B: segmented */
+    .brow {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+
+    .seg {
+      display: flex;
+      gap: 2px;
+      padding: 3px;
+      border: 1px solid var(--heo-line);
+      border-radius: 9px;
+      background: var(--heo-sunken);
+    }
+
+    .seg button {
+      flex: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      height: 26px;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--heo-text-dim);
+      font-size: 11.5px;
+      cursor: pointer;
+    }
+
+    .seg button[aria-selected='true'] {
+      background: var(--heo-raised);
+      box-shadow: var(--heo-shadow-sm), inset 0 0 0 1px var(--heo-line-strong);
+      color: var(--heo-text);
+      font-weight: 600;
+    }
+
+    .seg b {
+      color: var(--heo-text-faint);
+      font-size: 10px;
+      font-weight: 500;
+    }
+
+    .bfind {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+    }
+
+    /* C: chips */
+    .chips {
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 24px;
+      padding: 0 7px;
+      border: 1px solid var(--heo-line);
+      border-radius: 999px;
+      background: transparent;
+      color: var(--heo-text-dim);
+      font-size: 10.5px;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .chip b {
+      color: var(--heo-text-faint);
+      font-weight: 500;
+      font-size: 10px;
+    }
+
+    .chip[aria-pressed='true'] {
+      border-color: var(--heo-accent-line);
+      background: var(--heo-accent-soft);
+      color: var(--heo-text);
+    }
+
+    .chip[aria-pressed='true'] b {
+      color: var(--heo-accent-text);
+    }
+
+    .chip.el[aria-pressed='true'] {
+      background: var(--heo-accent);
+      border-color: transparent;
+      color: #fff;
+    }
+
+    .chip.el[aria-pressed='true'] b {
+      color: #e0e7ff;
+    }
+
+    .chips .ib {
+      width: 24px;
+      height: 24px;
+      margin-left: auto;
+    }
+
+    /* ---- A section, drawn as an open Styles card ---- */
+    .sec {
+      margin: 0 0 8px;
+      border: 1px solid oklch(var(--card-line) var(--hue) / 22%);
+      border-radius: 12px;
+      background: oklch(var(--card-tint) var(--hue) / 70%);
+      transition: border-color .15s, box-shadow .15s;
+    }
+
+    .sec:hover {
+      border-color: oklch(var(--card-line) var(--hue) / 45%);
+    }
+
+    .sec.open {
+      border-color: oklch(var(--card-line) var(--hue) / 45%);
+      background: var(--heo-raised);
+      box-shadow: 0 16px 36px -24px oklch(var(--card-line) var(--hue) / 70%);
+    }
+
+    .sec.empty {
+      border-style: dashed;
+      border-color: var(--heo-line-strong);
+      background: transparent;
+    }
+
+    .sec.empty:hover {
+      border-color: oklch(var(--card-line) var(--hue) / 60%);
+      background: oklch(var(--card-tint) var(--hue) / 60%);
+    }
+
+    .head {
+      display: grid;
+      grid-template-columns: 40px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 5px 6px;
+      border: 0;
+      border-radius: 11px;
+      background: transparent;
+      color: var(--heo-text);
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .sec.open>.head {
+      grid-template-columns: 56px minmax(0, 1fr) auto;
+      border-radius: 11px 11px 0 0;
+      background: linear-gradient(90deg, oklch(var(--card-chip) var(--hue)), oklch(var(--card-tint) var(--hue)) 70%);
+    }
+
+    .sec.empty>.head {
+      background: transparent;
+    }
+
+    .thumb {
+      position: relative;
+      display: grid;
+      place-items: center;
+      height: 28px;
+      overflow: hidden;
+      border-radius: 7px;
+      background: radial-gradient(120% 120% at 20% 0%, oklch(var(--card-well-a) var(--hue)), oklch(var(--card-well-b) var(--hue)));
+      color: oklch(var(--card-ink) var(--hue));
+    }
+
+    .sec.open>.head .thumb {
+      height: 38px;
+    }
+
+    .sec.empty .thumb {
+      filter: grayscale(.85);
+      opacity: .5;
+    }
+
+    .sec.empty:hover .thumb {
+      filter: none;
+      opacity: .9;
+    }
+
+    .tt {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .tl {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .ic {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      flex: none;
+      border-radius: 5px;
+      background: oklch(var(--card-chip) var(--hue));
+      color: oklch(var(--card-chip-ink) var(--hue));
+    }
+
+    .sec.open .ic {
+      background: oklch(var(--card-chip) var(--hue) / 0);
+      box-shadow: inset 0 0 0 1px oklch(var(--card-line) var(--hue) / 45%);
+    }
+
+    .sec.empty .ic {
+      background: var(--heo-hover);
+      color: var(--heo-text-dim);
+    }
+
+    .title {
+      overflow: hidden;
+      font-size: 11.5px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .sec.empty .title {
+      color: var(--heo-text-dim);
+      font-weight: 500;
+    }
+
+    .count {
+      flex: none;
+      padding: 0 6px;
+      border-radius: 999px;
+      background: oklch(var(--card-count) var(--hue));
+      color: oklch(var(--card-count-ink) var(--hue));
+      font-size: 9.5px;
+      font-weight: 650;
+      line-height: 15px;
+    }
+
+    .sum {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      padding: 0 3px;
+      color: var(--heo-text-dim);
+      font: 10px/1.35 var(--heo-mono);
+      white-space: nowrap;
+    }
+
+    .sum .txt {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .sum .dot {
+      flex: none;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: oklch(var(--card-ink) var(--hue));
+    }
+
+    .sec.empty .sum {
+      color: var(--heo-text-faint);
+      font-family: var(--heo-font);
+    }
+
+    .sec.empty .sum .dot {
+      background: transparent;
+      box-shadow: inset 0 0 0 1.5px var(--heo-text-faint);
+    }
+
+    .sum .plus {
+      margin-left: auto;
+      color: oklch(var(--card-chip-ink) var(--hue));
+      font-family: var(--heo-font);
+      opacity: 0;
+    }
+
+    .sec.empty:hover .sum .plus {
+      opacity: 1;
+    }
+
+    .up {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      color: var(--heo-text-dim);
+      transition: rotate .15s;
+    }
+
+    .sec:not(.open) .up {
+      rotate: 180deg;
+    }
+
+    .head:hover .up {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+
+    .body {
+      display: grid;
+      gap: 4px;
+      padding: 8px 10px 10px;
+      animation: fade .18s both;
+    }
+
+    @keyframes fade {
+      from {
+        opacity: 0;
+      }
+    }
+
+    /* Rows, as Styles draws its property rows: name | field | delete. */
+    .row {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr) 18px;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      border-radius: 6px;
+    }
+
+    .row.flash {
+      animation: flash 1.4s ease-out;
+    }
+
+    @keyframes flash {
+
+      0%,
+      30% {
+        background: oklch(var(--card-chip) var(--hue));
+        box-shadow: 0 0 0 4px oklch(var(--card-chip) var(--hue));
+      }
+    }
+
+    .nm {
+      min-width: 0;
+      overflow: hidden;
+      color: var(--heo-text);
+      font: 11px/1.3 var(--heo-mono);
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .nm small {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+    }
+
+    .nm small .on {
+      padding: 0 4px;
+      border-radius: 4px;
+      background: oklch(var(--card-chip) var(--hue));
+      color: oklch(var(--card-chip-ink) var(--hue));
+    }
+
+    .vf {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      height: 28px;
+      padding: 0 4px 0 6px;
+      border: 1px solid var(--heo-line);
+      border-radius: 7px;
+      background: var(--heo-sunken);
+    }
+
+    .vf:focus-within {
+      border-color: var(--heo-accent-line);
+      box-shadow: 0 0 0 3px var(--heo-accent-soft);
+    }
+
+    .vf input {
+      flex: 1;
+      width: 0;
+      min-width: 0;
+      border: 0;
+      background: transparent;
+      color: var(--heo-text);
+      outline: none;
+      font: 11.5px var(--heo-mono);
+    }
+
+    .vf .sw {
+      width: 16px;
+      height: 16px;
+      flex: none;
+      border-radius: 4px;
+      box-shadow: inset 0 0 0 1px oklch(0% 0 0 / 25%);
+    }
+
+    .vf .gauge {
+      width: 12px;
+      height: 12px;
+      flex: none;
+      color: var(--heo-text-faint);
+    }
+
+    .vf .unit {
+      padding: 0 5px;
+      border-radius: 4px;
+      background: var(--heo-hover);
+      color: var(--heo-text-faint);
+      font-size: 10px;
+      line-height: 18px;
+    }
+
+    .vf .shp {
+      width: 16px;
+      height: 16px;
+      flex: none;
+      border-radius: 4px;
+      background: #fff;
+    }
+
+    .kill {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 22px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--heo-text-faint);
+      cursor: pointer;
+      opacity: 0;
+    }
+
+    .row:hover .kill,
+    .kill:focus-visible {
+      opacity: 1;
+    }
+
+    .kill:hover {
+      color: #f87171;
+    }
+
+    .group-hint {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 4px 0 2px;
+      color: var(--heo-text-faint);
+      font-size: 9.5px;
+      font-weight: 650;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .group-hint::after {
+      content: '';
+      flex: 1;
+      border-top: 1px solid var(--heo-line);
+      order: 2;
+    }
+
+    .group-hint b {
+      order: 3;
+      font-weight: 500;
+      letter-spacing: 0;
+    }
+
+    /* A: the add row at a section's foot, and the draft row it becomes. */
+    .addrow {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 30px;
+      margin-top: 2px;
+      padding: 0 8px;
+      border: 1px dashed var(--heo-line-strong);
+      border-radius: 7px;
+      background: transparent;
+      color: var(--heo-text-faint);
+      font-size: 11px;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .addrow:hover {
+      border-color: oklch(var(--card-line) var(--hue) / 60%);
+      color: oklch(var(--card-chip-ink) var(--hue));
+    }
+
+    .addrow .nx {
+      margin-left: auto;
+      font: 10px var(--heo-mono);
+      opacity: .8;
+    }
+
+    .draft {
+      margin-top: 2px;
+      padding: 6px;
+      border: 1px solid oklch(var(--card-line) var(--hue) / 55%);
+      border-radius: 8px;
+      background: oklch(var(--card-tint) var(--hue));
+      display: grid;
+      gap: 6px;
+    }
+
+    .draft .row {
+      min-height: 28px;
+    }
+
+    .nmi {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      height: 28px;
+      padding: 0 6px;
+      border: 1px solid var(--heo-line);
+      border-radius: 7px;
+      background: var(--heo-sunken);
+      color: var(--heo-text-faint);
+      font: 11px var(--heo-mono);
+    }
+
+    .nmi input {
+      flex: 1;
+      width: 0;
+      border: 0;
+      background: transparent;
+      color: var(--heo-text);
+      outline: none;
+      font: inherit;
+    }
+
+    .nmi:focus-within {
+      border-color: var(--heo-accent-line);
+    }
+
+    .dacts {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .dacts .hint {
+      margin-right: auto;
+    }
+
+    /* B: the New token sheet */
+    .sheet {
+      display: grid;
+      gap: 9px;
+      margin: 0 0 10px;
+      padding: 10px;
+      border: 1px solid oklch(var(--card-line) var(--hue) / 50%);
+      border-radius: 12px;
+      background: linear-gradient(180deg, oklch(var(--card-tint) var(--hue)), var(--heo-raised) 60%);
+      box-shadow: 0 16px 36px -24px oklch(var(--card-line) var(--hue) / 80%);
+    }
+
+    .sheet .sh {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11.5px;
+      font-weight: 650;
+    }
+
+    .sheet .sh .ib {
+      width: 22px;
+      height: 22px;
+      margin-left: auto;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .kinds {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 5px;
+    }
+
+    .kind {
+      --hue: 265;
+      display: grid;
+      gap: 3px;
+      padding: 4px 4px 5px;
+      border: 1px solid var(--heo-line);
+      border-radius: 9px;
+      background: transparent;
+      color: var(--heo-text-dim);
+      font-size: 10px;
+      cursor: pointer;
+    }
+
+    .kind .thumb {
+      height: 26px;
+    }
+
+    .kind:hover {
+      border-color: oklch(var(--card-line) var(--hue) / 60%);
+    }
+
+    .kind[aria-checked='true'] {
+      border-color: oklch(var(--card-line) var(--hue));
+      background: oklch(var(--card-chip) var(--hue) / 60%);
+      color: var(--heo-text);
+      box-shadow: 0 0 0 2px oklch(var(--card-line) var(--hue) / 30%);
+    }
+
+    .preview {
+      display: grid;
+      place-items: center;
+      min-height: 62px;
+      padding: 10px;
+      border-radius: 9px;
+      background: #fbfaf7;
+      color: #1f2330;
+      box-shadow: inset 0 0 0 1px var(--heo-line);
+      position: relative;
+    }
+
+    .preview .cap {
+      position: absolute;
+      top: 5px;
+      left: 8px;
+      color: #64748b;
+      font-size: 8.5px;
+      font-weight: 650;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .apply {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--heo-text-dim);
+      font-size: 11px;
+    }
+
+    .apply select {
+      height: 24px;
+      padding: 0 4px;
+      border: 1px solid var(--heo-line);
+      border-radius: 6px;
+      background: var(--heo-sunken);
+      color: var(--heo-text);
+      font: 11px var(--heo-mono);
+    }
+
+    .apply code {
+      font: 10.5px var(--heo-mono);
+      color: var(--heo-text);
+    }
+
+    .sheet .dacts .btn.primary {
+      margin-left: auto;
+    }
+
+    /* C: create from the search */
+    .offer {
+      display: grid;
+      gap: 7px;
+      margin: 0 0 10px;
+      padding: 8px;
+      border: 1px solid oklch(var(--card-line) var(--hue) / 55%);
+      border-radius: 12px;
+      background: linear-gradient(90deg, oklch(var(--card-chip) var(--hue) / 70%), oklch(var(--card-tint) var(--hue)) 80%);
+    }
+
+    .offer .oh {
+      display: grid;
+      grid-template-columns: 40px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .offer .oh b {
+      font-size: 11.5px;
+    }
+
+    .offer .oh small {
+      display: block;
+      color: var(--heo-text-faint);
+      font-size: 10px;
+    }
+
+    .gpick {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      height: 22px;
+      padding: 0 7px;
+      border: 1px solid oklch(var(--card-line) var(--hue) / 55%);
+      border-radius: 999px;
+      background: var(--heo-sunken);
+      color: oklch(var(--card-chip-ink) var(--hue));
+      font-size: 10.5px;
+      cursor: pointer;
+    }
+
+    .raw {
+      display: grid;
+      grid-template-columns: 68px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+    }
+
+    .raw code {
+      color: var(--heo-text-dim);
+      font: 10.5px var(--heo-mono);
+    }
+
+    .raw .v {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      overflow: hidden;
+      font: 11px var(--heo-mono);
+      white-space: nowrap;
+    }
+
+    .raw .v .sw {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      flex: none;
+    }
+
+    .raw .btn.match {
+      border-color: color-mix(in oklab, #10b981 50%, transparent);
+      color: #34d399;
+    }
+
+    [data-theme='light'] .raw .btn.match {
+      color: #047857;
+    }
+
+    .done-line {
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+    }
+
+    .done-line s {
+      opacity: .7;
+    }
+
+    /* Library-ish contents (text styles, classes, rules) */
+    .lib {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 0 6px;
+      border-radius: 6px;
+    }
+
+    .lib:hover {
+      background: var(--heo-hover);
+    }
+
+    .lib .p {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .lib .m {
+      color: var(--heo-text-faint);
+      font: 10px var(--heo-mono);
+    }
+
+    .foot {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .empty-note {
+      padding: 16px 8px;
+      color: var(--heo-text-faint);
+      text-align: center;
+      font-size: 11px;
+    }
+
+    .more-kinds {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+      margin: 2px 2px 8px;
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+    }
+
+    /* Thumbnail art */
+    .a-sw {
+      display: flex;
+    }
+
+    .a-sw i {
+      width: 14px;
+      height: 14px;
+      margin-left: -4px;
+      border-radius: 50%;
+      box-shadow: 0 0 0 1.5px oklch(var(--card-well-b) var(--hue));
+    }
+
+    .a-bars {
+      display: flex;
+      align-items: flex-end;
+      gap: 3px;
+      height: 60%;
+    }
+
+    .a-bars i {
+      width: 5px;
+      border-radius: 2px;
+      background: currentColor;
+    }
+
+    .a-rad {
+      width: 18px;
+      height: 18px;
+      border: 2px solid currentColor;
+      border-right: 0;
+      border-bottom: 0;
+      border-top-left-radius: 10px;
+      translate: 3px 3px;
+    }
+
+    .a-aa {
+      font: 700 15px/1 Georgia, serif;
+    }
+
+    .a-sh {
+      width: 16px;
+      height: 14px;
+      border-radius: 3px;
+      background: oklch(96% 0.02 var(--hue));
+      box-shadow: 0 4px 6px -1px oklch(0% 0 0 / 55%);
+    }
+
+    .a-size {
+      width: 20px;
+      height: 14px;
+      border: 1.5px dashed currentColor;
+      border-radius: 2px;
+    }
+
+    .a-bd {
+      width: 18px;
+      height: 14px;
+      border: 2.5px solid currentColor;
+      border-radius: 4px;
+    }
+
+    .a-code {
+      font: 700 12px var(--heo-mono);
+    }
+
+    .a-el {
+      display: grid;
+      place-items: center;
+    }
+
+    /* The switcher */
+    .proto-bar {
+      position: fixed;
+      left: calc((100% - 316px) / 2);
+      bottom: 18px;
+      translate: -50% 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      background: #111;
+      color: #fff;
+      font: 600 12px var(--heo-font);
+      z-index: 50;
+      box-shadow: 0 10px 30px rgb(0 0 0 / 30%);
+    }
+
+    .proto-bar button {
+      border: 0;
+      background: #333;
+      color: #fff;
+      border-radius: 999px;
+      min-width: 28px;
+      height: 28px;
+      cursor: pointer;
+    }
+
+    .proto-bar span {
+      padding: 0 10px;
+      min-width: 260px;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="left">
+    <h1>Prototype · Tokens panel</h1>
+    <h2 id="vtitle"></h2>
+    <div class="notes" id="notes"></div>
+    <div class="site">
+      <p class="card" id="target">The selected card</p>
+      <span class="btn">Button</span>
+    </div>
+    <pre class="state" id="state"></pre>
+  </div>
+  <aside class="dock" aria-label="Overlay dock (prototype)">
+    <div class="dhead"><b>Tokens</b><small>p#target.card</small></div>
+    <div class="dtabs" aria-hidden="true">
+      <span class="dtab">Layers</span><span class="dtab">Blocks</span><span class="dtab on">Tokens</span><span
+        class="dtab">SEO</span>
+    </div>
+    <div id="top"></div>
+    <div class="scroll" id="scroll"></div>
+  </aside>
+  <div class="proto-bar" role="toolbar" aria-label="Prototype variant switcher">
+    <button type="button" data-step="-1" aria-label="Previous variant">←</button>
+    <span id="proto-label" aria-live="polite"></span>
+    <button type="button" data-step="1" aria-label="Next variant">→</button>
+    <button type="button" id="theme" aria-label="Switch theme" title="Switch theme">◐</button>
+  </div>
+  <pre id="out" hidden></pre>
+  <script>
+    /* ---------- icons ---------- */
+    const P = {
+      search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+      plus: '<path d="M12 5v14M5 12h14"/>',
+      up: '<path d="m6 15 6-6 6 6"/>',
+      down: '<path d="m6 9 6 6 6-6"/>',
+      trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+      more: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+      refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>',
+      collapse: '<path d="m7 20 5-5 5 5M7 4l5 5 5-5"/>',
+      droplet: '<path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/>',
+      wrap: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/>',
+      sliders: '<path d="M4 8h10M18 8h2M4 16h2M10 16h10"/><circle cx="16" cy="8" r="2"/><circle cx="8" cy="16" r="2"/>',
+      corner: '<path d="M5 19V11a6 6 0 0 1 6-6h8"/>',
+      text: '<path d="M5 6V4h14v2M12 4v16M9 20h6"/>',
+      sparkle: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
+      panel: '<rect x="4" y="4" width="16" height="16" rx="3"/>',
+      motion: '<path d="M3 18c5 0 5-12 9-12s4 12 9 12"/>',
+      cursor: '<path d="M5 3l6 16 2.5-6.5L20 10z"/>',
+      blocks: '<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/>',
+      code: '<path d="m8 8-4 4 4 4M16 8l4 4-4 4"/>',
+      close: '<path d="M6 6l12 12M18 6 6 18"/>',
+      check: '<path d="m5 12 5 5 9-10"/>',
+      share: '<path d="M12 4v11M7 9l5-5 5 5M5 15v4h14v-4"/>',
+      gauge: '<path d="M4 12h16M4 8v8M20 8v8"/>',
+      font: '<path d="M6 20 12 4l6 16M8.5 14h7"/>',
+    };
+    const ic = (name, size = 12) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] ?? ''}</svg>`;
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+    /* ---------- the design system (in memory) ---------- */
+    const GROUPS = ['color', 'space', 'size', 'radius', 'font', 'shadow', 'border', 'motion'];
+    const META = {
+      color: { label: 'Color', one: 'color', hue: 345, glyph: 'droplet' },
+      space: { label: 'Spacing', one: 'spacing', hue: 160, glyph: 'wrap' },
+      size: { label: 'Size', one: 'size', hue: 250, glyph: 'sliders' },
+      radius: { label: 'Radius', one: 'radius', hue: 200, glyph: 'corner' },
+      font: { label: 'Typography', one: 'type', hue: 300, glyph: 'text' },
+      shadow: { label: 'Shadow', one: 'shadow', hue: 70, glyph: 'sparkle' },
+      border: { label: 'Border', one: 'border', hue: 25, glyph: 'panel' },
+      motion: { label: 'Motion', one: 'motion', hue: 120, glyph: 'motion' },
+    };
+    const T = (name, group, value, uses = 0, onEl = false) => ({ name, group, value, uses, onEl });
+    const tokens = [
+      T('brand', 'color', '#4f46e5', 3), T('brand-soft', 'color', '#eef2ff'), T('ink', 'color', '#1f2937', 4, true),
+      T('muted', 'color', '#6b7280', 2), T('surface', 'color', '#ffffff', 3, true), T('danger', 'color', '#dc2626'),
+      T('space-xs', 'space', '4px', 1), T('space-sm', 'space', '8px', 3), T('space-md', 'space', '16px', 5, true),
+      T('space-lg', 'space', '24px', 2), T('space-xl', 'space', '40px'),
+      T('radius-sm', 'radius', '4px', 2), T('radius-md', 'radius', '8px', 3, true), T('radius-full', 'radius', '999px', 1),
+      T('font-body', 'font', 'Inter, system-ui, sans-serif', 6), T('text-sm', 'font', '14px', 2), T('text-base', 'font', '16px', 4), T('text-lg', 'font', '20px', 1),
+      T('shadow-card', 'shadow', '0 2px 8px rgba(0,0,0,.1)', 2, true), T('shadow-pop', 'shadow', '0 12px 32px -8px rgba(0,0,0,.25)'),
+    ];
+    const textStyles = [{ name: 'h1', label: 'Heading 1', css: 'font:700 17px/1.1 system-ui' }, { name: 'lead', label: 'Lead', css: 'font:400 13px/1.3 system-ui;color:var(--heo-text-dim)' }];
+    const classes = [{ name: 'card', n: 5 }, { name: 'btn', n: 4 }];
+    const rules = [{ name: 'section p', n: 1 }];
+    const fonts = [{ name: 'Inter', where: 'Google Fonts' }];
+    /* Raw values on the selected element that no token carries (variant C). */
+    const raw = [
+      { prop: 'color', value: '#b91c1c', match: null, suggest: 'text-danger', group: 'color', src: 'style=""' },
+      { prop: 'font-size', value: '16px', match: 'text-base', group: 'font', src: 'style=""' },
+      { prop: 'padding', value: '12px 16px', match: null, partial: 'space-md', suggest: 'space-12', group: 'space', src: '.card' },
+    ];
+
+    /* ---------- state ---------- */
+    const params = new URLSearchParams(location.search);
+    const state = {
+      variant: (params.get('variant') || 'A').toUpperCase(),
+      theme: params.get('theme') === 'light' ? 'light' : 'dark',
+      query: '',
+      open: new Set(['el', 'color', 'space']),
+      scope: 'all', // A
+      menu: null, // A: 'scope' | 'more'
+      draft: null, // A: { group, name, value }
+      tab: 'tokens', // B
+      sheet: null, // B: { group, name, value, apply, prop }
+      filters: { el: false, tokens: true, classes: true, rules: true }, // C
+      offerGroup: null, // C: a group picked over the guessed one
+      resolved: [], // C: raw values handled
+      flash: null,
+      last: 'loaded',
+    };
+    if (!['A', 'B', 'C'].includes(state.variant)) state.variant = 'A';
+    document.documentElement.dataset.theme = state.theme;
+
+    /* ---------- helpers ---------- */
+    const SCALE = ['2xs', 'xs', 'sm', 'md', 'lg', 'xl', '2xl', '3xl'];
+    const inGroup = (g) => tokens.filter((t) => t.group === g);
+    const px = (v) => parseFloat(v) || 0;
+    /** What "add" proposes next for a group: the next step of its scale, or a sensible seed. */
+    function suggest(group) {
+      const list = inGroup(group);
+      const scaled = list.map((t) => ({ t, m: t.name.match(/^(.*)-(2xs|xs|sm|md|lg|xl|2xl|3xl)$/) })).filter((x) => x.m);
+      if (scaled.length && group !== 'color') {
+        const top = scaled.reduce((a, b) => (SCALE.indexOf(b.m[2]) > SCALE.indexOf(a.m[2]) ? b : a));
+        const next = SCALE[SCALE.indexOf(top.m[2]) + 1] ?? '4xl';
+        const v = Math.round((px(top.t.value) * 1.6) / 4) * 4;
+        return { name: `${top.m[1]}-${next}`, value: `${v}px` };
+      }
+      return {
+        color: { name: 'accent', value: '#22c55e' },
+        font: { name: 'text-xl', value: '24px' },
+        radius: { name: 'radius-lg', value: '16px' },
+        shadow: { name: 'shadow-lift', value: '0 6px 16px -4px rgba(0,0,0,.2)' },
+        size: { name: 'size-content', value: '720px' },
+        border: { name: 'border-hair', value: '1px solid #e5e7eb' },
+        motion: { name: 'duration-fast', value: '150ms' },
+        space: { name: 'space-md', value: '16px' },
+      }[group];
+    }
+    function guessGroup(value, name = '') {
+      const v = value.trim().toLowerCase();
+      if (/^(#|rgb|hsl|oklch|oklab|color-mix)/.test(v) || /(color|ink|bg|surface|brand)/.test(name)) return 'color';
+      if (/\d(ms|s)$/.test(v) || /(duration|ease)/.test(name)) return 'motion';
+      if (/solid|dashed|dotted/.test(v)) return 'border';
+      if ((v.match(/-?\d+(px|rem)?/g) || []).length >= 3 && /rgba|#|\bpx\b.*\bpx\b/.test(v)) return 'shadow';
+      if (/radius|round/.test(name)) return 'radius';
+      if (/(text|font|leading)/.test(name) || /[a-z]{3,},/.test(v)) return 'font';
+      if (/^\d+(\.\d+)?(px|rem|em)$/.test(v) && px(v) >= 200) return 'size';
+      if (/^\d/.test(v)) return 'space';
+      return 'color';
+    }
+    const looksLikeValue = (q) => /^(#[0-9a-f]{3,8}|rgba?\(|hsla?\(|oklch\(|\d+(\.\d+)?(px|rem|em|ms|s|%)?(\s|$))/i.test(q.trim());
+    const matchTok = (t) => { const q = state.query.trim().toLowerCase(); return !q || t.name.includes(q) || t.value.toLowerCase().includes(q); };
+    const matchName = (s) => { const q = state.query.trim().toLowerCase(); return !q || s.toLowerCase().includes(q); };
+    const counts = () => ({
+      tokens: tokens.filter(matchTok).length,
+      classes: textStyles.filter((x) => matchName(x.name + x.label)).length + classes.filter((x) => matchName(x.name)).length,
+      rules: rules.filter((x) => matchName(x.name)).length,
+      el: tokens.filter((t) => t.onEl && matchTok(t)).length,
+    });
+
+    /* ---------- pieces ---------- */
+    function art(kind, list = []) {
+      switch (kind) {
+        case 'color': return `<span class="a-sw" style="padding-left:4px">${(list.length ? list : [{ value: '#f43f5e' }, { value: '#f59e0b' }, { value: '#22c55e' }]).slice(0, 4).map((t) => `<i style="background:${t.value}"></i>`).join('')}</span>`;
+        case 'space': return `<span class="a-bars">${[30, 55, 80, 100].map((h) => `<i style="height:${h}%"></i>`).join('')}</span>`;
+        case 'radius': return '<span class="a-rad"></span>';
+        case 'font': return '<span class="a-aa">Aa</span>';
+        case 'shadow': return '<span class="a-sh"></span>';
+        case 'size': return '<span class="a-size"></span>';
+        case 'border': return '<span class="a-bd"></span>';
+        case 'motion': return `<span>${ic('motion', 18)}</span>`;
+        case 'el': return `<span class="a-el">${ic('cursor', 16)}</span>`;
+        case 'tstyles': return '<span class="a-aa" style="font-family:system-ui">T<span style="font-weight:400">t</span></span>';
+        case 'fonts': return `<span>${ic('font', 16)}</span>`;
+        case 'classes': return `<span>${ic('blocks', 16)}</span>`;
+        case 'rules': return '<span class="a-code">{ }</span>';
+      }
+      return '';
+    }
+    function summaryOf(group, list) {
+      if (!list.length) return '';
+      if (group === 'space' || group === 'radius' || group === 'size') return list.map((t) => t.value.replace('px', '')).join(' · ');
+      if (group === 'font') return list.map((t) => (t.value.includes(',') ? t.value.split(',')[0] : t.value.replace('px', ''))).join(' · ');
+      return list.map((t) => t.name).join(' · ');
+    }
+    /** A section drawn as an open Styles card: hued head, thumbnail, chip, count, summary; rows inside. */
+    function section({ id, hue, glyph, title, count, summary, artHtml, body, empty = false }) {
+      const open = state.open.has(id) && !empty;
+      return `<section class="sec${open ? ' open' : ''}${empty ? ' empty' : ''}" style="--hue:${hue}" data-sec="${id}">
+        <button class="head" type="button" aria-expanded="${open}" data-act="${empty ? 'empty-add' : 'toggle'}" data-id="${id}" title="${empty ? `Add a ${esc(title.toLowerCase())} token` : open ? `Close ${esc(title)}` : `Open ${esc(title)}`}">
+          <span class="thumb" aria-hidden="true">${artHtml}</span>
+          <span class="tt">
+            <span class="tl"><span class="ic" aria-hidden="true">${ic(glyph, 11)}</span><span class="title">${esc(title)}</span>${count ? `<span class="count">${count}</span>` : ''}</span>
+            <span class="sum"><span class="dot"></span><span class="txt">${empty ? 'Empty' : esc(summary)}</span>${empty ? '<span class="plus">+ add</span>' : ''}</span>
+          </span>
+          ${empty ? '' : `<span class="up" aria-hidden="true">${ic('up', 12)}</span>`}
+        </button>
+        ${open ? `<div class="body">${body}</div>` : ''}
+      </section>`;
+    }
+    function field(t, key) {
+      const k = `data-k="${key}" data-name="${esc(t.name)}"`;
+      if (t.group === 'color') return `<span class="vf"><i class="sw" style="background:${esc(t.value)}"></i><input ${k} value="${esc(t.value)}" aria-label="--${esc(t.name)}"></span>`;
+      if (t.group === 'shadow') return `<span class="vf"><i class="shp" style="box-shadow:${esc(t.value)}"></i><input ${k} value="${esc(t.value)}" aria-label="--${esc(t.name)}"></span>`;
+      const m = t.value.match(/^(-?\d*\.?\d+)(px|rem|em|ms|s|%)$/);
+      if (m) return `<span class="vf"><span class="gauge">${ic('gauge', 12)}</span><input ${k} value="${esc(m[1])}" data-unit="${m[2]}" aria-label="--${esc(t.name)}"><span class="unit">${m[2]}</span></span>`;
+      return `<span class="vf"><input ${k} value="${esc(t.value)}" style="font-family:${t.group === 'font' ? esc(t.value) : 'var(--heo-mono)'};font-size:11.5px" aria-label="--${esc(t.name)}"></span>`;
+    }
+    function tokenRow(t) {
+      const uses = t.uses ? `${t.uses} use${t.uses === 1 ? '' : 's'}` : 'unused';
+      return `<div class="row${state.flash === t.name ? ' flash' : ''}" data-row="${esc(t.name)}">
+        <span class="nm" title="--${esc(t.name)}">${esc(t.name)}<small>${uses}${t.onEl ? '<span class="on">here</span>' : ''}</small></span>
+        ${field(t, 'tok')}
+        <button class="kill" type="button" data-act="kill" data-name="${esc(t.name)}" aria-label="Delete --${esc(t.name)}" title="${t.uses ? `Used ${t.uses} times. Deleting falls back to each var()'s default.` : `Delete --${esc(t.name)}`}">${ic('trash', 12)}</button>
+      </div>`;
+    }
+    function groupSection(group, { addRow = false } = {}) {
+      const all = inGroup(group);
+      const list = all.filter(matchTok);
+      const m = META[group];
+      if (!all.length) return null;
+      if (!list.length) return null;
+      let body = list.map(tokenRow).join('');
+      if (addRow) body += draftOrAdd(group);
+      return section({ id: group, hue: m.hue, glyph: m.glyph, title: m.label, count: list.length, summary: summaryOf(group, list), artHtml: art(group, list), body });
+    }
+    function emptyGroups() { return GROUPS.filter((g) => !inGroup(g).length); }
+
+    /* A: the add row, or the draft it turned into */
+    function draftOrAdd(group) {
+      const m = META[group];
+      if (state.draft?.group === group) {
+        const d = state.draft;
+        const t = { name: d.name, group, value: d.value };
+        return `<div class="draft">
+          <div class="row">
+            <label class="nmi">--<input data-k="dname" value="${esc(d.name)}" aria-label="New token name"></label>
+            ${field(t, 'dval')}
+            <button class="kill" style="opacity:1" type="button" data-act="a-cancel" aria-label="Cancel">${ic('close', 12)}</button>
+          </div>
+          <div class="dacts"><p class="hint">Next step on the scale. Enter adds, Esc cancels.</p><button class="btn sm primary" type="button" data-act="a-commit">${ic('check', 11)} Add</button></div>
+        </div>`;
+      }
+      const s = suggest(group);
+      return `<button class="addrow" type="button" data-act="a-add" data-g="${group}">${ic('plus', 11)} Add ${m.one}<span class="nx">${esc(s.name)} · ${esc(s.value)}</span></button>`;
+    }
+
+    /* The element's section */
+    function elSection({ withRaw = false, withSave = true } = {}) {
+      const list = tokens.filter((t) => t.onEl && matchTok(t));
+      let body = list.length ? list.map((t) => tokenRow({ ...t })).join('') : '<p class="hint">No token here yet.</p>';
+      if (withRaw) {
+        const open = raw.filter((r, i) => !state.resolved.includes(i));
+        body += `<div class="group-hint">Not tokens yet <b>${open.length}</b></div>`;
+        body += raw.map((r, i) => {
+          if (state.resolved.includes(i)) return `<div class="raw done-line"><code>${r.prop}</code><span class="v"><s>${esc(r.value)}</s> → var(--${esc(r.match || r.suggest)})</span><span>${ic('check', 12)}</span></div>`;
+          const sw = r.group === 'color' ? `<i class="sw" style="background:${r.value}"></i>` : '';
+          const act = r.match
+            ? `<button class="btn sm match" type="button" data-act="c-use" data-i="${i}" title="${esc(r.value)} is exactly --${r.match}">Use --${esc(r.match)}</button>`
+            : `<button class="btn sm" type="button" data-act="c-make" data-i="${i}">${ic('plus', 10)} Make token</button>`;
+          return `<div class="raw"><code title="from ${esc(r.src)}">${r.prop}</code><span class="v">${sw}${esc(r.value)}</span>${act}</div>`;
+        }).join('');
+      }
+      if (withSave) body += `<div class="foot"><button class="btn sm" type="button">${ic('blocks', 11)} Save 5 declarations as a class</button></div>`;
+      return section({ id: 'el', hue: 265, glyph: 'cursor', title: 'On p.card', count: list.length, summary: list.map((t) => t.name).join(' · '), artHtml: art('el'), body });
+    }
+    function libSections() {
+      const ts = textStyles.filter((x) => matchName(x.name + x.label));
+      const cl = classes.filter((x) => matchName(x.name));
+      const out = [];
+      if (ts.length) out.push(section({
+        id: 'tstyles', hue: 300, glyph: 'text', title: 'Text styles', count: ts.length, summary: ts.map((x) => x.label).join(' · '), artHtml: art('tstyles'),
+        body: ts.map((x) => `<div class="lib"><span class="p" style="${x.css}">${x.label}</span><span class="m">.${x.name}</span></div>`).join('')
+      }));
+      if (!state.query) out.push(section({
+        id: 'fonts', hue: 330, glyph: 'font', title: 'Fonts', count: fonts.length, summary: fonts.map((f) => f.name).join(' · '), artHtml: art('fonts'),
+        body: fonts.map((f) => `<div class="lib"><span class="p" style="font-family:Inter,system-ui">${f.name}</span><span class="m">${f.where}</span></div>`).join('')
+      }));
+      if (cl.length) out.push(section({
+        id: 'classes', hue: 230, glyph: 'blocks', title: 'Classes', count: cl.length, summary: cl.map((x) => '.' + x.name).join(' · '), artHtml: art('classes'),
+        body: cl.map((x) => `<div class="lib"><span class="p" style="font-family:var(--heo-mono);font-size:11px">.${x.name}</span><span class="m">${x.n} declarations</span></div>`).join('')
+      }));
+      return out.join('');
+    }
+    function ruleSections() {
+      const r = rules.filter((x) => matchName(x.name));
+      if (!r.length) return '';
+      return section({
+        id: 'rules', hue: 210, glyph: 'code', title: 'CSS rules', count: r.length, summary: r.map((x) => x.name).join(' · '), artHtml: art('rules'),
+        body: r.map((x) => `<div class="lib"><span class="p" style="font-family:var(--heo-mono);font-size:11px">${x.name}</span><span class="m">${x.n} on page</span></div>`).join('')
+      });
+    }
+
+    /* ---------- Variant A — scoped search + inline add ---------- */
+    function topA() {
+      const c = counts();
+      const total = c.tokens + c.classes + c.rules;
+      const scopes = [['all', 'All', total], ['tokens', 'Tokens', c.tokens], ['classes', 'Classes', c.classes], ['rules', 'Rules', c.rules], ['el', 'On p.card', c.el]];
+      const cur = scopes.find((s) => s[0] === state.scope);
+      let menu = '';
+      if (state.menu === 'scope') menu = `<div class="menu" role="menu" style="right:48px">${scopes.map(([v, l, n], i) => `${i === 4 ? '<hr>' : ''}<button type="button" role="menuitemradio" aria-checked="${state.scope === v}" data-act="a-scope" data-v="${v}"><span>${state.scope === v ? ic('check', 12) : ''}</span><span>${l}</span><span>${n}</span></button>`).join('')}</div>`;
+      if (state.menu === 'more') menu = `<div class="menu" role="menu">
+        <button type="button" role="menuitem"><span>${ic('refresh', 12)}</span><span>Re-read stylesheets</span><span></span></button>
+        <button type="button" role="menuitem" data-act="collapse"><span>${ic('collapse', 12)}</span><span>Collapse all</span><span></span></button>
+        <hr><button type="button" role="menuitem"><span>${ic('share', 12)}</span><span>Share &amp; import…</span><span></span></button></div>`;
+      return `<div class="top"><div class="arow">
+          <label class="search">${ic('search', 13)}<input data-k="q" placeholder="Search ${total} items…" value="${esc(state.query)}" aria-label="Search the design system"></label>
+          <button class="scope" type="button" data-act="a-menu" data-v="scope" aria-haspopup="menu" aria-expanded="${state.menu === 'scope'}"><b>${cur[1]}</b><span>${cur[2]}</span>${ic('down', 11)}</button>
+          <button class="ib" type="button" data-act="a-menu" data-v="more" aria-label="More" aria-haspopup="menu" aria-expanded="${state.menu === 'more'}">${ic('more', 14)}</button>
+        </div>${menu}</div>`;
+    }
+    function bodyA() {
+      const s = state.scope;
+      const out = [];
+      if (s === 'all' || s === 'tokens' || s === 'el') out.push(elSection());
+      if (s === 'all' || s === 'tokens') {
+        GROUPS.forEach((g) => { const x = groupSection(g, { addRow: true }); if (x) out.push(x); });
+        if (!state.query) emptyGroups().forEach((g) => {
+          if (state.draft?.group === g) { const m = META[g]; state.open.add(g); out.push(section({ id: g, hue: m.hue, glyph: m.glyph, title: m.label, count: 0, summary: 'New token', artHtml: art(g), body: draftOrAdd(g) })); }
+          else out.push(section({ id: g, hue: META[g].hue, glyph: META[g].glyph, title: META[g].label, artHtml: art(g), empty: true }));
+        });
+      }
+      if (s === 'all' || s === 'classes') out.push(libSections());
+      if (s === 'all' || s === 'rules') out.push(ruleSections());
+      const html = out.join('');
+      return html.trim() ? html : `<div class="empty-note">Nothing matches “${esc(state.query)}”.</div>`;
+    }
+
+    /* ---------- Variant B — tabs + New token sheet ---------- */
+    function topB() {
+      const c = counts();
+      const tabs = [['tokens', 'Tokens', c.tokens], ['classes', 'Classes', c.classes], ['rules', 'Rules', c.rules]];
+      const add = { tokens: 'Token', classes: 'Class', rules: 'Rule' }[state.tab];
+      return `<div class="top">
+        <div class="brow">
+          <div class="seg" role="tablist">${tabs.map(([v, l, n]) => `<button type="button" role="tab" aria-selected="${state.tab === v}" data-act="b-tab" data-v="${v}">${l} <b>${n}</b></button>`).join('')}</div>
+          <button class="ib" type="button" data-act="collapse" title="Collapse all" aria-label="Collapse all">${ic('collapse', 14)}<sup>${state.open.size}</sup></button>
+        </div>
+        <div class="bfind">
+          <label class="search">${ic('search', 13)}<input data-k="q" placeholder="Search ${state.tab}…" value="${esc(state.query)}" aria-label="Search ${state.tab}"></label>
+          <button class="btn primary" type="button" data-act="b-new" aria-expanded="${!!state.sheet}">${ic('plus', 12)} ${add}</button>
+        </div></div>`;
+    }
+    const APPLY = { color: ['color', 'background-color', 'border-color'], space: ['padding', 'margin', 'gap'], size: ['width', 'max-width', 'height'], radius: ['border-radius'], font: ['font-size', 'font-family', 'line-height'], shadow: ['box-shadow'], border: ['border'], motion: ['transition-duration'] };
+    function previewOf(group, value) {
+      const v = esc(value || '');
+      switch (group) {
+        case 'color': return `<div style="display:flex;gap:8px;align-items:center"><span style="width:34px;height:34px;border-radius:8px;background:${v};box-shadow:inset 0 0 0 1px rgb(0 0 0/.1)"></span><b style="color:${v};font-size:18px">Aa</b><span style="padding:3px 8px;border-radius:5px;background:${v};color:#fff;font-size:11px">Button</span></div>`;
+        case 'space': return `<div style="display:flex;align-items:center;gap:0"><span style="width:18px;height:22px;background:#c7d2fe;border-radius:3px"></span><span style="width:${Math.min(px(value), 180)}px;height:10px;background:repeating-linear-gradient(45deg,#10b98155 0 3px,transparent 3px 6px);border-block:1px solid #10b981"></span><span style="width:18px;height:22px;background:#c7d2fe;border-radius:3px"></span><span style="margin-left:8px;font:11px var(--heo-mono)">${v}</span></div>`;
+        case 'radius': return `<span style="width:80px;height:40px;background:#e0e7ff;border:1px solid #a5b4fc;border-radius:${v}"></span>`;
+        case 'font': return `<span style="${/,|[a-z]{4}/i.test(value) ? `font-family:${v}` : `font-size:${v}`}">The quick brown fox</span>`;
+        case 'shadow': return `<span style="width:80px;height:36px;background:#fff;border-radius:8px;box-shadow:${v}"></span>`;
+        case 'border': return `<span style="width:80px;height:36px;border-radius:6px;border:${v}"></span>`;
+        case 'size': return `<span style="width:100%;max-width:${Math.min(px(value) / 4, 220)}px;height:14px;background:#e0e7ff;border:1px dashed #6366f1"></span>`;
+        case 'motion': return `<span style="font:11px var(--heo-mono)">⟶ ${v}</span>`;
+      }
+    }
+    function sheetB() {
+      const s = state.sheet;
+      const m = META[s.group];
+      const t = { name: s.name, group: s.group, value: s.value };
+      return `<div class="sheet" style="--hue:${m.hue}" role="dialog" aria-label="New token">
+        <div class="sh">${ic('plus', 12)} New ${m.one} token<button class="ib" type="button" data-act="b-close" aria-label="Close">${ic('close', 12)}</button></div>
+        <div class="kinds" role="radiogroup" aria-label="Kind">${GROUPS.map((g) => `<button class="kind" style="--hue:${META[g].hue}" type="button" role="radio" aria-checked="${s.group === g}" data-act="b-kind" data-v="${g}"><span class="thumb">${art(g, inGroup(g))}</span>${META[g].label}</button>`).join('')}</div>
+        <div class="row"><label class="nmi">--<input data-k="sname" value="${esc(s.name)}" aria-label="Name"></label>${field(t, 'sval')}<span></span></div>
+        <div class="preview"><span class="cap">Preview</span>${previewOf(s.group, s.value)}</div>
+        <label class="apply"><input type="checkbox" data-k="sapply" ${s.apply ? 'checked' : ''}> Also use on <code>p.card</code> as
+          <select data-k="sprop" aria-label="Property">${APPLY[s.group].map((p) => `<option ${s.prop === p ? 'selected' : ''}>${p}</option>`).join('')}</select></label>
+        <div class="dacts"><button class="btn sm ghost" type="button" data-act="b-close">Cancel</button><button class="btn sm primary" type="button" data-act="b-create">Create --${esc(s.name || '…')}</button></div>
+      </div>`;
+    }
+    function bodyB() {
+      let out = state.sheet && state.tab === 'tokens' ? sheetB() : '';
+      if (state.tab === 'tokens') {
+        out += elSection();
+        GROUPS.forEach((g) => { const x = groupSection(g); if (x) out += x; });
+        const e = emptyGroups();
+        if (e.length && !state.query) out += `<div class="more-kinds">No ${e.map((g) => META[g].label.toLowerCase()).join(', ')} tokens yet.<button class="btn sm ghost" type="button" data-act="b-new" data-v="${e[0]}">${ic('plus', 10)} Add one</button></div>`;
+      } else if (state.tab === 'classes') out += libSections();
+      else out += ruleSections() || '<div class="empty-note">No rules.</div>';
+      return out;
+    }
+
+    /* ---------- Variant C — chips + create from what you type ---------- */
+    function offerC() {
+      const q = state.query.trim();
+      if (!q) return null;
+      const exact = tokens.find((t) => t.name === q.replace(/^--/, ''));
+      if (exact) return null;
+      let name = '', value = '';
+      const m = q.match(/^-{0,2}([a-z][\w-]*)\s*[:=]\s*(.+)$/i);
+      if (m) { name = m[1]; value = m[2]; }
+      else if (looksLikeValue(q)) { value = q; }
+      else if (/^-{0,2}[a-z][\w-]*$/i.test(q) && counts().tokens === 0) { name = q.replace(/^--/, ''); }
+      else return null;
+      const group = state.offerGroup || guessGroup(value, name);
+      if (!name) name = suggest(group).name;
+      return { name, value, group };
+    }
+    function topC() {
+      const c = counts();
+      const f = state.filters;
+      return `<div class="top">
+        <label class="search">${ic('search', 13)}<input data-k="q" placeholder="Search, or type  name: value  to add" value="${esc(state.query)}" aria-label="Search or add"><button class="ib" style="width:22px;height:22px;border:0;background:transparent;box-shadow:none" type="button" title="Re-read stylesheets" aria-label="Re-read stylesheets">${ic('refresh', 12)}</button></label>
+        <div class="chips" role="group" aria-label="Show">
+          <button class="chip el" type="button" aria-pressed="${f.el}" data-act="c-chip" data-v="el">${ic('cursor', 10)} p.card <b>${c.el}</b></button>
+          <button class="chip" type="button" aria-pressed="${f.tokens}" data-act="c-chip" data-v="tokens">Tokens <b>${c.tokens}</b></button>
+          <button class="chip" type="button" aria-pressed="${f.classes}" data-act="c-chip" data-v="classes">Classes <b>${c.classes}</b></button>
+          <button class="chip" type="button" aria-pressed="${f.rules}" data-act="c-chip" data-v="rules">Rules <b>${c.rules}</b></button>
+        </div></div>`;
+    }
+    function bodyC() {
+      const f = state.filters;
+      let out = '';
+      const o = offerC();
+      if (o) {
+        const m = META[o.group];
+        out += `<div class="offer" style="--hue:${m.hue}">
+          <div class="oh"><span class="thumb">${art(o.group, inGroup(o.group))}</span><span><b>Create a token</b><small>Enter creates it in ${m.label}</small></span>
+            <button class="gpick" type="button" data-act="c-group" title="Change the kind">${m.label} ${ic('down', 10)}</button></div>
+          <div class="row"><label class="nmi">--<input data-k="oname" value="${esc(o.name)}" aria-label="Name"></label>${field({ name: o.name, group: o.group, value: o.value }, 'oval')}<span></span></div>
+          <div class="dacts"><p class="hint">${o.value ? '' : 'Give it a value.'}</p><button class="btn sm primary" type="button" data-act="c-create">${ic('plus', 11)} Create --${esc(o.name)}</button></div>
+        </div>`;
+      }
+      if (f.el || f.tokens) out += elSection({ withRaw: true, withSave: false });
+      if (f.tokens && !f.el) GROUPS.forEach((g) => { const x = groupSection(g); if (x) out += x; });
+      if (f.classes && !f.el) out += libSections();
+      if (f.rules && !f.el) out += ruleSections();
+      return out;
+    }
+
+    /* ---------- notes ---------- */
+    const NOTES = {
+      A: {
+        name: 'Scoped search + inline add', html: `
+        <div class="q"><b>Top:</b> one row. Search, a scope menu (All ▾ → Tokens · Classes · Rules · On p.card, each with its count) and ⋯ (re-read, collapse all, share &amp; import). The counts chips and the facet strip go; the counts live in the scope menu and on each section's pill.</div>
+        <ul>
+          <li><b>Sections</b> are drawn like an open Styles card: hued head, the group's picture, icon chip, count pill, a summary line in mono (<code>4 · 8 · 16 · 24 · 40</code>). Closed sections are the same head, slimmer. Rows are Styles' rows: name (uses under it, a "here" tag when p.card uses it) | field | delete on hover.</li>
+          <li><b>Adding</b> happens where the token will live: each section ends with <i>+ Add spacing · space-2xl · 64px</i>, the next step of the scale, ready to accept with Enter. The group is never asked: the section is the group. Kinds with no tokens (Size, Border, Motion) sit at the end as dashed "Empty · + add" sections, like empty Styles cards.</li>
+          <li>Try: click <i>+ Add spacing</i>, Enter. Open the scope menu.</li>
+        </ul>` },
+      B: {
+        name: 'Tabs + New token sheet', html: `
+        <div class="q"><b>Top:</b> the Styles panel's own header shape. A segmented <i>Tokens 20 | Classes 4 | Rules 1</i> (like Cards | Applied) with a collapse-all button carrying the open count, then search and a primary <i>+ Token</i> that follows the tab (+ Class, + Rule). No "All": one registry at a time.</div>
+        <ul>
+          <li><b>Sections</b> as in A; the empty kinds fold into one line ("No size, border, motion tokens yet · + Add one").</li>
+          <li><b>Adding</b> is a sheet at the top of the list: pick the kind from art tiles (the same pictures as the section heads), name it, set the value with the kind's own field, see it on a live preview, and optionally put it straight on <code>p.card</code> as a property. Create scrolls to its section and flashes the row.</li>
+          <li>Try: + Token, pick Radius, Create with "Also use on p.card" ticked.</li>
+        </ul>` },
+      C: {
+        name: 'Filter chips + create from what you type', html: `
+        <div class="q"><b>Top:</b> search, then one row of chips that are counts and filters at once: <i>◎ p.card 5 · Tokens 20 · Classes 4 · Rules 1</i> (re-read moves into the search field). The two old rows become one, and "this element" becomes a filter instead of a section you scroll past.</div>
+        <ul>
+          <li><b>Adding</b> starts in the search. Type <code>accent: #22c55e</code>, or just a value (<code>#22c55e</code>, <code>32px</code>, <code>200ms</code>): a create card offers it with the kind guessed from the value (changeable on its pill) and a name proposed from the scale. Enter creates.</li>
+          <li><b>From the element:</b> its section lists the raw values no token carries. An exact match offers <i>Use --text-base</i>; a new one offers <i>Make token</i>, which fills the create card.</li>
+          <li>Try: type <code>accent: #22c55e</code>. Press <i>Make token</i> on color. Toggle the p.card chip.</li>
+        </ul>` },
+    };
+
+    /* ---------- render ---------- */
+    function render() {
+      const active = document.activeElement;
+      const key = active?.dataset?.k;
+      const keyName = active?.dataset?.name;
+      const caret = active && 'selectionStart' in active ? active.selectionStart : null;
+      const v = state.variant;
+      document.getElementById('top').innerHTML = v === 'A' ? topA() : v === 'B' ? topB() : topC();
+      document.getElementById('scroll').innerHTML = v === 'A' ? bodyA() : v === 'B' ? bodyB() : bodyC();
+      document.getElementById('notes').innerHTML = NOTES[v].html;
+      document.getElementById('vtitle').textContent = `${v} — ${NOTES[v].name}`;
+      document.getElementById('proto-label').textContent = `${v} — ${NOTES[v].name}`;
+      if (key) {
+        const sel = `[data-k="${key}"]${keyName ? `[data-name="${CSS.escape(keyName)}"]` : ''}`;
+        const el = document.querySelector(sel);
+        if (el) { el.focus(); if (caret != null && el.setSelectionRange) try { el.setSelectionRange(caret, caret); } catch { } }
+      }
+      document.getElementById('state').textContent = 'STATE ' + JSON.stringify({
+        variant: v, query: state.query, open: [...state.open],
+        ...(v === 'A' ? { scope: state.scope, menu: state.menu, draft: state.draft } : {}),
+        ...(v === 'B' ? { tab: state.tab, sheet: state.sheet } : {}),
+        ...(v === 'C' ? { filters: state.filters, offer: offerC(), resolved: state.resolved } : {}),
+        tokens: tokens.length, last: state.last,
+      }, null, 2);
+      if (state.flash) {
+        const row = document.querySelector(`[data-row="${CSS.escape(state.flash)}"]`);
+        row?.scrollIntoView({ block: 'center' });
+        state.flash = null;
+      }
+    }
+    function addToken(name, group, value, onEl = false) {
+      name = name.trim().replace(/^--/, '');
+      if (!name || !value.trim()) { state.last = 'needs a name and a value'; return false; }
+      if (tokens.some((t) => t.name === name)) { state.last = `--${name} exists`; return false; }
+      tokens.push(T(name, group, value.trim(), onEl ? 1 : 0, onEl));
+      state.open.add(group);
+      state.flash = name;
+      state.last = `created --${name}: ${value} (${group})${onEl ? ' and applied to p.card' : ''}`;
+      return true;
+    }
+
+    /* ---------- events ---------- */
+    document.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-act]');
+      if (!b) { if (state.menu && !e.target.closest('.menu')) { state.menu = null; render(); } return; }
+      const { act, id, v, g, name, i } = b.dataset;
+      switch (act) {
+        case 'toggle': state.open.has(id) ? state.open.delete(id) : state.open.add(id); state.last = `toggle ${id}`; break;
+        case 'collapse': state.open.clear(); state.menu = null; state.last = 'collapse all'; break;
+        case 'kill': { const k = tokens.findIndex((t) => t.name === name); if (k > -1) tokens.splice(k, 1); state.last = `deleted --${name}`; break; }
+        case 'empty-add':
+          if (state.variant === 'A') { state.draft = { group: id, ...suggest(id) }; state.open.add(id); }
+          else if (state.variant === 'B') state.sheet = { group: id, ...suggest(id), apply: false, prop: APPLY[id][0] };
+          else { state.query = `${suggest(id).name}: ${suggest(id).value}`; state.offerGroup = id; }
+          break;
+        // A
+        case 'a-menu': state.menu = state.menu === v ? null : v; break;
+        case 'a-scope': state.scope = v; state.menu = null; state.last = `scope ${v}`; break;
+        case 'a-add': state.draft = { group: g, ...suggest(g) }; state.last = `draft in ${g}`; render(); document.querySelector('[data-k="dval"]')?.focus(); return;
+        case 'a-cancel': state.draft = null; break;
+        case 'a-commit': if (addToken(state.draft.name, state.draft.group, state.draft.value)) state.draft = null; break;
+        // B
+        case 'b-tab': state.tab = v; state.sheet = null; state.query = ''; break;
+        case 'b-new':
+          if (state.tab !== 'tokens') { state.last = `new ${state.tab.slice(0, -1)} (not prototyped)`; break; }
+          { const gr = v || 'color'; state.sheet = state.sheet && !v ? null : { group: gr, ...suggest(gr), apply: false, prop: APPLY[gr][0] }; }
+          document.getElementById('scroll').scrollTop = 0; break;
+        case 'b-kind': state.sheet = { ...state.sheet, group: v, ...suggest(v), prop: APPLY[v][0] }; break;
+        case 'b-close': state.sheet = null; break;
+        case 'b-create': { const s = state.sheet; if (addToken(s.name, s.group, s.value, s.apply)) state.sheet = null; break; }
+        // C
+        case 'c-chip':
+          if (v === 'el') state.filters.el = !state.filters.el;
+          else state.filters[v] = !state.filters[v];
+          state.last = `filters ${JSON.stringify(state.filters)}`; break;
+        case 'c-group': { const o = offerC(); state.offerGroup = GROUPS[(GROUPS.indexOf(o.group) + 1) % GROUPS.length]; break; }
+        case 'c-create': {
+          const o = offerC();
+          const unit = document.querySelector('[data-k="oval"]')?.dataset.unit ?? '';
+          const val = (document.querySelector('[data-k="oval"]')?.value ?? o.value) + unit;
+          const ri = state.fromRaw;
+          if (addToken(document.querySelector('[data-k="oname"]')?.value ?? o.name, o.group, val, ri != null)) {
+            if (ri != null) { raw[ri].suggest = (document.querySelector('[data-k="oname"]')?.value ?? o.name); state.resolved.push(ri); state.fromRaw = null; }
+            state.query = ''; state.offerGroup = null;
+          }
+          break;
+        }
+        case 'c-use': state.resolved.push(Number(i)); state.last = `p.card ${raw[i].prop} → var(--${raw[i].match})`; break;
+        case 'c-make': { const r = raw[Number(i)]; const val = r.prop === 'padding' ? '12px' : r.value; state.query = `${r.suggest}: ${val}`; state.offerGroup = r.group; state.fromRaw = Number(i); state.last = `make token from p.card ${r.prop}`; render(); document.querySelector('[data-k="oname"]')?.focus(); return; }
+      }
+      render();
+    });
+    document.addEventListener('input', (e) => {
+      const el = e.target; const k = el.dataset?.k;
+      if (!k) return;
+      if (k === 'q') { state.query = el.value; state.offerGroup = null; state.fromRaw = null; }
+      else if (k === 'tok') { const t = tokens.find((x) => x.name === el.dataset.name); if (t) t.value = el.value + (el.dataset.unit ?? ''); state.last = `--${t.name} = ${t.value}`; }
+      else if (k === 'dname') state.draft.name = el.value;
+      else if (k === 'dval') state.draft.value = el.value + (el.dataset.unit ?? '');
+      else if (k === 'sname') state.sheet.name = el.value;
+      else if (k === 'sval') state.sheet.value = el.value + (el.dataset.unit ?? '');
+      else if (k === 'sapply') state.sheet.apply = el.checked;
+      else if (k === 'sprop') state.sheet.prop = el.value;
+      else if (k === 'oname' || k === 'oval') return; // read on create
+      render();
+    });
+    document.addEventListener('keydown', (e) => {
+      const k = e.target.dataset?.k;
+      if (e.key === 'Enter' && (k === 'dname' || k === 'dval')) { e.preventDefault(); document.querySelector('[data-act="a-commit"]').click(); return; }
+      if (e.key === 'Escape' && state.draft) { state.draft = null; render(); return; }
+      if (e.key === 'Enter' && (k === 'sname' || k === 'sval')) { document.querySelector('[data-act="b-create"]').click(); return; }
+      if (e.key === 'Enter' && (k === 'q' || k === 'oname' || k === 'oval') && state.variant === 'C' && offerC()) { document.querySelector('[data-act="c-create"]').click(); return; }
+      if (e.key === 'Escape' && state.menu) { state.menu = null; render(); return; }
+      const a = document.activeElement;
+      if (a && (a.matches('input, textarea, select, [contenteditable]'))) return;
+      if (e.key === 'ArrowLeft') go(-1);
+      if (e.key === 'ArrowRight') go(1);
+    });
+    function go(step) {
+      const o = ['A', 'B', 'C'];
+      state.variant = o[(o.indexOf(state.variant) + step + 3) % 3];
+      state.menu = null; state.draft = null; state.sheet = null; state.query = '';
+      const url = new URL(location.href); url.searchParams.set('variant', state.variant); history.replaceState(null, '', url);
+      render();
+    }
+    document.querySelectorAll('.proto-bar [data-step]').forEach((b) => b.addEventListener('click', () => go(Number(b.dataset.step))));
+    document.getElementById('theme').addEventListener('click', () => {
+      state.theme = state.theme === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = state.theme;
+    });
+
+    /* ---------- screenshot presets ---------- */
+    const shot = params.get('shot');
+    if (shot === 'add') {
+      if (state.variant === 'A') { state.draft = { group: 'space', ...suggest('space') }; state.open = new Set(['space']); }
+      if (state.variant === 'B') { state.sheet = { group: 'radius', ...suggest('radius'), apply: true, prop: 'border-radius' }; state.open = new Set(['radius']); }
+      if (state.variant === 'C') { state.query = 'accent: #22c55e'; state.open = new Set(['el']); }
+    }
+    if (shot === 'menu' && state.variant === 'A') state.menu = 'scope';
+    if (shot === 'menu' && state.variant === 'C') { state.filters.el = true; }
+    render();
+    if (shot) document.getElementById('out').textContent = 'RESULTS:{"ok":true}:END';
+  </script>
+</body>
+
+</html>

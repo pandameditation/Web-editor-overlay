@@ -4,6 +4,7 @@
 <head>
   <meta charset="utf-8">
   <title>Creating a class or rule opens it in its own dialog</title>
+  <script src="settle.js"></script>
   <!--
     The page's own CSS, written so that filtering the rule list by "p" matches most of it.
 
@@ -392,6 +393,103 @@
         andLeftTheSelectionAlone: engine.selected === selectedBefore,
       };
       results.escape.ok = Object.entries(results.escape).every(([, v]) => v === true);
+
+      /* ------------------------------------------------------------------ *
+       * 5b. Real Escape presses, from where focus really is.
+       *
+       *     The reported bug: editing a class, Escape never closed the dialog but closed
+       *     the menus behind it. Focus starts in the add-a-property field, which took every
+       *     Escape and blurred, dropping focus on the page behind the backdrop; the page's
+       *     keymap then closed the quick menu, then the selection, while the dialog stayed.
+       * ------------------------------------------------------------------ */
+      step('realEscape');
+      let keySeq = 0;
+      const keysWaiting = new Map();
+      window.__heoKeysDone = (id) => { keysWaiting.get(id)?.(); keysWaiting.delete(id); };
+      const realKey = (key) => new Promise((resolve) => {
+        const id = ++keySeq;
+        keysWaiting.set(id, resolve);
+        window.__heoPressKeys(JSON.stringify({ id, keys: [key] }));
+      }).then(frames).then(() => HeoSettle.quiet(60));
+      const openWithMenuBehind = async () => {
+        api.select(document.getElementById('para'));
+        await frames();
+        engine.setQuickMenu(true);
+        await frames();
+        engine.openStyleEditor('class', 'article-head', false);
+        await frames();
+        await HeoSettle.quiet(120);
+      };
+      const inDialog = () => dialog()?.shadowRoot.activeElement != null;
+
+      // From the initial focus: the field's suggestion list (open on focus) goes first, then the dialog.
+      await openWithMenuBehind();
+      const startsInTheDialog = inDialog();
+      let presses = 0;
+      let focusStayedIn = true;
+      while (dialog() && presses < 3) {
+        await realKey('Escape');
+        presses += 1;
+        if (dialog() && !inDialog()) focusStayedIn = false;
+      }
+      const fromTheField = {
+        startsInTheDialog,
+        itClosesTheDialogWithinTwoPresses: !dialog() && presses <= 2,
+        focusNeverFellBehindTheBackdrop: focusStayedIn,
+        theQuickMenuBehindStaysOpen: engine.store.value.quickMenuOpen === true,
+        andTheSelectionStays: engine.selected === document.getElementById('para'),
+      };
+
+      // A typed value is reverted first, in place; the next presses close the dialog.
+      await openWithMenuBehind();
+      const declField = Array.from(dialog().shadowRoot.querySelectorAll('heo-value-field'))
+        .find((f) => !f.closest('.property-adder'));
+      const declInput = declField?.shadowRoot.querySelector('input');
+      declInput?.focus();
+      await frames();
+      if (declInput) await typeInto(declField, '24px', dialog());
+      // Pressed until the draft is gone: a list open over the field closes first.
+      let revertPresses = 0;
+      while (declField?.draft !== declField?.value && revertPresses < 2) {
+        await realKey('Escape');
+        revertPresses += 1;
+      }
+      const reverted = declField?.draft === '18px';
+      const stillOpenAfterRevert = Boolean(dialog());
+      const focusKeptAfterRevert = inDialog();
+      presses = 0;
+      while (dialog() && presses < 3) {
+        await realKey('Escape');
+        presses += 1;
+      }
+      const fromATypedValue = {
+        foundTheDeclarationField: Boolean(declInput),
+        theDraftIsReverted: reverted,
+        theDialogStaysForThatPress: stillOpenAfterRevert,
+        andFocusStaysInIt: focusKeptAfterRevert,
+        thenItCloses: !dialog() && presses <= 2,
+        theQuickMenuBehindStaysOpen: engine.store.value.quickMenuOpen === true,
+        nothingWasCommitted: engine.classes.get('article-head')?.declarations['font-size'] === '18px',
+      };
+
+      // Focus on the page behind (a click on the backdrop's blur, say): Escape still closes the dialog.
+      await openWithMenuBehind();
+      activeDeep()?.blur();
+      await frames();
+      const focusIsBehind = !inDialog();
+      await realKey('Escape');
+      const fromBehind = {
+        focusIsBehind,
+        oneEscapeClosesTheDialog: !dialog(),
+        andNotTheQuickMenu: engine.store.value.quickMenuOpen === true,
+        norTheSelection: engine.selected === document.getElementById('para'),
+      };
+      engine.setQuickMenu(false);
+      await frames();
+
+      results.realEscape = { fromTheField, fromATypedValue, fromBehind };
+      results.realEscape.ok = [fromTheField, fromATypedValue, fromBehind]
+        .every((group) => Object.values(group).every((v) => v === true));
 
       /* ------------------------------------------------------------------ *
        * 6. Nothing is left behind: no dialog, no modal scroll lock.

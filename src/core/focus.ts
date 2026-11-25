@@ -168,6 +168,10 @@ function focusableWithin(root: ParentNode): HTMLElement[] {
     for (const el of Array.from(node.querySelectorAll<HTMLElement>('*'))) {
       if (el.shadowRoot) visit(el.shadowRoot);
       if (!el.matches(FOCUSABLE)) continue;
+      // tabindex -1 takes a control out of the Tab order, as the browser's own walk does. Without
+      // this a roving tabindex (a radio group, a listbox: one stop, the arrows inside) could not
+      // work in the chrome: Tab went to every dot of the text effects colours in turn.
+      if (el.tabIndex < 0) continue;
       // A control in a collapsed section has no box, and focusing it would scroll
       // to nothing and swallow the keystroke.
       if (el.getClientRects().length === 0) continue;

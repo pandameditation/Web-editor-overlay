@@ -10,8 +10,18 @@ import {
   effectColorById,
   TEXT_EFFECTS,
   textEffectById,
-  type TextEffect,
 } from '../../core/text-effects.js';
+import { TEXT_EFFECT_MARKER } from '../../core/text-styles.js';
+
+/** A row of the effects menu: a text style (a class) or an effect (inline styles). */
+interface FxChoice {
+  kind: 'style' | 'effect';
+  id: string;
+  label: string;
+  hint: string;
+  mark: boolean;
+  look: Record<string, string>;
+}
 import { shallowArrayEquals, StoreController } from '../../core/store.js';
 import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
@@ -154,74 +164,112 @@ export class HeoTextToolbar extends HeoElement {
       .dot[aria-checked='true'] {
         box-shadow: 0 0 0 2px var(--heo-bg), 0 0 0 4px var(--heo-accent);
       }
-      .dot:focus-visible,
-      .tile:focus-visible {
+      .dot:focus-visible {
         outline: 2px solid var(--heo-focus-ring);
         outline-offset: 3px;
       }
+      /* Named as every list in the editor names its groups: the value field's group head. */
       .group {
+        padding: 6px 8px 3px;
+        color: var(--heo-text-faint);
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      .fxfind {
         display: flex;
         align-items: center;
         gap: 6px;
-        margin: 10px 2px 6px;
+        height: 30px;
+        margin: 0 0 8px;
+        padding: 0 9px;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: var(--heo-r-sm);
+        background: var(--heo-sunken);
         color: var(--heo-text-faint);
-        font-size: 9.5px;
-        font-weight: 650;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
       }
-      .group::after {
-        content: '';
+      .fxfind:focus-within {
+        border-color: var(--heo-accent-line);
+      }
+      .fxfind input {
         flex: 1;
-        border-top: 1px solid var(--heo-line);
-      }
-      .tiles {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 6px;
-      }
-      /* A tile is a scrap of page: paper-coloured in both themes, so each effect reads as it will. */
-      .tile {
-        display: grid;
-        justify-items: center;
-        align-content: center;
-        gap: 4px;
         min-width: 0;
-        height: 66px;
-        padding: 4px;
-        border: 1px solid var(--heo-line);
-        border-radius: 10px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--heo-text);
+        font-size: 12px;
+        outline: none;
+      }
+      .fxlist {
+        display: grid;
+        max-height: 320px;
+        margin-top: 6px;
+        overflow: auto;
+        overscroll-behavior: contain;
+      }
+      /* A row as the value field's option: its look on a scrap of page, its name, what it does. */
+      .option {
+        display: grid;
+        grid-template-columns: 88px minmax(0, 1fr) 14px;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        padding: 4px 8px 4px 4px;
+        border: 0;
+        border-radius: var(--heo-r-sm);
+        background: transparent;
+        color: var(--heo-text);
+        text-align: left;
+        cursor: pointer;
+      }
+      .option:hover,
+      .option:focus-visible {
+        background: var(--heo-hover);
+        outline: none;
+      }
+      .option:focus-visible {
+        box-shadow: inset 0 0 0 2px var(--heo-focus-ring);
+      }
+      .option[aria-selected='true'] .tx b {
+        color: var(--heo-accent-text);
+      }
+      .option .pv {
+        display: grid;
+        place-items: center;
+        height: 34px;
+        overflow: hidden;
+        border-radius: 6px;
         background: #f4f2ec;
         color: #1f2330;
-        cursor: pointer;
-        transition:
-          border-color var(--heo-fast),
-          translate var(--heo-fast),
-          box-shadow var(--heo-fast);
+        font: 800 17px/1.1 system-ui, sans-serif;
+        white-space: nowrap;
       }
-      .tile:hover {
-        border-color: var(--heo-accent-line);
-        translate: 0 -1px;
-      }
-      .tile[aria-pressed='true'] {
-        border-color: var(--heo-accent);
-        box-shadow: 0 0 0 3px var(--heo-accent-soft);
-      }
-      .tile .w {
-        font: 800 21px/1.1 system-ui, sans-serif;
-        letter-spacing: -0.01em;
-      }
-      .tile mark.w {
+      .option .pv mark {
         background-color: transparent;
       }
-      .tile .n {
-        max-width: 100%;
+      .option .tx {
+        display: grid;
+        min-width: 0;
+      }
+      .option .tx b {
         overflow: hidden;
-        color: #4b5263;
-        font-size: 9.5px;
-        font-weight: 500;
+        font-size: 11.5px;
+        font-weight: 600;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+      .option .tx small {
+        overflow: hidden;
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .option .ck {
+        display: grid;
+        color: var(--heo-accent-text);
       }
       .foot {
         display: flex;
@@ -231,7 +279,7 @@ export class HeoTextToolbar extends HeoElement {
         padding-top: 10px;
         border-top: 1px solid var(--heo-line);
       }
-      .foot .primary {
+      .foot .btn {
         margin-left: auto;
       }
       .save {
@@ -277,6 +325,9 @@ export class HeoTextToolbar extends HeoElement {
   @state() private fxOpen = false;
   @state() private fxSaving = false;
   @state() private fxName = '';
+  /** What is typed in the menu's search, and the row the list's arrows are on (`kind:id`). */
+  @state() private fxQuery = '';
+  @state() private fxActive = '';
   /** Where the menu goes, worked out from the boxes once it has drawn: `top` in px from the bar. */
   @state() private fxTop: number | null = null;
 
@@ -492,6 +543,8 @@ export class HeoTextToolbar extends HeoElement {
     }
     this.fxOpen = true;
     this.fxSaving = false;
+    this.fxQuery = '';
+    this.fxActive = '';
     this.fxTop = null;
     this.#fxEscape = pushEscapeLayer(() => this.#closeEffects(true));
     listen(document, 'selectionchange', this.#onSelection);
@@ -500,7 +553,7 @@ export class HeoTextToolbar extends HeoElement {
     if (byKeyboard) {
       void this.updateComplete
         .then(() => this.updateComplete)
-        .then(() => this.renderRoot.querySelector<HTMLElement>('.fxmenu .tile')?.focus());
+        .then(() => this.renderRoot.querySelector<HTMLElement>('.fxmenu [data-fx-find]')?.focus());
     }
   }
 
@@ -559,48 +612,118 @@ export class HeoTextToolbar extends HeoElement {
     return fxColor;
   }
 
+  /**
+   * The menu's choices, in its sections, filtered by what is typed: the page's text styles first
+   * (put on as a class), then the effects by kind (put on as inline styles). Sections are named as
+   * every other list in the editor names its groups ("Accepted keywords", "Common values").
+   */
+  #fxSections(): Array<{ name: string; items: FxChoice[] }> {
+    const needle = this.fxQuery.trim().toLowerCase();
+    const hit = (...texts: string[]): boolean => !needle || texts.some((text) => text.toLowerCase().includes(needle));
+    const color = effectColorById(this.#color);
+    const styles: FxChoice[] = this.editor.textStyles()
+      .filter((one) => hit(one.name, one.entry.name))
+      .map((one) => ({
+        kind: 'style',
+        id: one.entry.name,
+        label: one.name,
+        hint: `.${one.entry.name}`,
+        mark: textEffectById(one.entry.declarations[TEXT_EFFECT_MARKER]?.trim() ?? '')?.mark ?? false,
+        look: Object.fromEntries(Object.entries(one.entry.declarations)
+          .filter(([property, value]) => !property.startsWith('--heo-') && value.trim())
+          .map(([property, value]) => [property, property === 'font-size' ? `min(17px, ${value})` : value])),
+      }));
+    const sections: Array<{ name: string; items: FxChoice[] }> = [{ name: 'Text styles', items: styles }];
+    for (const group of EFFECT_GROUPS) {
+      sections.push({
+        name: group,
+        items: TEXT_EFFECTS.filter((one) => one.group === group && hit(one.label, one.about, group)).map((one) => ({
+          kind: 'effect',
+          id: one.id,
+          label: one.label,
+          hint: one.about,
+          mark: Boolean(one.mark),
+          look: one.declarations(color),
+        })),
+      });
+    }
+    return sections.filter((one) => one.items.length);
+  }
+
   #renderEffects(): TemplateResult {
     const current = this.editor.textEffectAtSelection();
     const effect = current ? textEffectById(current.effect) : undefined;
-    const styles = this.editor.textEffectStyles();
-    const savedName = current?.style ? styles.find((one) => one.entry.name === current.style)?.name : null;
-    const color = effectColorById(this.#color);
-    const tile = (one: TextEffect): TemplateResult => {
-      const on = current?.effect === one.id && !current.style;
-      const declarations = one.declarations(color);
-      return html`<button
-        type="button"
-        class="tile"
-        data-effect=${one.id}
-        aria-pressed=${on ? 'true' : 'false'}
-        title=${on ? `${one.about}. Press again to take it off` : one.about}
-        @click=${() => this.#apply(one.id)}
-      >${one.mark
-        ? html`<mark class="w" style=${styleMap(declarations)}>Aa</mark>`
-        : html`<span class="w" style=${styleMap(declarations)}>Aa</span>`}<span class="n">${one.label}</span></button>`;
-    };
+    const styles = this.editor.textStyles();
+    const styleName = current?.style ? styles.find((one) => one.entry.name === current.style)?.name ?? current.style : null;
+    const sections = this.#fxSections();
+    const flat = sections.flatMap((one) => one.items);
+    const isOn = (one: FxChoice): boolean => one.kind === 'style' ? current?.style === one.id : current?.effect === one.id && !current.style;
+    // One tab stop for the list: the row the arrows were last on, else the one applied, else the first.
+    const focusId = flat.some((one) => `${one.kind}:${one.id}` === this.fxActive)
+      ? this.fxActive
+      : (() => { const on = flat.find(isOn); return on ? `${on.kind}:${on.id}` : flat[0] ? `${flat[0].kind}:${flat[0].id}` : ''; })();
     const selection = getSelection();
     const hint = current
-      ? html`On <code>&lt;${current.el.tagName.toLowerCase()}&gt;</code>${savedName ? html` as <b>${savedName}</b>` : nothing}. Fine-tune it in Styles.`
+      ? html`On <code>&lt;${current.el.tagName.toLowerCase()}&gt;</code>${styleName ? html` as <b>${styleName}</b>` : nothing}. Undo takes it back.`
       : selection?.isCollapsed
-        ? 'Nothing selected: what you type next gets the effect.'
-        : 'Applies to the selected text.';
+        ? 'Nothing selected: what you type next gets it.'
+        : 'Applies to the selected words.';
+    const row = (one: FxChoice): TemplateResult => {
+      const key = `${one.kind}:${one.id}`;
+      const on = isOn(one);
+      return html`<button
+        type="button"
+        class="option"
+        role="option"
+        data-fx-kind=${one.kind}
+        data-effect=${one.kind === 'effect' ? one.id : nothing}
+        data-style=${one.kind === 'style' ? one.id : nothing}
+        tabindex=${key === focusId ? '0' : '-1'}
+        aria-selected=${on ? 'true' : 'false'}
+        title=${on ? `${one.label}: on these words. Press again to take it off` : one.hint}
+        @focus=${() => { this.fxActive = key; }}
+        @click=${() => this.#pick(one)}
+      >
+        <span class="pv">${one.mark
+          ? html`<mark style=${styleMap(one.look)}>Pottery</mark>`
+          : html`<span style=${styleMap(one.look)}>Pottery</span>`}</span>
+        <span class="tx"><b>${one.label}</b><small>${one.hint}</small></span>
+        <span class="ck" aria-hidden="true">${on ? icon('check', 12) : nothing}</span>
+      </button>`;
+    };
     return html`<div
       class="fxmenu surface"
       role="dialog"
-      aria-label="Text effects"
+      aria-label="Text effects and text styles"
       style=${`top:${this.fxTop ?? 44}px;${this.fxTop === null ? 'visibility:hidden' : ''}`}
       @pointerdown=${(event: Event) => {
-        // A press in the menu keeps the text's selection, as the bar's buttons do; the name field takes the focus.
+        // A press in the menu keeps the text's selection, as the bar's buttons do; a field takes the focus.
         if (!(event.composedPath()[0] as HTMLElement).closest?.('input')) event.preventDefault();
       }}
       @keydown=${this.#onEffectsKey}
     >
       <div class="mhead">
         Text effects
-        <span class="on">${effect ? `· ${savedName ?? effect.label}` : nothing}</span>
-        <button class="btn icon ghost sm" type="button" aria-label="Close" title="Close" @click=${() => this.#closeEffects(true)}>${icon('close', 11)}</button>
+        <span class="on">${current ? `· ${styleName ?? effect?.label ?? ''}` : nothing}</span>
+        <button class="btn icon ghost sm" type="button" tabindex="-1" aria-label="Close" title="Close (Esc)" @click=${() => this.#closeEffects(true)}>${icon('close', 11)}</button>
       </div>
+      <label class="fxfind">
+        ${icon('search', 12)}
+        <input
+          type="text"
+          data-fx-find
+          placeholder="Find a text style or an effect"
+          aria-label="Find a text style or an effect"
+          aria-controls="fx-list"
+          autocomplete="off"
+          spellcheck="false"
+          .value=${this.fxQuery}
+          @input=${(event: Event) => {
+            this.fxQuery = (event.target as HTMLInputElement).value;
+            this.fxActive = '';
+          }}
+        />
+      </label>
       <div class="colors" role="radiogroup" aria-label="Effect colour">
         <span class="lab">Colour</span>
         ${EFFECT_COLORS.map((one) => html`<button
@@ -608,42 +731,18 @@ export class HeoTextToolbar extends HeoElement {
           class="dot"
           role="radio"
           data-color=${one.id}
+          tabindex=${one.id === this.#color ? '0' : '-1'}
           aria-checked=${one.id === this.#color ? 'true' : 'false'}
           aria-label=${one.label}
-          title=${one.label}
+          title=${`${one.label}: the colour of the effects below${current && !current.style ? ', and of the one on these words' : ''}`}
           style=${`background:linear-gradient(135deg, ${one.a}, ${one.b})`}
-          @click=${() => {
-            fxColor = one.id;
-            this.editor.recolorTextEffect(one.id);
-            this.requestUpdate();
-          }}
+          @click=${() => this.#setColor(one.id)}
         ></button>`)}
       </div>
-      ${EFFECT_GROUPS.map((group) => html`<div class="group">${group}</div>
-        <div class="tiles" role="group" aria-label=${group}>${TEXT_EFFECTS.filter((one) => one.group === group).map(tile)}</div>`)}
-      ${styles.length
-        ? html`<div class="group">Your text styles</div>
-          <div class="tiles" role="group" aria-label="Your text styles">
-            ${styles.map((one) => {
-              const on = current?.style === one.entry.name;
-              const look = Object.fromEntries(Object.entries(one.entry.declarations).filter(([property]) => !property.startsWith('--heo-')));
-              const mark = textEffectById(one.effect)?.mark;
-              return html`<button
-                type="button"
-                class="tile"
-                data-style=${one.entry.name}
-                aria-pressed=${on ? 'true' : 'false'}
-                title=${`${one.name}: .${one.entry.name}${on ? '. Press again to take it off' : ''}`}
-                @click=${() => {
-                  this.editor.applyTextEffectStyle(one.entry.name);
-                  this.requestUpdate();
-                }}
-              >${mark
-                ? html`<mark class="w" style=${styleMap(look)}>Aa</mark>`
-                : html`<span class="w" style=${styleMap(look)}>Aa</span>`}<span class="n">${one.name}</span></button>`;
-            })}
-          </div>`
-        : nothing}
+      <div class="fxlist" id="fx-list" role="listbox" aria-label="Text styles and effects">
+        ${sections.map((one) => html`<div class="group" role="presentation">${one.name}</div>${one.items.map(row)}`)}
+        ${!flat.length ? html`<p class="fxhint" style="margin:6px 8px">Nothing matches “${this.fxQuery}”.</p>` : nothing}
+      </div>
       ${this.fxSaving
         ? html`<form class="save" @submit=${this.#save}>
             <input
@@ -664,41 +763,50 @@ export class HeoTextToolbar extends HeoElement {
           </form>`
         : nothing}
       <div class="foot">
-        <button
-          class="btn sm"
-          type="button"
-          data-remove
-          ?disabled=${!current}
-          title=${current ? 'Take the effect off this text' : 'No effect here'}
-          @click=${() => {
-            this.editor.removeTextEffect();
-            this.requestUpdate();
-          }}
-        >${icon('close', 11)} Remove</button>
-        <button
-          class="btn sm primary"
-          type="button"
-          data-save
-          ?disabled=${!current || Boolean(current.style)}
-          title=${!current ? 'Apply an effect first' : current.style ? 'Already a text style' : 'Turn this effect into a text style you can reuse'}
-          @click=${() => {
-            this.fxSaving = true;
-            this.fxName = effect ? `${effect.label} ${EFFECT_COLORS.find((one) => one.id === this.#color)?.label ?? ''}`.trim() : '';
-            void this.updateComplete.then(() => {
-              const input = this.renderRoot.querySelector<HTMLInputElement>('.save input');
-              input?.focus();
-              input?.select();
-            });
-          }}
-        >${icon('plus', 11)} Save as text style</button>
+        ${current?.style
+          ? html`<button
+              class="btn sm"
+              type="button"
+              data-edit-style
+              title=${`Edit ${styleName} in Tokens › Text styles: every word in it follows`}
+              @click=${() => {
+                const name = current.style!;
+                this.#closeEffects(false);
+                this.editor.editTextStyle(name);
+              }}
+            >${icon('sliders', 11)} Edit ${styleName} in Tokens</button>`
+          : html`<button
+              class="btn sm primary"
+              type="button"
+              data-save
+              ?disabled=${!current}
+              title=${current ? 'Turn this effect into a text style you can reuse' : 'Apply an effect first'}
+              @click=${() => {
+                this.fxSaving = true;
+                this.fxName = effect ? `${effect.label} ${EFFECT_COLORS.find((one) => one.id === this.#color)?.label ?? ''}`.trim() : '';
+                void this.updateComplete.then(() => {
+                  const input = this.renderRoot.querySelector<HTMLInputElement>('.save input');
+                  input?.focus();
+                  input?.select();
+                });
+              }}
+            >${icon('plus', 11)} Save as text style</button>`}
       </div>
       <p class="fxhint">${hint}</p>
     </div>`;
   }
 
-  #apply(id: string): void {
-    this.editor.applyTextEffect(id, this.#color);
+  #pick(one: FxChoice): void {
+    if (one.kind === 'style') this.editor.applyTextEffectStyle(one.id);
+    else this.editor.applyTextEffect(one.id, this.#color);
+    this.fxActive = `${one.kind}:${one.id}`;
     this.fxSaving = false;
+    this.requestUpdate();
+  }
+
+  #setColor(id: string): void {
+    fxColor = id;
+    this.editor.recolorTextEffect(id);
     this.requestUpdate();
   }
 
@@ -710,7 +818,11 @@ export class HeoTextToolbar extends HeoElement {
     this.fxName = '';
   }
 
-  /** The arrows move through the tiles, four to a row, and along the colours. */
+  /**
+   * Three stops for Tab, as a toolbar's groups have: the search, the colours, the list. Inside the
+   * colours the arrows choose one (a radio group); inside the list they move through the rows, and
+   * Enter or Space puts the row's style or effect on. Down from the search goes into the list.
+   */
   #onEffectsKey = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -718,15 +830,48 @@ export class HeoTextToolbar extends HeoElement {
       this.#closeEffects(true);
       return;
     }
-    const step = ({ ArrowLeft: -1, ArrowRight: 1, ArrowUp: -4, ArrowDown: 4 } as Record<string, number>)[event.key];
     const target = event.composedPath()[0] as HTMLElement;
-    if (!step || !target.matches?.('.tile, .dot')) return;
-    const dots = target.matches('.dot');
-    const items = Array.from(this.renderRoot.querySelectorAll<HTMLElement>(dots ? '.fxmenu .dot' : '.fxmenu .tile'));
-    const at = items.indexOf(target);
-    const next = items[Math.max(0, Math.min(items.length - 1, at + (dots ? Math.sign(step) : step)))];
-    event.preventDefault();
-    next?.focus();
+    const rows = (): HTMLElement[] => Array.from(this.renderRoot.querySelectorAll<HTMLElement>('.fxlist .option'));
+    const focusRow = (row: HTMLElement | undefined): void => {
+      if (!row) return;
+      row.focus();
+      row.scrollIntoView({ block: 'nearest' });
+    };
+    if (target.matches?.('[data-fx-find]')) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        focusRow(rows()[0]);
+      } else if (event.key === 'Enter') {
+        // Enter in the search: the first match, as an autocomplete takes it.
+        event.preventDefault();
+        rows()[0]?.click();
+      }
+      return;
+    }
+    if (target.matches?.('.dot')) {
+      const step = ({ ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 } as Record<string, number>)[event.key];
+      if (!step) return;
+      event.preventDefault();
+      const at = EFFECT_COLORS.findIndex((one) => one.id === this.#color);
+      const next = EFFECT_COLORS[(at + step + EFFECT_COLORS.length) % EFFECT_COLORS.length]!;
+      this.#setColor(next.id);
+      void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>(`.dot[data-color="${next.id}"]`)?.focus());
+      return;
+    }
+    if (target.matches?.('.option')) {
+      const list = rows();
+      const at = list.indexOf(target);
+      const next = event.key === 'ArrowDown' ? list[Math.min(list.length - 1, at + 1)]
+        : event.key === 'ArrowUp' ? (at === 0 ? undefined : list[at - 1])
+          : event.key === 'Home' ? list[0]
+            : event.key === 'End' ? list.at(-1)
+              : null;
+      if (next === null) return;
+      event.preventDefault();
+      // Up from the first row goes back to the search, where Down came from.
+      if (next === undefined) this.renderRoot.querySelector<HTMLElement>('[data-fx-find]')?.focus();
+      else focusRow(next);
+    }
   };
 
   #place(el: HTMLElement): void {

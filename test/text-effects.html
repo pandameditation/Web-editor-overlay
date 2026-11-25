@@ -12,15 +12,31 @@
     in the page's HTML.
   -->
   <style>
-    body { margin: 0; padding: 160px 24px 24px; font: 18px/1.6 Georgia, serif; }
-    h1 { font: 800 40px/1.15 system-ui, sans-serif; margin: 0 0 12px; }
+    body {
+      margin: 0;
+      padding: 160px 24px 24px;
+      font: 18px/1.6 Georgia, serif;
+    }
+
+    h1 {
+      font: 800 40px/1.15 system-ui, sans-serif;
+      margin: 0 0 12px;
+    }
+
+    .text-lede {
+      font-style: italic;
+      --heo-text-style: "Lede";
+    }
   </style>
 </head>
 
 <body>
   <h1 id="h">Slow pottery for fast mornings</h1>
   <p id="p">Wheel-thrown stoneware, glazed by hand in small batches.</p>
-  <div id="two"><p id="a">First paragraph.</p><p id="b">Second paragraph.</p></div>
+  <div id="two">
+    <p id="a">First paragraph.</p>
+    <p id="b">Second paragraph.</p>
+  </div>
   <pre id="progress">start</pre>
   <pre id="out">pending</pre>
   <script src="../dist/html-editor-overlay.iife.js"></script>
@@ -61,7 +77,7 @@
       const bar = () => document.querySelector('heo-overlay')?.shadowRoot?.querySelector('heo-text-toolbar');
       const root = () => bar()?.shadowRoot;
       const menu = () => root()?.querySelector('.fxmenu');
-      const tile = (id) => menu()?.querySelector(`.tile[data-effect="${id}"]`);
+      const tile = (id) => menu()?.querySelector(`.option[data-effect="${id}"]`);
       const select = async (el, start, end) => {
         const text = el.firstChild;
         const range = document.createRange();
@@ -109,11 +125,14 @@
         // A real press on the tile: the text's selection survives it.
         await clickAt(tile('arc'));
         const span = h.querySelector('[data-text-effect="arc"]');
-        const pressed = tile('arc')?.getAttribute('aria-pressed') === 'true';
+        const pressed = tile('arc')?.getAttribute('aria-selected') === 'true';
         const box = h.getBoundingClientRect();
         const m = menu().getBoundingClientRect();
         return {
-          threeGroupsOfFour: groups.join(',') === 'Text,Underline,Highlight' && menu().querySelectorAll('.tile').length === 12,
+          // Sections named as the editor's other lists name theirs; no text style yet, so none of those.
+          sectionsLikeEveryList: groups.join(',') === 'Text styles,Text,Underline,Highlight' && menu().querySelectorAll('.option').length === 13 &&
+            getComputedStyle(menu().querySelector('.group')).textTransform === 'uppercase',
+          noRemoveButton: !menu().querySelector('[data-remove]'),
           theMenuLeavesTheTextInView: m.top >= box.bottom || m.bottom <= box.top,
           theWordsAreWrapped: span?.tagName === 'SPAN' && span.textContent === 'fast mornings',
           withTheEffectInline: /background-image: url\("data:image\/svg\+xml,/.test(span?.getAttribute('style') ?? ''),
@@ -219,7 +238,8 @@
         await settle(60);
         const mark = h.querySelector('mark[data-text-effect="marker"]');
         const style = engine.textEffectStyles().find((one) => one.name === 'Hero marker');
-        const yours = menu().querySelector(`.tile[data-style="${style?.entry.name}"]`);
+        const yours = menu().querySelector(`.option[data-style="${style?.entry.name}"]`);
+        const firstSection = menu().querySelector('.group')?.textContent.trim();
         // The same style on other words.
         // The words after the mark: "pottery", in the text node that follows it now.
         const rest = Array.from(h.childNodes).find((one) => one.nodeType === 3 && one.data.includes('pottery'));
@@ -240,7 +260,7 @@
           theStyleKeepsTheEffect: /linear-gradient/.test(style?.entry.declarations.background ?? '') && style?.entry.declarations['--heo-text-style'] === '"Hero marker"',
           itIsATextStyle: engine.textStyles().some((one) => one.entry.name === style?.entry.name),
           andDrawsTheSame: getComputedStyle(mark).backgroundImage.includes('linear-gradient'),
-          itIsOfferedInTheMenu: Boolean(yours),
+          itIsOfferedInTheMenu: Boolean(yours) && firstSection === 'Text styles',
           andReusable: reused,
         };
       });
@@ -273,15 +293,46 @@
         await press({ keys: ['Escape'] });
         await settle(60);
         const closedOnly = !menu() && engine.store.value.textEditing === p;
-        // From the keyboard: the button opens it with the focus on the first tile; the arrows move four to a row.
+        // From the keyboard: the button opens it with the focus in the search.
         const button = root().querySelector('.fxbtn');
         button.focus();
         await press({ keys: ['Enter'] });
-        await settle(60);
-        const first = root().activeElement?.dataset.effect;
+        await until(() => root().activeElement?.matches?.('[data-fx-find]'));
+        const inSearch = root().activeElement?.matches?.('[data-fx-find]');
+        // Three tab stops: the search, then the colours (one stop, the arrows choose), then the list.
+        await press({ keys: ['Tab'] });
+        await settle(40);
+        const onColour = root().activeElement?.classList.contains('dot') && root().activeElement.getAttribute('aria-checked') === 'true';
+        const colourBefore = root().activeElement?.dataset.color;
+        await press({ keys: ['ArrowRight'] });
+        await settle(40);
+        const colourAfter = root().activeElement?.dataset.color;
+        const arrowsChooseTheColour = colourAfter && colourAfter !== colourBefore && root().activeElement.getAttribute('aria-checked') === 'true';
+        await press({ keys: ['Tab'] });
+        await settle(40);
+        const firstRow = root().activeElement;
+        const onList = firstRow?.classList.contains('option');
         await press({ keys: ['ArrowDown'] });
-        await settle(30);
-        const below = root().activeElement?.dataset.effect;
+        await settle(40);
+        const second = root().activeElement;
+        const downMoves = second?.classList.contains('option') && second !== firstRow;
+        const rowsInTab = Array.from(root().querySelectorAll('.fxlist .option')).filter((one) => one.tabIndex === 0).length;
+        // Enter on a row puts it on the words.
+        // The page's text styles come first, so the second row is a style (its class) or an effect.
+        const effectId = second?.dataset.effect;
+        const styleId = second?.dataset.style;
+        await press({ keys: ['Enter'] });
+        await settle(60);
+        const applied = effectId ? Boolean(p.querySelector(`[data-text-effect="${effectId}"]`))
+          : Boolean(styleId) && Boolean(p.querySelector(`span.${CSS.escape(styleId)}`));
+        // Typing in the search filters, sectioned; Down from it goes into the list.
+        root().querySelector('[data-fx-find]').focus();
+        const find = root().querySelector('[data-fx-find]');
+        find.value = 'squig';
+        find.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await settle(60);
+        const filtered = Array.from(menu().querySelectorAll('.option')).map((one) => one.dataset.effect ?? one.dataset.style).join(',') === 'squiggle' &&
+          Array.from(menu().querySelectorAll('.group')).map((one) => one.textContent.trim()).join(',') === 'Underline';
         await press({ keys: ['Escape'] });
         await settle(60);
         const back = root().activeElement === root().querySelector('.fxbtn') && engine.store.value.textEditing === p;
@@ -289,9 +340,123 @@
         return {
           opens: opened,
           escapeClosesTheMenuNotTheEdit: closedOnly,
-          theKeyboardLandsOnTheFirstTile: first === 'gradient',
-          downMovesARow: below === 'wavy',
+          theKeyboardLandsInTheSearch: inSearch,
+          tabReachesTheColours: onColour,
+          arrowsChooseTheColour,
+          tabThenReachesTheList: onList,
+          downMovesARow: downMoves,
+          theListIsOneTabStop: rowsInTab === 1,
+          enterPutsItOn: applied,
+          theSearchFilters: filtered,
           escapeReturnsToTheButton: back,
+        };
+      });
+
+      /*
+       * The page's own text styles, in the same menu: Heading 1 from the page's CSS goes on words
+       * as its class, and "Edit … in Tokens" opens it there, in the editor that shows all it holds.
+       */
+      await check('styles', async () => {
+        await edit(p);
+        await select(p, 0, 5);
+        await openMenu();
+        const lede = menu().querySelector('.option[data-style="text-lede"]');
+        lede?.click();
+        await settle(40);
+        const span = p.querySelector('span.text-lede');
+        const footer = menu().querySelector('[data-edit-style]');
+        const saysEdit = /Edit Lede in Tokens/.test(footer?.textContent ?? '') && !menu().querySelector('[data-save]');
+        footer?.click();
+        await settle(400);
+        const tokens = document.querySelector('heo-overlay')?.shadowRoot && (function deep(sel, r = document) {
+          const d = r.querySelector?.(sel); if (d) return d;
+          for (const e of r.querySelectorAll?.('*') ?? []) { if (!e.shadowRoot) continue; const f = deep(sel, e.shadowRoot); if (f) return f; }
+          return null;
+        })('heo-tokens-panel');
+        const editorEl = tokens?.shadowRoot?.querySelector('[data-text-style-editor="text-lede"]');
+        return {
+          aPageStyleIsOffered: Boolean(lede) && lede.closest('.fxlist').querySelector('.group').textContent.trim() === 'Text styles',
+          itGoesOnAsItsClass: Boolean(span) && !span.getAttribute('style') && span.textContent === 'Wheel',
+          theFooterOffersToEditIt: saysEdit,
+          editOpensItInTokens: (engine.store.value.dockTab === 'tokens' || engine.store.value.pageTab === 'tokens') && Boolean(editorEl),
+        };
+      });
+
+      /*
+       * Tokens › Text styles: the editor shows what the style holds first and folds the rest, adds
+       * any property, and edits the style under a state and at a size, each written to its own rule.
+       */
+      await check('tokensEditor', async () => {
+        const deep = (sel, r = document) => {
+          const d = r.querySelector?.(sel); if (d) return d;
+          for (const e of r.querySelectorAll?.('*') ?? []) { if (!e.shadowRoot) continue; const f = deep(sel, e.shadowRoot); if (f) return f; }
+          return null;
+        };
+        engine.editTextStyle('text-lede');
+        await settle(200);
+        const panel = deep('heo-tokens-panel');
+        const pr = () => panel.shadowRoot;
+        const ed = () => pr().querySelector('[data-text-style-editor="text-lede"]');
+        const rows = () => Array.from(ed()?.querySelectorAll('.trow[data-property]') ?? []).map((one) => one.dataset.property);
+        const change = async (el, value, type = 'value-change') => {
+          el.dispatchEvent(new CustomEvent(type, { detail: { value }, bubbles: true, composed: true }));
+          await settle(60);
+        };
+        // Only what Lede sets shows at first (its italic); the rest of Typography is one button away.
+        const firstRows = rows();
+        const foldedFirst = firstRows.join(',') === 'font-style' && Boolean(ed().querySelector('[data-ts-more]'));
+        ed().querySelector('[data-ts-more]').click();
+        await settle(60);
+        const unfolded = rows().length > 6 && rows().includes('color') && !ed().querySelector('[data-ts-more]');
+        await change(ed().querySelector('.trow[data-property="color"] heo-value-field'), 'rgb(0, 0, 128)');
+        const baseWritten = engine.classes.get('text-lede')?.declarations.color === 'rgb(0, 0, 128)';
+        // Add a property: one Typography has no row for lands in Effect, and writes to the class.
+        await change(ed().querySelector('[data-ts-add]'), 'padding');
+        const effectRow = Boolean(ed().querySelector('.trow[data-property="padding"]'));
+        const effectHead = Array.from(ed().querySelectorAll('.tsg')).map((one) => one.firstElementChild.textContent.trim()).join(',') === 'Typography,Effect';
+        await change(ed().querySelector('.trow[data-property="padding"] heo-value-field'), '2px');
+        const paddingWritten = engine.classes.get('text-lede')?.declarations.padding === '2px';
+        const baseCount = ed().querySelector('[data-ts-cond="base"] .c')?.textContent.trim();
+        // Under :hover: an empty row shows what Base gives, and a value goes to .text-lede:hover.
+        ed().querySelector('[data-ts-add-cond]').click();
+        await settle(60);
+        const pickers = ed().querySelectorAll('[data-ts-picker] heo-segmented');
+        await change(pickers[0], ':hover', 'segment-change');
+        const onHover = ed().dataset.condition === ':hover|';
+        const colorField = ed().querySelector('.trow[data-property="color"] heo-value-field');
+        const showsBase = colorField?.placeholder === 'rgb(0, 0, 128)' && !colorField.value;
+        await change(colorField, 'rgb(200, 0, 0)');
+        const hoverRule = engine.textStyleBlock('text-lede', ':hover', null).declarations.color === 'rgb(200, 0, 0)';
+        const baseKept = engine.classes.get('text-lede')?.declarations.color === 'rgb(0, 0, 128)';
+        const hoverChip = ed().querySelector('[data-ts-cond=":hover|"] .c')?.textContent.trim() === '1';
+        const hovered = Array.from(document.styleSheets).some((sheet) => {
+          try { return Array.from(sheet.cssRules).some((rule) => rule.selectorText === '.text-lede:hover'); } catch { return false; }
+        });
+        // At a size, with no state: the media rule for the class.
+        const picker2 = () => ed().querySelectorAll('[data-ts-picker] heo-segmented');
+        await change(picker2()[0], '', 'segment-change');
+        const sizeOption = picker2()[1]?.options?.[1]?.value;
+        await change(picker2()[1], sizeOption, 'segment-change');
+        const atSize = ed().dataset.condition === `|${sizeOption}`;
+        await change(ed().querySelector('.trow[data-property="color"] heo-value-field'), 'rgb(0, 120, 0)');
+        const sizeRule = engine.textStyleBlock('text-lede', '', sizeOption).declarations.color === 'rgb(0, 120, 0)';
+        const sizeChip = Boolean(ed().querySelector(`.slots .size[data-ts-cond="|${CSS.escape(sizeOption ?? '')}"]`)) ||
+          Array.from(ed().querySelectorAll('.slots .size')).some((one) => one.dataset.tsCond === `|${sizeOption}`);
+        return {
+          onlyWhatItSetsShowsFirst: foldedFirst,
+          theRestUnfolds: unfolded,
+          baseWritesTheClass: baseWritten,
+          anAddedPropertyGoesInEffect: effectRow && effectHead,
+          andIsWrittenToTheClass: paddingWritten,
+          baseCountsItsDeclarations: baseCount === '3',
+          thePickerGoesToHover: onHover,
+          anEmptyRowShowsBase: showsBase,
+          hoverWritesItsOwnRule: hoverRule && hovered,
+          baseIsLeftAlone: baseKept,
+          theStripCountsHover: hoverChip,
+          aSizeIsPicked: Boolean(sizeOption) && atSize,
+          aSizeWritesTheMediaRule: sizeRule,
+          theStripShowsTheSize: sizeChip,
         };
       });
 

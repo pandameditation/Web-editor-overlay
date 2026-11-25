@@ -1,5 +1,6 @@
 import { DIRTY_ATTR, HOST_TAG } from './constants.js';
 import type { EditorEngine } from './editor.js';
+import { inTopModal } from './modal.js';
 import { PANEL_TABS } from './panels.js';
 import type { PanelId } from './types.js';
 
@@ -102,6 +103,27 @@ export function handleKeyDown(engine: EditorEngine, event: KeyboardEvent): void 
   // The shortcuts dialog is modal too: a letter pressed while reading it must not open a panel
   // behind it, or toggle the layout it is describing.
   if (state.shortcutsOpen) return;
+  /*
+   * The class or rule dialog takes Escape, and nothing behind it does.
+   *
+   * Not a blanket return like the dialogs above: Mod+Z undoes from inside it ("undo takes them
+   * back", its footer says), and a field's colour picker can be open over it. Escape from inside
+   * the dialog is left to its controls and then the dialog, except for such a picker opened by
+   * the mouse, which closes first. Escape from anywhere else (focus fallen to the page) closes
+   * the dialog: it used to close the quick menu, then the selection, one press at a time, while
+   * the dialog stayed.
+   */
+  if (state.styleEdit && key === 'Escape') {
+    const layer = insideFieldDialog(event) ? undefined : escapeLayers.at(-1);
+    if (layer) {
+      event.preventDefault();
+      layer();
+    } else if (!inTopModal((event.composedPath()[0] as Node | undefined) ?? null)) {
+      event.preventDefault();
+      engine.closeStyleEditor();
+    }
+    return;
+  }
 
   /*
    * A handle drag owns Escape, which abandons it.

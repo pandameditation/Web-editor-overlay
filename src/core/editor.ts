@@ -3010,6 +3010,79 @@ export class EditorEngine {
   }
 
   /** The text style an element wears: its first class that is one. */
+  /**
+   * A text style's declarations under a state and/or a size, and where an edit there goes: the
+   * class itself for Base at every size; otherwise the rule `.text-x:hover` (at that size's media),
+   * the page's own when it has one, a managed one when the editor made it, or one to create with
+   * the first value written (`dest`). The Tokens panel's text style editor reads and writes through
+   * this, so a style is edited per state and per size as an element is in Styles.
+   */
+  textStyleBlock(
+    className: string,
+    state: string,
+    media: string | null,
+  ): { target: WriteTarget | null; dest: AddDestination; declarations: Record<string, string> } {
+    if (!state && !media) {
+      const target: WriteTarget = { kind: 'class', name: className };
+      return { target, dest: { kind: 'target', target }, declarations: { ...(this.classes.get(className)?.declarations ?? {}) } };
+    }
+    const selector = `.${CSS.escape(className)}${state}`;
+    const page = findPageRule(selector, media);
+    if (page) {
+      const target = targetFor(page);
+      const declarations = Object.fromEntries(ruleDeclarations(page).map((one) => [one.property, one.value]));
+      return { target, dest: { kind: 'target', target }, declarations };
+    }
+    const key = designRuleKey(selector, media);
+    const managed = this.rules.get(key);
+    if (managed) {
+      const target: WriteTarget = { kind: 'design-rule', key };
+      return { target, dest: { kind: 'target', target }, declarations: { ...managed.declarations } };
+    }
+    return { target: null, dest: { kind: 'new-rule', selector, media }, declarations: {} };
+  }
+
+  /**
+   * The states and sizes a text style already declares something under: `.text-x:hover`,
+   * `.text-x` at a size, `.text-x:hover` at a size. Each with how many declarations it holds.
+   */
+  textStyleConditions(className: string): Array<{ state: string; media: string | null; count: number }> {
+    const base = `.${CSS.escape(className)}`;
+    const states = EDITABLE_STATES.filter((one) => one.kind === 'state').map((one) => one.name);
+    const out = new Map<string, { state: string; media: string | null; count: number }>();
+    const take = (selector: string, media: string | null, count: number): void => {
+      const text = selector.replace(/\s+/g, ' ').trim();
+      if (!text.startsWith(base)) return;
+      const state = text.slice(base.length);
+      if (state && !states.includes(state)) return;
+      if (!state && !media) return;
+      if (!count) return;
+      const key = `${state}|${media ? normalizeMedia(media) : ''}`;
+      const known = out.get(key);
+      out.set(key, { state, media: media ? normalizeMedia(media) : null, count: (known?.count ?? 0) + count });
+    };
+    eachStyleRule((rule, media) => {
+      for (const part of splitSelectorList(rule.selectorText)) take(part, media, ruleDeclarations(rule).length);
+    }, { pageOnly: true });
+    // The editor's own rules only: a scanned one is the page rule counted above.
+    for (const rule of this.rules.list()) {
+      if (rule.origin === 'stylesheet') continue;
+      take(rule.selector, rule.media ?? null, Object.values(rule.declarations).filter((value) => value.trim()).length);
+    }
+    return [...out.values()];
+  }
+
+  /** Open a text style in Tokens › Text styles, from elsewhere (the text toolbar's effects menu). */
+  editTextStyle(className: string): void {
+    this.textStyleToEdit = className;
+    this.endTextEdit(true);
+    this.setDockTab('tokens');
+    this.#bumpRevision();
+  }
+
+  /** The text style the Tokens panel should open next, set by `editTextStyle` and taken by the panel. */
+  textStyleToEdit: string | null = null;
+
   textStyleOf(el: HTMLElement | null = this.store.value.selected): DesignClass | null {
     if (!el) return null;
     for (const name of Array.from(el.classList)) {
@@ -9364,7 +9437,7 @@ export class EditorEngine {
     const range = current && host.contains(current.commonAncestorContainer) ? current : this.#textEditRange;
     const el = effectWrapperAt(range, host);
     if (!el) return null;
-    const style = Array.from(el.classList).find((name) => isTextEffectStyle(this.classes.get(name))) ?? null;
+    const style = Array.from(el.classList).find((name) => isTextStyle(this.classes.get(name))) ?? null;
     return { el, effect: el.getAttribute(TEXT_EFFECT_ATTR) ?? '', style };
   }
 
@@ -9462,11 +9535,15 @@ export class EditorEngine {
     return entry.name;
   }
 
-  /** Put a saved effect style on the selection, as `applyTextEffect` does; again on its own text, off. */
+  /**
+   * Put a text style on the selected words (or on what is typed next), as `applyTextEffect` does:
+   * any of the page's text styles, the ones saved from an effect and the others (Heading 1, Lede).
+   * Again on its own text, it comes off.
+   */
   applyTextEffectStyle(className: string): void {
     const host = this.store.value.textEditing;
     const entry = this.classes.get(className);
-    if (!host || !entry || !isTextEffectStyle(entry)) return;
+    if (!host || !entry || !isTextStyle(entry)) return;
     const effect = textEffectById(entry.declarations[TEXT_EFFECT_MARKER]?.trim() ?? '');
     this.#restoreTextSelection();
     const selection = getSelection();

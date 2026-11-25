@@ -6,6 +6,7 @@ import type { Contribution } from '../../../core/cascade.js';
 import { searchProperties } from '../../../core/css.js';
 import { splitImportant } from '../../../core/declaration-list.js';
 import { checkDeclaration, normalizeProperty } from '../../../core/declarations.js';
+import { inTopModal } from '../../../core/modal.js';
 import { reachText, type AddDestination } from '../../../core/save-plan.js';
 import type { HeoValueField, ValueSuggestion } from '../../controls/value-field.js';
 import { framedBox } from '../../theme.js';
@@ -299,6 +300,9 @@ export function renderAdder(spec: AdderSpec, host: AdderHost): TemplateResult {
     }
     if (event.key !== 'Escape') return;
     if ((fieldEl ?? (event.currentTarget as Element).querySelector<HeoValueField>('heo-value-field'))?.listIsOpen) return;
+    // An empty always-open adder in a modal (the class dialog, where focus starts in it) has
+    // nothing to back out of: Escape is the dialog's, which it never saw.
+    if (!spec.disclosure && !host.newProperty && inTopModal(event.currentTarget as Element)) return;
     event.preventDefault();
     event.stopPropagation();
     if (spec.disclosure) {

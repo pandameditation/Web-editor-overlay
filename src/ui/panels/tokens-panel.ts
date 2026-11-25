@@ -32,7 +32,11 @@ import '../controls/section.js';
 import '../controls/value-field.js';
 import { buildSuggestions, valueKindFor } from '../suggestions.js';
 import { shownTypographyRows } from './styles/typography.js';
-import { textStyleDeclarations, textStyleMarker, TEXT_STYLE_MARKER } from '../../core/text-styles.js';
+import { isTypography, textStyleDeclarations, textStyleMarker, TEXT_EFFECT_MARKER, TEXT_STYLE_MARKER, TEXT_STYLE_ORDER } from '../../core/text-styles.js';
+import { CSS_PROPERTIES } from '../../core/css.js';
+import { EDITABLE_STATES, slotForMedia, slotsWith, type SizeSlot } from '../../core/breakpoints.js';
+import { normalizeMedia } from '../../core/rules.js';
+import { sizeStripStyles } from './styles/size-strip.js';
 import '../controls/search-field.js';
 import '../controls/segmented.js';
 import { classNameIssues, selectorIssues, type FieldIssue } from '../../core/validation.js';
@@ -63,6 +67,9 @@ const openGroups = new Set<string>(['component', 'color', 'space', 'classes', 'r
  * All three write into managed stylesheets, so changing a value updates the page
  * immediately.
  */
+/** A Typography row's segments, as `shownTypographyRows` gives them. */
+type TsSegments = ReturnType<typeof shownTypographyRows>[number]['segments'];
+
 @customElement('heo-tokens-panel')
 export class HeoTokensPanel extends HeoElement {
   static override styles = [
@@ -70,6 +77,7 @@ export class HeoTokensPanel extends HeoElement {
     killStyles,
     ClassEditor.styles,
     RuleEditor.styles,
+    sizeStripStyles,
     css`
       /* Text styles: each drawn in its own look, then the picked one's rows. */
       .tstyles {
@@ -236,6 +244,101 @@ export class HeoTokensPanel extends HeoElement {
       .trow heo-value-field,
       .trow heo-segmented {
         min-width: 0;
+      }
+      /* A value set under a state or a size: the strip's colour for it, so the row says where it lives. */
+      .trow .dot.cond {
+        background: var(--heo-state);
+      }
+      /* The text style editor: its preview, the strip's picker, its groups and the property adder. */
+      .tspreview {
+        position: relative;
+        display: grid;
+        place-items: center;
+        min-height: 78px;
+        padding: 18px 12px 10px;
+        overflow: hidden;
+        border-radius: var(--heo-r-md);
+        background: #fbfaf7;
+        color: #1f2330;
+        box-shadow: inset 0 0 0 1px var(--heo-line);
+      }
+      .tspreview .cap {
+        position: absolute;
+        top: 6px;
+        left: 9px;
+        color: #64748b;
+        font-size: 9px;
+        font-weight: 650;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .tspreview .tsample {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .slots {
+        margin: 0;
+      }
+      /* The strip's "+" is a round 24px icon; here it carries its words, so it sizes to them. */
+      .slots .add {
+        width: auto;
+        padding: 0 8px 0 6px;
+        gap: 4px;
+        box-shadow: none;
+        border: 1px dashed var(--heo-line-strong);
+        color: var(--heo-text-faint);
+        font-family: var(--heo-font);
+      }
+      .slots .add[aria-expanded='true'] {
+        border-style: solid;
+        border-color: var(--heo-accent-line);
+        color: var(--heo-text);
+      }
+      .tspick {
+        display: grid;
+        grid-template-columns: 34px minmax(0, 1fr);
+        align-items: center;
+        gap: 6px 8px;
+        padding: 8px;
+        border: 1px solid var(--heo-line);
+        border-radius: var(--heo-r-md);
+        background: var(--heo-sunken);
+      }
+      .tspick .lab {
+        color: var(--heo-text-faint);
+        font-size: 10.5px;
+      }
+      .tsg {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 6px 0 0;
+        color: var(--heo-text-faint);
+        font-size: 9.5px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .tsg::after {
+        content: '';
+        flex: 1;
+        order: 2;
+        border-top: 1px solid var(--heo-line);
+      }
+      .tsg .x {
+        order: 3;
+        font-weight: 500;
+        letter-spacing: 0;
+        text-transform: none;
+      }
+      .tsmore {
+        justify-self: start;
+        color: var(--heo-accent-text);
+      }
+      .tsadd {
+        margin-top: 2px;
       }
       :host {
         display: block;
@@ -416,6 +519,15 @@ export class HeoTokensPanel extends HeoElement {
   @state() private expandedClass: string | null = null;
   /** The text style being edited in Text styles, by class. */
   @state() private textStyle: string | null = null;
+  /** Where the text style editor edits: a state (':hover') and/or a size's media, or Base at every size. */
+  @state() private tsState = '';
+  @state() private tsMedia: string | null = null;
+  /** The "+ State or size" picker, open under the strip. */
+  @state() private tsPicker = false;
+  /** Typography's unset rows, shown. */
+  @state() private tsMore = false;
+  /** Properties added with "Add a property" and not given a value yet: rows waiting for one. */
+  @state() private tsAdded: string[] = [];
   /** What is typed in Text styles' "find or create" field. */
   @state() private textStyleDraft = '';
   /** What is typed in Fonts' "find or add" field. */
@@ -452,6 +564,30 @@ export class HeoTokensPanel extends HeoElement {
   @state() private seedTarget: SeedTarget | null = null;
   @state() private incoming = '';
   @state() private overwrite = false;
+
+  override willUpdate(): void {
+    // A text style asked for from elsewhere (the text toolbar's "Edit … in Tokens"): opened here.
+    const asked = this.editor.textStyleToEdit;
+    if (asked) {
+      this.editor.textStyleToEdit = null;
+      this.#pickTextStyle(asked);
+      openGroups.add('text-styles');
+      void this.updateComplete.then(() =>
+        this.renderRoot.querySelector(`[data-text-style-editor="${CSS.escape(asked)}"]`)?.scrollIntoView({ block: 'nearest' }));
+    }
+  }
+
+  /** Open a text style in the editor, at Base, every size. */
+  #pickTextStyle(className: string | null): void {
+    if (className !== this.textStyle) {
+      this.tsState = '';
+      this.tsMedia = null;
+      this.tsPicker = false;
+      this.tsMore = false;
+      this.tsAdded = [];
+    }
+    this.textStyle = className;
+  }
 
   override render(): TemplateResult {
     const el = this.editor.selected;
@@ -972,7 +1108,7 @@ export class HeoTokensPanel extends HeoElement {
                 aria-keyshortcuts=${movable ? 'Alt+ArrowUp Alt+ArrowDown' : nothing}
                 title=${movable ? `Edit ${one.name}. Alt and an arrow move it.` : `Edit ${one.name}`}
                 @click=${() => {
-            this.textStyle = picked?.entry.name === one.entry.name ? null : one.entry.name;
+            this.#pickTextStyle(picked?.entry.name === one.entry.name ? null : one.entry.name);
           }}
                 @keydown=${(event: KeyboardEvent) => {
             if (!movable || !event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
@@ -1164,32 +1300,77 @@ export class HeoTokensPanel extends HeoElement {
     if (!className) return;
     if (!existing) this.editor.notify(`Created the text style ${name}.`, 'success');
     this.textStyleDraft = '';
-    this.textStyle = className;
+    this.#pickTextStyle(className);
     openGroups.add('text-styles');
   }
 
-  /** A text style's rows: its name, then Typography's rows, writing to the class. */
+  /**
+   * A text style's editor: a preview, the strip of what it declares under (Base, a state, a size,
+   * or both), then its rows under that condition. Typography first, the set rows then the rest
+   * folded, as the Styles panel's Typography card has them; then Effect, every other declaration
+   * the style holds (a style saved from a text effect keeps its background, padding and filter
+   * there). Base writes the class; a state or a size writes `.text-x:hover`, at that size.
+   */
   #renderTextStyleEditor(entry: DesignClass, name: string, used: number): TemplateResult {
     const engine = this.editor;
+    const state = this.tsState;
+    const media = this.tsMedia;
+    const atBase = !state && !media;
+    const block = engine.textStyleBlock(entry.name, state, media);
     /*
-     * As the class editor reads them: from before any preview in flight. A preview is written into
-     * the registry this reads, so the font field was handed the font being hovered as its value —
-     * its own preview echoed back as though it had been picked — where the Styles panel's field
-     * keeps the value it had. The two fields now see the same thing.
+     * Base as the class editor reads it: from before any preview in flight. A preview is written into
+     * the registry this reads, so the font field was handed the font being hovered as its value.
      */
     const preview = engine.classPreviewTarget;
-    const decl = preview && preview.name === entry.name ? preview.declarations : entry.declarations;
+    const baseDecl = preview && preview.name === entry.name ? preview.declarations : entry.declarations;
+    const decl = atBase ? baseDecl : block.declarations;
+    const shown = (property: string): boolean => !property.startsWith('--heo-') && property !== TEXT_STYLE_MARKER && property !== TEXT_STYLE_ORDER;
     const write = (property: string, value: string): void => {
-      if (value.trim()) engine.setClassDeclaration(entry.name, property, value);
-      else if (property in decl) engine.removeClassDeclaration(entry.name, property);
+      const label = `${value.trim() ? 'Set' : 'Remove'} ${property} in ${name}${this.#tsWhere()}`;
+      if (block.target) {
+        if (value.trim()) engine.setDeclaration(block.target, property, value);
+        else if (property in decl) engine.removeDeclaration(block.target, property);
+      } else if (value.trim()) {
+        engine.writeDeclarationsTo([{ dest: block.dest, property, value }], label, engine.selected ?? document.body);
+      }
+      this.tsAdded = this.tsAdded.filter((one) => one !== property);
     };
-    const rows = shownTypographyRows(decl['text-decoration-line'] ?? '');
+    const previewValue = (property: string, value: string): void => {
+      if (block.target && value.trim()) engine.previewDeclaration(block.target, property, value);
+    };
+    const row = (property: string, label: string, sub = false, segments?: TsSegments): TemplateResult =>
+      this.#tsRow({ property, label, sub, segments, value: decl[property] ?? '', base: atBase ? '' : baseDecl[property] ?? '', write, previewValue, styleName: name });
+
+    const typography = shownTypographyRows(decl['text-decoration-line'] ?? baseDecl['text-decoration-line'] ?? '');
+    const isSet = (property: string): boolean => Boolean(decl[property]?.trim()) || this.tsAdded.includes(property);
+    const typoSet = typography.filter((one) => isSet(one.property));
+    const typoRest = typography.filter((one) => !isSet(one.property));
+    const typoNames = new Set(typography.map((one) => one.property));
+    const effect = [...new Set([...Object.keys(decl).filter(shown), ...this.tsAdded])]
+      // Every declaration Typography has no row for: a shorthand like text-decoration lands here too.
+      .filter((property) => !typoNames.has(property));
+    const madeFrom = baseDecl[TEXT_EFFECT_MARKER]?.trim();
+    const merged = { ...baseDecl, ...(atBase ? {} : block.declarations) };
+    const look = Object.entries(merged)
+      .filter(([property, value]) => shown(property) && value.trim())
+      .map(([property, value]) => `${property}:${property === 'font-size' ? `min(30px, ${value})` : value.replace(/[;{}<>]/g, '')}`)
+      .join(';');
+    const taken = new Set(Object.keys(decl));
     const el = engine.selected;
     const worn = el ? engine.textStyleOf(el)?.name === entry.name : false;
+    const addable = CSS_PROPERTIES.filter((meta) => !taken.has(meta.name) && !this.tsAdded.includes(meta.name))
+      .map((meta) => ({ value: meta.name, group: isTypography(meta.name) ? 'Typography' : 'Other properties' }));
+
     return html`<div class="cls tstyle-card"><div
       class="tstyle-ed"
       data-text-style-editor=${entry.name}
+      data-condition=${`${state}|${media ?? ''}`}
     >
+      <div class="tspreview" aria-hidden="true">
+        <span class="cap">Preview${atBase ? '' : ` · ${this.#tsWhere().replace(/^ (at|on) /, '')}`}</span>
+        <span class="tsample" style=${look}>${name}</span>
+      </div>
+      ${this.#renderTsStrip(entry.name)}
       <div class="trow">
         <span class="dot off"></span>
         <span class="tname">Name</span>
@@ -1205,40 +1386,41 @@ export class HeoTokensPanel extends HeoElement {
         ></heo-value-field>
         <span></span>
       </div>
-      ${rows.map((row) => {
-        const value = decl[row.property] ?? '';
-        const set = Boolean(value);
-        return html`<div class=${row.sub ? 'trow sub' : 'trow'} data-property=${row.property}>
-          <span class=${set ? 'dot' : 'dot off'}></span>
-          <span class="tname" title=${row.property}>${row.label}</span>
-          ${row.segments
-            ? html`<heo-segmented
-                .options=${row.segments}
-                .value=${value}
-                clearable
-                label=${row.label}
-                @segment-change=${(event: CustomEvent<{ value: string }>) => write(row.property, event.detail.value)}
-              ></heo-segmented>`
-            : html`<heo-value-field
-                data-property=${row.property}
-                field-label=${row.label}
-                .kind=${valueKindFor(row.property)}
-                .property=${row.property}
-                .value=${value}
-                .suggestions=${buildSuggestions(engine, row.property, null)}
-                .shadowTokens=${row.property === 'text-shadow' ? shadowSwatches(engine) : []}
-                @value-input=${(event: CustomEvent<{ value: string }>) => {
-                if (event.detail.value.trim()) engine.previewClassDeclaration(entry.name, row.property, event.detail.value);
-              }}
-                @value-revert=${() => engine.cancelPreview()}
-                @value-change=${(event: CustomEvent<{ value: string }>) => write(row.property, event.detail.value)}
-              ></heo-value-field>`}
-          ${set
-            ? renderKill({ label: `Remove ${row.label} from ${name}`, tight: true, onClick: () => engine.removeClassDeclaration(entry.name, row.property) })
-            : html`<span></span>`}
-        </div>`;
-      })}
-      <p class="hint" style="margin:0">The rows the Styles panel's Typography has. Here they change ${name} itself: ${used === 1 ? 'the element using it follows' : `the ${used} elements using it follow`}.</p>
+      <div class="tsg"><span>Typography</span><span class="x">${typoSet.length} set${atBase ? '' : ' here'}</span></div>
+      ${typoSet.map((one) => row(one.property, one.label, Boolean(one.sub), one.segments))}
+      ${this.tsMore || !typoSet.length
+        ? typoRest.map((one) => row(one.property, one.label, Boolean(one.sub), one.segments))
+        : html`<button class="btn sm ghost tsmore" type="button" data-ts-more @click=${() => { this.tsMore = true; }}>
+            ${icon('plus', 11)} ${typoRest.length} more typography properties
+          </button>`}
+      ${effect.length
+        ? html`<div class="tsg"><span>Effect</span><span class="x">${madeFrom ? `from a text effect` : ''}</span></div>
+          ${effect.map((property) => row(property, property))}`
+        : nothing}
+      <heo-value-field
+        class="tsadd"
+        data-ts-add
+        field-label="Add a property"
+        leading-icon="plus"
+        placeholder="Add a property"
+        chevron-hidden
+        .suggestions=${addable}
+        @value-change=${(event: CustomEvent<{ value: string }>) => {
+        const property = event.detail.value.trim().toLowerCase();
+        const field = event.currentTarget as HTMLElement & { reset?: (next?: string) => void };
+        field.reset?.('');
+        if (!/^-?-?[a-z][a-z0-9-]*$/.test(property) || taken.has(property)) return;
+        this.tsAdded = [...this.tsAdded, property];
+        if (typoNames.has(property)) this.tsMore = true;
+        void this.updateComplete.then(() => {
+          const added = this.renderRoot.querySelector<HTMLElement & { focusInput?: () => void }>(`[data-text-style-editor] .trow[data-property="${CSS.escape(property)}"] heo-value-field`);
+          added?.focusInput?.();
+        });
+      }}
+      ></heo-value-field>
+      <p class="hint" style="margin:0">${atBase
+        ? `Here they change ${name} itself: ${used === 0 ? 'no element uses it yet' : used === 1 ? 'the element using it follows' : `the ${used} elements using it follow`}.`
+        : html`Written to <code>.${entry.name}${state}</code>${media ? html` at <code>@media ${media}</code>` : nothing}. Empty rows show what Base gives.`}</p>
     </div>
     <!-- The class card's footer (class-editor.ts), so a text style is put on and deleted the same way. -->
     <div class="apply">
@@ -1266,6 +1448,133 @@ export class HeoTokensPanel extends HeoElement {
         ${icon('trash', 12)} Delete
       </button>
     </div></div>`;
+  }
+
+  /** Where the editor is, said after a verb: " on :hover", " at Tablet", " on :hover at Tablet", or "". */
+  #tsWhere(): string {
+    const size = this.tsMedia ? this.#tsSlotName(this.tsMedia) : '';
+    return `${this.tsState ? ` on ${this.tsState}` : ''}${size ? ` at ${size}` : ''}`;
+  }
+
+  #tsSlots(): SizeSlot[] {
+    return slotsWith(this.editor.settings.value.viewportSizes);
+  }
+
+  /** A size's short name: its slot's ("Tablet"), else the media query. */
+  #tsSlotName(media: string): string {
+    const slot = slotForMedia(media, this.#tsSlots());
+    return slot ? slot.name.split(',')[0]!.replace(/ and up$/, '') : media;
+  }
+
+  /**
+   * The strip: Base, then every state and size the style declares something under, as the Styles
+   * panel's strip draws them (a size in the size green, a state in the state violet, each with its
+   * count), the one being edited picked; "+ State or size" opens the picker to go somewhere new.
+   */
+  #renderTsStrip(className: string): TemplateResult {
+    const conditions = this.editor.textStyleConditions(className);
+    const state = this.tsState;
+    const media = this.tsMedia ? normalizeMedia(this.tsMedia) : null;
+    const here = conditions.some((one) => one.state === state && one.media === media);
+    const list = [...conditions, ...(!here && (state || media) ? [{ state, media, count: 0 }] : [])];
+    const base = this.editor.classes.get(className)?.declarations ?? {};
+    const baseCount = Object.keys(base).filter((property) => !property.startsWith('--heo-')).length;
+    const go = (next: { state: string; media: string | null }): void => {
+      this.tsState = next.state;
+      this.tsMedia = next.media;
+      this.tsAdded = [];
+    };
+    const slotOf = (one: string | null) => (one ? slotForMedia(one, this.#tsSlots()) : null);
+    const states = EDITABLE_STATES.filter((one) => one.kind === 'state' && one.name !== ':disabled' && one.name !== ':focus-within');
+    return html`<div class="slots" role="group" aria-label="Edit under">
+        <button type="button" class="base" data-ts-cond="base" aria-pressed=${String(!state && !media)} title="Base: the style at every size" @click=${() => go({ state: '', media: null })}>
+          Base <span class=${baseCount ? 'c' : 'c zero'}>${baseCount}</span>
+        </button>
+        ${list.map((one) => {
+      const slot = slotOf(one.media);
+      const kind = one.media ? 'size' : 'state';
+      const on = one.state === state && one.media === media;
+      const label = [one.media ? this.#tsSlotName(one.media) : '', one.state].filter(Boolean).join(' · ');
+      return html`<button
+            type="button"
+            class=${kind}
+            data-ts-cond=${`${one.state}|${one.media ?? ''}`}
+            aria-pressed=${String(on)}
+            title=${`${one.state ? `.${className}${one.state}` : `.${className}`}${one.media ? ` at @media ${one.media}` : ''}`}
+            @click=${() => go({ state: one.state, media: one.media })}
+          >${slot ? icon(slot.icon, 11) : nothing}<span class="n">${label}</span><span class=${one.count ? 'c' : 'c zero'}>${one.count}</span></button>`;
+    })}
+        <button type="button" class="add" data-ts-add-cond aria-expanded=${String(this.tsPicker)} title="Edit this style under a state, a size, or both" @click=${() => { this.tsPicker = !this.tsPicker; }}>
+          ${icon('plus', 11)} State or size
+        </button>
+      </div>
+      ${this.tsPicker
+        ? html`<div class="tspick" data-ts-picker>
+            <span class="lab">State</span>
+            <heo-segmented
+              label="State"
+              wrap
+              .options=${[{ value: '', label: 'None' }, ...states.map((one) => ({ value: one.name, label: one.name }))]}
+              .value=${state}
+              @segment-change=${(event: CustomEvent<{ value: string }>) => go({ state: event.detail.value, media: this.tsMedia })}
+            ></heo-segmented>
+            <span class="lab">Size</span>
+            <heo-segmented
+              label="Size"
+              wrap
+              .options=${[{ value: '', label: 'Every size' }, ...this.#tsSlots().map((one) => ({ value: one.media, label: this.#tsSlotName(one.media), icon: one.icon, title: one.name }))]}
+              .value=${this.tsMedia ? slotOf(this.tsMedia)?.media ?? this.tsMedia : ''}
+              @segment-change=${(event: CustomEvent<{ value: string }>) => go({ state: this.tsState, media: event.detail.value || null })}
+            ></heo-segmented>
+          </div>`
+        : nothing}`;
+  }
+
+  /** One row of the text style editor: Typography's control for its property, the value field otherwise. */
+  #tsRow(spec: {
+    property: string;
+    label: string;
+    sub: boolean;
+    segments?: TsSegments;
+    value: string;
+    /** What Base gives, shown in an empty row under a state or a size. */
+    base: string;
+    styleName: string;
+    write: (property: string, value: string) => void;
+    previewValue: (property: string, value: string) => void;
+  }): TemplateResult {
+    const { property, label, value, base } = spec;
+    const set = Boolean(value.trim());
+    const engine = this.editor;
+    return html`<div class=${spec.sub ? 'trow sub' : 'trow'} data-property=${property}>
+      <span class=${set ? (this.tsState || this.tsMedia ? 'dot cond' : 'dot') : 'dot off'}></span>
+      <span class="tname" title=${property}>${label}</span>
+      ${spec.segments
+        ? html`<heo-segmented
+            .options=${spec.segments}
+            .value=${value || base}
+            clearable
+            label=${label}
+            @segment-change=${(event: CustomEvent<{ value: string }>) => spec.write(property, event.detail.value)}
+          ></heo-segmented>`
+        : html`<heo-value-field
+            data-property=${property}
+            field-label=${label}
+            .kind=${valueKindFor(property)}
+            .property=${property}
+            .value=${value}
+            .computed=${base}
+            placeholder=${base}
+            .suggestions=${buildSuggestions(engine, property, null)}
+            .shadowTokens=${property === 'text-shadow' ? shadowSwatches(engine) : []}
+            @value-input=${(event: CustomEvent<{ value: string }>) => spec.previewValue(property, event.detail.value)}
+            @value-revert=${() => engine.cancelPreview()}
+            @value-change=${(event: CustomEvent<{ value: string }>) => spec.write(property, event.detail.value)}
+          ></heo-value-field>`}
+      ${set
+        ? renderKill({ label: `Remove ${label} from ${spec.styleName}${this.#tsWhere()}`, tight: true, onClick: () => spec.write(property, '') })
+        : html`<span></span>`}
+    </div>`;
   }
 
   #renderClassList(el: HTMLElement | null): TemplateResult | typeof nothing {

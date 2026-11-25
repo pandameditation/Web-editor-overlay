@@ -375,6 +375,10 @@
         const listed = Array.from(group.querySelectorAll('[data-text-style]')).map((one) => one.dataset.textStyle);
         group.querySelector('[data-text-style="text-heading-1"]').click();
         await settle(400);
+        // The editor shows the rows the style sets first and folds the rest of Typography: unfolded,
+        // it has every row the Styles panel's Typography card has, set ones first.
+        group.querySelector('[data-text-style-editor="text-heading-1"] [data-ts-more]')?.click();
+        await settle(100);
         const ed = group.querySelector('[data-text-style-editor="text-heading-1"]');
         const names = Array.from(ed.querySelectorAll('.trow .tname')).map(flat);
         const ls = ed.querySelector('heo-value-field[data-property="letter-spacing"]');
@@ -384,7 +388,7 @@
         await settle(400);
         return {
           listsTheStyles: ['text-heading-1', 'text-body', 'text-lede'].every((one) => listed.includes(one)),
-          editedWithTheSameRows: names.slice(1).join(',') === 'Color,Font,Weight,Style,Line,Align,Case,Size,Line height,Letter spacing,Word spacing,Outline,Outline color,Shadow',
+          editedWithTheSameRows: names.slice(1).sort().join(',') === 'Color,Font,Weight,Style,Line,Align,Case,Size,Line height,Letter spacing,Word spacing,Outline,Outline color,Shadow'.split(',').sort().join(','),
           writingChangesTheStyle: engine.classes.get('text-heading-1')?.declarations['letter-spacing'] === '0.1em',
           andItsElements: getComputedStyle(h2).letterSpacing === '3.6px',
         };

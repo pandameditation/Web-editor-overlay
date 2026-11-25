@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Text styles in the effects menu, and a text style editor that shows everything</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  Two questions, answered together in each variant:
+    1. The text toolbar's "Text effects" menu saves text styles; it should also put the page's
+       existing text styles (Heading 1, Lede, Body…) on the selected words.
+    2. Tokens › Text styles edits a style with Typography's rows only, so a style saved from an
+       effect hides its background, padding and filter, and no style shows its states
+       (.text-x:hover is a rule of its own, reachable nowhere from here).
+
+  Left: the page, its text toolbar and the menu (select words, then pick). Right: the dock's Tokens
+  › Text styles editor for the style picked in the menu's list (or click a style name there).
+  Variants (?variant=A|B|C, the bottom bar, or ← → with nothing focused):
+
+    A — Group + rows. The menu gains a "Text styles" group, every style a tile. The editor keeps
+        its rows: Typography (set ones first, the rest folded) and a new "Effect" group with every
+        other declaration, under a state strip (Base · :hover · + State), with a live preview.
+    B — Tabs + cards. The menu has two tabs, Effects | Text styles. The editor is the Styles panel's
+        own card grid for the class (Text style, Background, Spacing, Effects), under the same
+        state strip: a text style is edited exactly as an element is.
+    C — Search + recipe. The menu has one search over effects and styles. The editor of a style
+        made from an effect leads with its recipe (the effect tiles and colours, which rewrite it),
+        then one flat list of every declaration, its states as tabs.
+
+  Tokens: src/ui/tokens.ts. ◐ switches theme.
+-->
+  <style>
+    :root {
+      --heo-accent: #6366f1; --heo-accent-ink: #fff;
+      --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 18%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 55%, transparent);
+      --heo-bg: oklch(19% 0.014 265); --heo-bg-glass: oklch(16% 0.014 265 / 86%);
+      --heo-raised: oklch(23.5% 0.016 265); --heo-sunken: oklch(16% 0.012 265);
+      --heo-hover: oklch(28% 0.018 265); --heo-active: oklch(32% 0.02 265);
+      --heo-text: oklch(96% 0.005 265); --heo-text-dim: oklch(74% 0.012 265); --heo-text-faint: oklch(68% 0.014 265);
+      --heo-line: oklch(100% 0 0 / 9%); --heo-line-strong: oklch(100% 0 0 / 16%);
+      --heo-inset: inset 0 1px 0 oklch(100% 0 0 / 6%);
+      --heo-focus-ring: color-mix(in oklab, var(--heo-accent) 60%, white); --heo-accent-text: var(--heo-focus-ring);
+      --heo-state: oklch(82% 0.1 300); --heo-state-bg: oklch(30% 0.06 300);
+      --heo-r-sm: 7px; --heo-r-md: 10px; --heo-r-lg: 14px;
+      --heo-shadow-sm: 0 1px 2px oklch(0% 0 0 / 30%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(0% 0 0 / 60%), 0 6px 16px oklch(0% 0 0 / 30%);
+      --heo-font: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --heo-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --heo-ease: cubic-bezier(0.2, 0.8, 0.2, 1); --heo-fast: 120ms var(--heo-ease);
+      --h: 300;
+    }
+    [data-theme='light'] {
+      --heo-bg: oklch(99% 0.002 265); --heo-bg-glass: oklch(99% 0.002 265 / 92%);
+      --heo-raised: oklch(100% 0 0); --heo-sunken: oklch(96.5% 0.004 265);
+      --heo-hover: oklch(95% 0.006 265); --heo-active: oklch(92% 0.008 265);
+      --heo-text: oklch(24% 0.014 265); --heo-text-dim: oklch(45% 0.014 265); --heo-text-faint: oklch(50% 0.012 265);
+      --heo-line: oklch(20% 0.02 265 / 11%); --heo-line-strong: oklch(20% 0.02 265 / 20%);
+      --heo-inset: inset 0 1px 0 oklch(100% 0 0 / 80%);
+      --heo-focus-ring: var(--heo-accent); --heo-accent-text: color-mix(in oklab, var(--heo-accent) 80%, black);
+      --heo-state: oklch(42% 0.14 300); --heo-state-bg: oklch(94% 0.04 300);
+      --heo-shadow-sm: 0 1px 2px oklch(50% 0.03 265 / 12%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(50% 0.03 265 / 24%), 0 6px 16px oklch(50% 0.03 265 / 14%);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body { display: grid; grid-template-columns: minmax(0, 1fr) 390px; gap: 24px; padding: 20px 24px 100px; background: linear-gradient(135deg, #eef1f6, #e3e8f1); color: #1f2330; font: 13px/1.5 var(--heo-font); }
+    button, input { font: inherit; color: inherit; }
+    svg { flex: none; }
+    .left { display: grid; align-content: start; gap: 14px; min-width: 0; }
+    .left > h1 { margin: 0; font: 600 11px/1 var(--heo-font); letter-spacing: .08em; text-transform: uppercase; color: #64748b; }
+    .left > h2 { margin: 0; font: 650 20px/1.25 var(--heo-font); }
+    .notes { display: grid; gap: 8px; color: #333a48; max-width: 720px; }
+    .notes .q { padding: 10px 12px; border-left: 3px solid var(--heo-accent); border-radius: 0 8px 8px 0; background: #fff; }
+    .notes ul { margin: 0; padding-left: 18px; }
+
+    /* The page, with the site's own text styles. */
+    .site { position: relative; min-height: 600px; padding: 70px 40px 40px; border-radius: 16px; background: #fbfaf7; box-shadow: 0 1px 2px rgb(15 23 42 / 6%), 0 20px 40px -24px rgb(15 23 42 / 25%); }
+    .site [contenteditable] { outline: 2px solid #6366f1; outline-offset: 6px; border-radius: 4px; }
+    .site > .h1 { margin: 0 0 12px; }
+    .site > .p { margin: 0; max-width: 60ch; }
+    #ds-css { display: none; }
+
+    /* ---- HEO surfaces --------------------------------------------------- */
+    .surface { border: 1px solid var(--heo-line); border-radius: var(--heo-r-lg); background: var(--heo-bg-glass); box-shadow: var(--heo-shadow-lg), var(--heo-inset); backdrop-filter: blur(20px) saturate(160%); color: var(--heo-text); font-family: var(--heo-font); }
+    .tb { position: absolute; left: 40px; top: 14px; z-index: 5; display: flex; align-items: center; gap: 2px; padding: 4px; color: var(--heo-text-dim); }
+    .ib { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: var(--heo-r-sm); background: transparent; color: var(--heo-text-dim); cursor: pointer; }
+    .ib:hover { background: var(--heo-hover); color: var(--heo-text); }
+    .ib[aria-expanded='true'] { background: var(--heo-accent-soft); color: var(--heo-accent-text); border-color: var(--heo-accent-line); }
+    .ib.wide { width: auto; grid-auto-flow: column; gap: 1px; padding: 0 4px 0 6px; }
+    .ib:focus-visible, .btn:focus-visible, .tile:focus-visible, .chip:focus-visible, .tab:focus-visible { outline: 2px solid var(--heo-focus-ring); outline-offset: 2px; }
+    .sep { width: 1px; height: 18px; margin: 0 3px; background: var(--heo-line); }
+    .done { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border: 0; border-radius: var(--heo-r-sm); background: var(--heo-accent); color: #fff; font-size: 12px; font-weight: 600; }
+    .menu { position: absolute; left: 40px; top: 210px; z-index: 6; width: 340px; padding: 10px; }
+    .mhead { display: flex; align-items: center; gap: 8px; margin: 0 2px 8px; font-size: 11.5px; font-weight: 650; }
+    .mhead .on { color: var(--heo-text-faint); font: 400 10.5px var(--heo-mono); }
+    .group { display: flex; align-items: center; gap: 6px; margin: 10px 2px 6px; color: var(--heo-text-faint); font-size: 9.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+    .group::after { content: ''; flex: 1; border-top: 1px solid var(--heo-line); order: 2; }
+    .group .n { order: 3; letter-spacing: 0; font-weight: 500; }
+    .colors { display: flex; align-items: center; gap: 6px; padding: 2px; }
+    .colors .lab { color: var(--heo-text-faint); font-size: 10.5px; margin-right: 2px; }
+    .dot { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 20%); }
+    .dot[aria-checked='true'] { box-shadow: 0 0 0 2px var(--heo-bg), 0 0 0 4px var(--heo-accent); }
+    .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+    .tile { position: relative; display: grid; justify-items: center; align-content: center; gap: 4px; min-width: 0; height: 66px; padding: 4px; border: 1px solid var(--heo-line); border-radius: 10px; background: #f4f2ec; color: #1f2330; cursor: pointer; transition: border-color var(--heo-fast), translate var(--heo-fast), box-shadow var(--heo-fast); }
+    .tile:hover { border-color: var(--heo-accent-line); translate: 0 -1px; }
+    .tile[aria-pressed='true'] { border-color: var(--heo-accent); box-shadow: 0 0 0 3px var(--heo-accent-soft); }
+    .tile .w { font: 800 21px/1.1 system-ui, sans-serif; max-width: 100%; overflow: hidden; white-space: nowrap; }
+    .tile .w.ts { font-size: 18px; }
+    .tile mark.w { background-color: transparent; }
+    .tile .n { max-width: 100%; overflow: hidden; color: #4b5263; font-size: 9.5px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+    .tile .badge { position: absolute; top: 4px; right: 5px; color: #6366f1; font-size: 9px; }
+    .tiles.styles .tile { height: 58px; }
+    .tabs { display: flex; gap: 3px; padding: 3px; margin-bottom: 8px; border: 1px solid var(--heo-line); border-radius: 9px; background: var(--heo-sunken); }
+    .tab { flex: 1; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--heo-text-dim); font-size: 11.5px; cursor: pointer; }
+    .tab[aria-selected='true'] { background: var(--heo-raised); box-shadow: var(--heo-shadow-sm), inset 0 0 0 1px var(--heo-line-strong); color: var(--heo-text); font-weight: 600; }
+    .search { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; margin-bottom: 8px; border: 1px solid var(--heo-line-strong); border-radius: var(--heo-r-sm); background: var(--heo-sunken); color: var(--heo-text-faint); }
+    .search input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--heo-text); outline: none; font-size: 12px; }
+    .list { display: grid; gap: 2px; max-height: 330px; overflow: auto; }
+    .lrow { display: grid; grid-template-columns: 96px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 5px 8px; border: 1px solid transparent; border-radius: 9px; background: transparent; text-align: left; cursor: pointer; }
+    .lrow:hover { background: var(--heo-hover); }
+    .lrow[aria-pressed='true'] { border-color: var(--heo-accent-line); background: var(--heo-accent-soft); }
+    .lrow .pv { display: grid; place-items: center; height: 34px; overflow: hidden; border-radius: 7px; background: #f4f2ec; color: #1f2330; white-space: nowrap; }
+    .lrow b { display: block; font-size: 11.5px; }
+    .lrow small { color: var(--heo-text-faint); font-size: 10.5px; }
+    .kind { padding: 0 6px; border-radius: 999px; background: var(--heo-active); color: var(--heo-text-dim); font-size: 9.5px; font-weight: 600; line-height: 16px; }
+    .foot { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--heo-line); }
+    .btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--heo-line); border-radius: var(--heo-r-sm); background: var(--heo-raised); box-shadow: var(--heo-inset); color: var(--heo-text-dim); font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+    .btn:hover { background: var(--heo-hover); color: var(--heo-text); }
+    .btn.primary { margin-left: auto; border-color: transparent; background: var(--heo-accent); color: #fff; }
+    .btn.sm { height: 24px; padding: 0 8px; font-size: 11px; }
+    .btn.link { border: 0; background: none; box-shadow: none; color: var(--heo-accent-text); padding: 0 2px; }
+    .hint { margin: 6px 2px 0; color: var(--heo-text-faint); font-size: 10.5px; line-height: 1.45; }
+
+    /* ---- The dock: Tokens › Text styles -------------------------------- */
+    .dock { position: sticky; top: 20px; display: flex; flex-direction: column; max-height: calc(100vh - 40px); overflow: hidden; }
+    .dhead { display: flex; align-items: center; gap: 8px; padding: 12px 14px 4px; }
+    .dhead b { font-size: 14px; }
+    .dtabs { display: flex; gap: 4px; padding: 6px 10px 8px; border-bottom: 1px solid var(--heo-line); }
+    .dtabs span { padding: 5px 10px; border-radius: 7px; color: var(--heo-text-faint); font-size: 10.5px; font-weight: 600; letter-spacing: .08em; }
+    .dtabs span.on { background: var(--heo-accent-soft); color: var(--heo-accent-text); box-shadow: inset 0 0 0 1px var(--heo-accent-line); }
+    .dbody { flex: 1; overflow: auto; padding: 10px 12px 18px; display: grid; align-content: start; gap: 10px; }
+    .sec { display: flex; align-items: center; gap: 8px; color: var(--heo-text); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+    .sec .n { color: var(--heo-text-faint); font: 10px var(--heo-mono); }
+    .stylelist { display: grid; gap: 3px; }
+    .srow { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 36px; padding: 4px 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; color: var(--heo-text); cursor: pointer; }
+    .srow:hover { background: var(--heo-hover); }
+    .srow[aria-current='true'] { border-color: var(--heo-accent-line); background: var(--heo-accent-soft); }
+    .srow .wrapl { display: block; overflow: hidden; padding: 3px 8px; border-radius: 6px; background: #f4f2ec; color: #1f2330; white-space: nowrap; text-overflow: ellipsis; }
+    .srow .look { font-size: min(1em, 20px); }
+    .srow .meta { display: flex; gap: 4px; align-items: center; }
+    .ed { display: grid; gap: 10px; padding: 10px; border: 1px solid var(--heo-line); border-radius: var(--heo-r-md); background: var(--heo-sunken); }
+    .preview { position: relative; display: grid; place-items: center; min-height: 86px; padding: 12px; border-radius: 9px; background: #fbfaf7; color: #1f2330; overflow: hidden; }
+    .preview .cap { position: absolute; left: 8px; top: 6px; color: #64748b; font: 600 9px var(--heo-font); letter-spacing: .06em; text-transform: uppercase; }
+    .strip { display: flex; flex-wrap: wrap; gap: 5px; }
+    .chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--heo-line-strong); border-radius: 999px; background: var(--heo-raised); color: var(--heo-text-dim); font-size: 11px; cursor: pointer; }
+    .chip i { font-style: normal; padding: 0 5px; border-radius: 999px; background: var(--heo-hover); color: var(--heo-text-dim); font-size: 9.5px; }
+    .chip[aria-pressed='true'] { border-color: var(--heo-accent); background: var(--heo-accent-soft); color: var(--heo-text); }
+    .chip.state[aria-pressed='true'] { border-color: var(--heo-state); background: var(--heo-state-bg); color: var(--heo-state); }
+    .chip.add { border-style: dashed; background: transparent; color: var(--heo-text-faint); }
+    .gh { display: flex; align-items: center; gap: 6px; color: var(--heo-text-faint); font-size: 9.5px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+    .gh::after { content: ''; flex: 1; border-top: 1px solid var(--heo-line); order: 2; }
+    .gh .x { order: 3; letter-spacing: 0; text-transform: none; font-weight: 500; }
+    .row { display: grid; grid-template-columns: 8px 96px minmax(0, 1fr) 20px; align-items: center; gap: 6px; min-height: 30px; }
+    .row .d { width: 6px; height: 6px; border-radius: 50%; background: var(--heo-accent); }
+    .row .d.off { background: transparent; box-shadow: inset 0 0 0 1.5px var(--heo-text-faint); }
+    .row .d.st { background: var(--heo-state); }
+    .row .pn { overflow: hidden; color: var(--heo-text-dim); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+    .row input { width: 100%; height: 28px; padding: 0 8px; border: 1px solid var(--heo-line-strong); border-radius: var(--heo-r-sm); background: var(--heo-bg); color: var(--heo-text); font: 11px var(--heo-mono); outline: none; }
+    .row input::placeholder { color: var(--heo-text-faint); }
+    .row input:focus { border-color: var(--heo-accent-line); }
+    .row .k { display: grid; place-items: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--heo-text-faint); cursor: pointer; }
+    .row .k:hover { color: oklch(78% 0.14 22); background: var(--heo-hover); }
+    .more { justify-self: start; }
+    .recipe { display: grid; gap: 8px; padding: 9px; border: 1px solid var(--heo-accent-line); border-radius: 9px; background: color-mix(in oklab, var(--heo-accent) 7%, var(--heo-sunken)); }
+    .recipe .tiles .tile { height: 48px; }
+    .recipe .tiles .tile .w { font-size: 16px; }
+    .recipe .tiles .tile .n { display: none; }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .card { --hue: var(--hc, 265); display: grid; gap: 3px; padding: 6px; border: 1px solid oklch(72% 0.12 var(--hue) / 30%); border-radius: 10px; background: linear-gradient(180deg, oklch(25.5% 0.03 var(--hue)), var(--heo-raised) 62%); text-align: left; color: var(--heo-text); cursor: pointer; }
+    [data-theme='light'] .card { background: linear-gradient(180deg, oklch(98.8% 0.01 var(--hue)), var(--heo-raised) 62%); }
+    .card.empty { border-style: dashed; border-color: var(--heo-line-strong); background: transparent; }
+    .card.open { grid-column: 1 / -1; cursor: default; background: var(--heo-raised); }
+    .card .ct { display: flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 600; }
+    .card.empty .ct { color: var(--heo-text-dim); font-weight: 500; }
+    .card .cnt { margin-left: auto; padding: 0 6px; border-radius: 999px; background: oklch(80% 0.12 var(--hue)); color: oklch(22% 0.05 var(--hue)); font-size: 9.5px; font-weight: 650; line-height: 15px; }
+    .card .sum { overflow: hidden; color: var(--heo-text-dim); font: 10px var(--heo-mono); white-space: nowrap; text-overflow: ellipsis; }
+    .card .rows { display: grid; gap: 2px; margin-top: 6px; }
+    .rule { color: var(--heo-text-faint); font: 10px var(--heo-mono); }
+    .rule b { color: var(--heo-text-dim); font-weight: 500; }
+
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition-duration: 1ms !important; } }
+    .proto-bar { position: fixed; left: calc((100% - 390px) / 2); bottom: 18px; translate: -50% 0; display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 999px; background: #111; color: #fff; font: 600 12px var(--heo-font); z-index: 50; box-shadow: 0 10px 30px rgb(0 0 0 / 30%); }
+    .proto-bar button { border: 0; background: #333; color: #fff; border-radius: 999px; min-width: 28px; height: 28px; cursor: pointer; }
+    .proto-bar span { padding: 0 10px; min-width: 220px; text-align: center; }
+  </style>
+  <style id="ds"></style>
+</head>
+<body>
+  <div class="left">
+    <h1>Prototype · Text styles</h1>
+    <h2>Use text styles from the effects menu · edit everything a style holds</h2>
+    <div class="notes" id="notes"></div>
+    <main class="site" id="site">
+      <div class="tb surface" role="toolbar" aria-label="Text formatting" id="tb"></div>
+      <h2 class="h1 text-heading-1">Slow pottery for fast mornings</h2>
+      <p class="p text-body" contenteditable="true" id="p">Wheel-thrown stoneware, glazed by hand in small batches. Every cup is fired twice, so it keeps your coffee hot and your mornings calm.</p>
+      <div class="menu surface" id="menu" role="dialog" aria-label="Text effects"></div>
+    </main>
+  </div>
+
+  <aside class="dock surface" aria-label="Tokens panel (prototype)">
+    <div class="dhead"><b>Tokens</b></div>
+    <div class="dtabs" aria-hidden="true"><span>STYLES</span><span class="on">TOKENS</span><span>MEDIA</span><span>CODE</span></div>
+    <div class="dbody" id="dbody"></div>
+  </aside>
+
+  <div class="proto-bar" role="toolbar" aria-label="Prototype variant switcher">
+    <button type="button" data-step="-1" aria-label="Previous variant">←</button>
+    <span id="proto-label"></span>
+    <button type="button" data-step="1" aria-label="Next variant">→</button>
+    <button type="button" id="theme" aria-label="Switch theme" title="Dark / light">◐</button>
+  </div>
+
+  <script>
+    const P = {
+      bold: 'M4.8 3h3.6a2.4 2.4 0 010 4.8H4.8zM4.8 7.8h4.2a2.6 2.6 0 010 5.2H4.8z', italic: 'M10.6 3H6.8M9.2 13H5.4M9.6 3L6.4 13',
+      underline: 'M4.6 2.8v5.4a3.4 3.4 0 006.8 0V2.8M3.6 13.4h8.8', strike: 'M2.8 8h10.4M11 4.6a3 3 0 00-3-1.8c-1.8 0-3 1-3 2.4 0 1 .6 1.7 1.6 2.2M5 11.4a3 3 0 003 1.8c1.9 0 3.1-1 3.1-2.5 0-.9-.4-1.5-1.2-2',
+      textFx: 'M4.6 10.2L7.6 2.8h.8l3 7.4M5.7 7.6h4.6M2.4 13.2c2.2-1.3 4.4-1.3 6 0s3.6 1.3 5.2 0', chevronDown: 'M4 6l4 4 4-4',
+      link: 'M6.6 9.4l2.8-2.8M6.9 4.6l1-1a2.7 2.7 0 013.8 3.8l-1 1M9.1 11.4l-1 1a2.7 2.7 0 01-3.8-3.8l1-1', check: 'M3.5 8.5l3 3 6-7',
+      close: 'M4 4l8 8M12 4l-8 8', plus: 'M8 3.5v9M3.5 8h9', search: 'M7 12a5 5 0 100-10 5 5 0 000 10zM10.6 10.6L14 14', trash: 'M3.5 4.5h9M6.5 4.5V3h3v1.5M5 4.5l.6 8h4.8l.6-8',
+    };
+    const icon = (n, s = 13) => `<svg viewBox="0 0 16 16" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${P[n]}"/></svg>`;
+    const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    /* ---- Effects (as src/core/text-effects.ts, a few) -------------------- */
+    const COLORS = [
+      { id: 'violet', a: '#6366f1', b: '#ec4899' }, { id: 'mint', a: '#22c55e', b: '#14b8a6' }, { id: 'sun', a: '#f59e0b', b: '#ef4444' },
+      { id: 'sky', a: '#06b6d4', b: '#818cf8' }, { id: 'lemon', a: '#fde047', b: '#facc15' }, { id: 'ink', a: '#1f2937', b: '#475569' },
+    ];
+    const svgUrl = (vb, paths, sw, c, fill) => {
+      const g = `<defs><linearGradient id='g'><stop offset='0' stop-color='${c.a}'/><stop offset='1' stop-color='${c.b}'/></linearGradient></defs>`;
+      const body = paths.map((d) => fill ? `<path d='${d}' fill='url(#g)' fill-opacity='.85'/>` : `<path d='${d}' fill='none' stroke='url(#g)' stroke-width='${sw}' stroke-linecap='round'/>`).join('');
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='${vb}' preserveAspectRatio='none'>${g}${body}</svg>`;
+      return `url("data:image/svg+xml,${svg.replace(/#/g, '%23').replace(/</g, '%3C').replace(/>/g, '%3E')}")`;
+    };
+    const drawn = (vb, paths, sw, at, size, pad, fill) => (c) => ({ 'background-color': 'transparent', 'background-image': svgUrl(vb, paths, sw, c, fill), 'background-repeat': 'no-repeat', 'background-position': at, 'background-size': size, padding: pad, 'box-decoration-break': 'clone' });
+    const EFFECTS = [
+      { id: 'gradient', g: 'Text', label: 'Gradient', css: (c) => ({ background: `linear-gradient(120deg, ${c.a}, ${c.b}) text`, color: 'transparent', 'box-decoration-break': 'clone' }) },
+      { id: 'glow', g: 'Text', label: 'Glow', css: (c) => ({ color: c.a, 'text-shadow': `0 0 .35em ${c.a}99` }) },
+      { id: 'outline', g: 'Text', label: 'Outline', css: (c) => ({ color: 'transparent', '-webkit-text-stroke': `.035em ${c.a}` }) },
+      { id: 'echo', g: 'Text', label: 'Echo', css: (c) => ({ background: `linear-gradient(120deg, ${c.a}, ${c.b}) text`, color: 'transparent', filter: 'drop-shadow(.06em .06em 0 #fde68a)' }) },
+      { id: 'wavy', g: 'Underline', label: 'Wavy', css: (c) => ({ 'text-decoration': `underline wavy ${c.a}`, 'text-decoration-thickness': '.07em', 'text-underline-offset': '.2em' }) },
+      { id: 'arc', g: 'Underline', label: 'Marker arc', css: drawn('0 0 200 18', ['M3 13 C 48 4, 138 2, 197 11'], 5.5, '0 100%', '100% .38em', '0 0 .2em') },
+      { id: 'squiggle', g: 'Underline', label: 'Squiggle', css: drawn('0 0 200 18', ['M3 11 Q 22 3, 42 11 T 82 11 T 122 11 T 162 11 T 197 9'], 4.8, '0 100%', '100% .4em', '0 0 .2em') },
+      { id: 'sketch', g: 'Underline', label: 'Sketchy', css: drawn('0 0 200 22', ['M4 11 C 52 3, 142 3, 196 10', 'M16 18 C 68 12, 136 13, 186 17'], 4.5, '0 100%', '100% .46em', '0 0 .24em') },
+      { id: 'marker', g: 'Highlight', label: 'Marker', mark: true, css: (c) => ({ color: 'inherit', background: `linear-gradient(transparent 62%, color-mix(in oklab, ${c.a} 55%, transparent) 0)`, padding: '0 .08em', 'box-decoration-break': 'clone' }) },
+      { id: 'brush', g: 'Highlight', label: 'Brush', mark: true, css: (c) => ({ color: 'inherit', ...drawn('0 0 200 40', ['M4 12 L196 6 L198 20 L190 34 L12 36 L2 26 Z'], 1, '0 80%', '100% .9em', '0 .12em', true)(c) }) },
+      { id: 'circle', g: 'Highlight', label: 'Circled', mark: true, css: drawn('0 0 200 60', ['M150 6 C 70 0, 6 14, 6 32 C 6 52, 70 58, 120 55 C 170 52, 196 42, 194 28 C 192 12, 150 6, 92 9'], 3, 'center', '100% 100%', '.1em .3em') },
+    ];
+    const effect = (id) => EFFECTS.find((e) => e.id === id);
+    const color = (id) => COLORS.find((c) => c.id === id);
+    const TYPO = ['color', 'font-family', 'font-weight', 'font-style', 'font-size', 'line-height', 'letter-spacing', 'text-transform', 'text-decoration', 'text-decoration-thickness', 'text-underline-offset', 'text-shadow', '-webkit-text-stroke', 'text-align', 'word-spacing'];
+    const isTypo = (p) => TYPO.includes(p);
+
+    /* ---- The page's text styles: classes, each with its states (rules of their own) ---- */
+    const STYLES = [
+      { cls: 'text-heading-1', name: 'Heading 1', decl: { 'font-family': 'system-ui, sans-serif', 'font-size': '44px', 'font-weight': '800', 'line-height': '1.1', 'letter-spacing': '-0.02em', color: '#14171f' }, states: {} },
+      { cls: 'text-lede', name: 'Lede', decl: { 'font-family': 'Georgia, serif', 'font-size': '21px', 'line-height': '1.55', color: '#3b4252', 'font-style': 'italic' }, states: {} },
+      { cls: 'text-body', name: 'Body', decl: { 'font-family': 'Georgia, serif', 'font-size': '18px', 'line-height': '1.65', color: '#2b3140' }, states: {} },
+      { cls: 'text-caption', name: 'Caption', decl: { 'font-family': 'system-ui, sans-serif', 'font-size': '12px', 'letter-spacing': '0.06em', 'text-transform': 'uppercase', color: '#64748b' }, states: {} },
+      { cls: 'text-hero-marker', name: 'Hero marker', effect: 'marker', color: 'lemon', decl: { ...effect('marker').css(color('lemon')) }, states: { ':hover': { background: 'linear-gradient(transparent 30%, color-mix(in oklab, #fde047 70%, transparent) 0)' } } },
+      { cls: 'text-arc-mint', name: 'Arc mint', effect: 'arc', color: 'mint', decl: { ...effect('arc').css(color('mint')) }, states: {} },
+    ];
+    const styleBy = (cls) => STYLES.find((s) => s.cls === cls);
+
+    const state = {
+      variant: (new URLSearchParams(location.search).get('variant') || 'A').toUpperCase(),
+      color: 'violet', tab: 'effects', query: '',
+      picked: 'text-hero-marker', cond: 'base', showAllTypo: false, card: 'surface',
+      range: null,
+    };
+    if (!['A', 'B', 'C'].includes(state.variant)) state.variant = 'A';
+    const NOTES = {
+      A: { name: 'Group + rows', html: `<p class="q"><b>Menu:</b> a fourth group, <b>Text styles</b>, lists every style of the page (Heading 1, Lede, Body… and the ones saved from effects, marked ✦), each drawn in its own look.<br><b>Editor:</b> a live preview, a <b>state strip</b> (Base · :hover · + State) and two groups: <b>Typography</b> (set rows first, the rest folded) and <b>Effect</b>, every other declaration the style holds.</p><ul><li>Closest to today. Picking :hover edits <code>.text-x:hover</code>; its rows show Base's values as placeholders.</li></ul>` },
+      B: { name: 'Tabs + cards', html: `<p class="q"><b>Menu:</b> two tabs, <b>Effects | Text styles</b>. Each tab has the room for its own list.<br><b>Editor:</b> the Styles panel's own cards (Text style, Background, Spacing, Effects), under the same condition strip as Styles. A text style is edited exactly like an element.</p><ul><li>The most consistent with Styles, and every card's rich editor is available (the Background card's paint and placement). The cost is weight: a grid inside a token list.</li></ul>` },
+      C: { name: 'Search + recipe', html: `<p class="q"><b>Menu:</b> one search over effects and styles, so finding "Lede" or "wavy" is typing.<br><b>Editor:</b> a style made from an effect leads with its <b>recipe</b>: the effect tiles and colours, which rewrite it in one click. Then one flat list of every declaration, its states as tabs.</p><ul><li>Fastest for effect styles: recolouring or swapping "Hero marker" to a brush is one click, not a gradient to retype. Plain styles get the flat list only.</li></ul>` },
+    };
+
+    /* ---- Page CSS for the styles, so the page and the tiles agree ---------- */
+    const declText = (d) => Object.entries(d).map(([k, v]) => `${k}: ${v}`).join('; ');
+    function writeCss() {
+      document.getElementById('ds').textContent = STYLES.map((s) => `.${s.cls} { ${declText(s.decl)}; }${Object.entries(s.states).map(([st, d]) => `\n.${s.cls}${st} { ${declText(d)}; }`).join('')}`).join('\n');
+    }
+
+    /* ---- Applying, as the real menu does: a span (mark) around the words ---- */
+    function wrapWith(make) {
+      const sel = getSelection();
+      if (state.range) { sel.removeAllRanges(); sel.addRange(state.range); }
+      if (!sel.rangeCount) return;
+      const r = sel.getRangeAt(0);
+      if (!document.getElementById('p').contains(r.commonAncestorContainer)) return;
+      let at = r.commonAncestorContainer; if (at.nodeType === 3) at = at.parentElement;
+      const cur = at.closest('[data-text-effect]');
+      const el = make();
+      if (cur && cur.className === el.className && cur.getAttribute('style') === el.getAttribute('style')) { cur.replaceWith(...cur.childNodes); render(); return; }
+      if (cur) { el.append(...cur.childNodes); cur.replaceWith(el); }
+      else if (r.collapsed) { el.textContent = '\u200b'; r.insertNode(el); }
+      else { el.append(r.extractContents()); r.insertNode(el); }
+      const nr = document.createRange(); nr.selectNodeContents(el); sel.removeAllRanges(); sel.addRange(nr); state.range = nr.cloneRange();
+      render();
+    }
+    const applyEffect = (id) => wrapWith(() => { const e = effect(id); const el = document.createElement(e.mark ? 'mark' : 'span'); el.dataset.textEffect = id; el.setAttribute('style', declText(e.css(color(state.color)))); return el; });
+    const applyStyle = (cls) => { state.picked = cls; wrapWith(() => { const s = styleBy(cls); const el = document.createElement(s.effect && effect(s.effect).mark ? 'mark' : 'span'); el.dataset.textEffect = s.effect ?? 'style'; el.className = cls; return el; }); };
+    function currentWrapper() {
+      const r = state.range; if (!r) return null;
+      let at = r.commonAncestorContainer; if (at.nodeType === 3) at = at.parentElement;
+      return at?.closest?.('[data-text-effect]') ?? null;
+    }
+
+    /* ---- The menu ---------------------------------------------------------- */
+    const looks = (s) => declText(Object.fromEntries(Object.entries(s.decl).map(([k, v]) => [k, k === 'font-size' ? `min(${v}, 22px)` : v])));
+    function effectTile(e) {
+      const cur = currentWrapper();
+      const on = cur && !cur.className && cur.dataset.textEffect === e.id;
+      return `<button type="button" class="tile" data-effect="${e.id}" aria-pressed="${!!on}" title="${e.label}"><${e.mark ? 'mark' : 'span'} class="w" style="${esc(declText(e.css(color(state.color))))}">Aa</${e.mark ? 'mark' : 'span'}><span class="n">${e.label}</span></button>`;
+    }
+    function styleTile(s) {
+      const on = currentWrapper()?.classList.contains(s.cls);
+      const tag = s.effect && effect(s.effect).mark ? 'mark' : 'span';
+      return `<button type="button" class="tile" data-style="${s.cls}" aria-pressed="${!!on}" title="${s.name} · .${s.cls}">${s.effect ? '<span class="badge" aria-label="made from an effect">✦</span>' : ''}<${tag} class="w ts" style="${esc(looks(s))}">Aa</${tag}><span class="n">${s.name}</span></button>`;
+    }
+    const colorRow = () => `<div class="colors" role="radiogroup" aria-label="Effect colour"><span class="lab">Colour</span>${COLORS.map((c) => `<button type="button" class="dot" role="radio" data-color="${c.id}" aria-checked="${state.color === c.id}" aria-label="${c.id}" style="background:linear-gradient(135deg, ${c.a}, ${c.b})"></button>`).join('')}</div>`;
+    const effectGroups = () => ['Text', 'Underline', 'Highlight'].map((g) => `<div class="group">${g}</div><div class="tiles">${EFFECTS.filter((e) => e.g === g).map(effectTile).join('')}</div>`).join('');
+    function menu() {
+      const cur = currentWrapper();
+      const curName = cur ? (cur.className ? styleBy(cur.className.split(' ')[0])?.name : effect(cur.dataset.textEffect)?.label) : '';
+      let body;
+      if (state.variant === 'A') {
+        body = `${colorRow()}${effectGroups()}<div class="group">Text styles<span class="n">${STYLES.length}</span></div><div class="tiles styles">${STYLES.map(styleTile).join('')}</div>`;
+      } else if (state.variant === 'B') {
+        body = `<div class="tabs" role="tablist"><button type="button" class="tab" role="tab" data-tab="effects" aria-selected="${state.tab === 'effects'}">Effects</button><button type="button" class="tab" role="tab" data-tab="styles" aria-selected="${state.tab === 'styles'}">Text styles · ${STYLES.length}</button></div>
+          ${state.tab === 'effects' ? `${colorRow()}${effectGroups()}` : `<div class="tiles styles">${STYLES.map(styleTile).join('')}</div><p class="hint">Put a style on the selected words. ✦ marks a style saved from an effect.</p>`}`;
+      } else {
+        const q = state.query.trim().toLowerCase();
+        const items = [...STYLES.map((s) => ({ kind: 'Style', s })), ...EFFECTS.map((e) => ({ kind: 'Effect', e }))].filter((one) => !q || (one.s ? one.s.name : one.e.label).toLowerCase().includes(q));
+        body = `<label class="search">${icon('search', 13)}<input id="q" placeholder="Find an effect or a text style" value="${esc(state.query)}" aria-label="Find an effect or a text style"></label>${colorRow()}
+          <div class="list" role="group" aria-label="Effects and text styles">${items.map((one) => {
+            if (one.s) { const on = cur?.classList.contains(one.s.cls); const tag = one.s.effect && effect(one.s.effect).mark ? 'mark' : 'span';
+              return `<button type="button" class="lrow" data-style="${one.s.cls}" aria-pressed="${!!on}"><span class="pv"><${tag} style="${esc(looks(one.s))}">Pottery</${tag}></span><span><b>${one.s.name}</b><small>.${one.s.cls}</small></span><span class="kind">${one.s.effect ? '✦ Style' : 'Style'}</span></button>`; }
+            const on = cur && !cur.className && cur.dataset.textEffect === one.e.id; const tag = one.e.mark ? 'mark' : 'span';
+            return `<button type="button" class="lrow" data-effect="${one.e.id}" aria-pressed="${!!on}"><span class="pv"><${tag} style="${esc(declText(one.e.css(color(state.color))))};font:800 17px system-ui">Pottery</${tag}></span><span><b>${one.e.label}</b><small>${one.e.g}</small></span><span class="kind">Effect</span></button>`;
+          }).join('') || '<p class="hint">Nothing matches.</p>'}</div>`;
+      }
+      return `<div class="mhead">Text effects <span class="on">${curName ? `· ${esc(curName)}` : ''}</span></div>${body}
+        <div class="foot"><button class="btn sm" type="button" data-remove>${icon('close', 11)} Remove</button>${cur?.className ? `<button class="btn sm link" type="button" data-edit="${cur.className}">Edit ${esc(styleBy(cur.className)?.name ?? '')} in Tokens →</button>` : `<button class="btn sm primary" type="button">${icon('plus', 11)} Save as text style</button>`}</div>`;
+    }
+
+    /* ---- The editor (Tokens › Text styles) ---------------------------------- */
+    function condValue(s, p) { return state.cond === 'base' ? s.decl[p] ?? '' : s.states[state.cond]?.[p] ?? ''; }
+    function row(s, p, opts = {}) {
+      const v = condValue(s, p);
+      const base = s.decl[p] ?? '';
+      const dot = state.cond !== 'base' && v ? 'st' : v ? '' : 'off';
+      return `<div class="row" data-row="${p}"><span class="d ${dot}"></span><span class="pn" title="${p}">${opts.label ?? p}</span>
+        <input data-prop="${p}" value="${esc(v.length > 60 ? v.slice(0, 57) + '…' : v)}" ${v.length > 60 ? `title="${esc(v)}"` : ''} placeholder="${esc(state.cond !== 'base' && base ? (base.length > 40 ? 'as Base' : base) : '—')}" aria-label="${p}${state.cond === 'base' ? '' : ' on ' + state.cond}">
+        ${v ? `<button class="k" type="button" data-kill="${p}" aria-label="Remove ${p}">${icon('trash', 12)}</button>` : '<span></span>'}</div>`;
+    }
+    function strip(s) {
+      const sts = Object.keys(s.states);
+      return `<div class="strip" role="group" aria-label="Edit under"><button type="button" class="chip" data-cond="base" aria-pressed="${state.cond === 'base'}">Base <i>${Object.keys(s.decl).length}</i></button>
+        ${[...new Set([...sts, state.cond !== 'base' ? state.cond : null].filter(Boolean))].map((st) => `<button type="button" class="chip state" data-cond="${st}" aria-pressed="${state.cond === st}">${st} <i>${Object.keys(s.states[st] ?? {}).length}</i></button>`).join('')}
+        <button type="button" class="chip add" data-addstate title="Add :hover, :focus-visible, :active or a size">${icon('plus', 11)} State</button></div>`;
+    }
+    function preview(s) {
+      const d = { ...s.decl, ...(state.cond !== 'base' ? s.states[state.cond] ?? {} : {}) };
+      const tag = s.effect && effect(s.effect).mark ? 'mark' : 'span';
+      return `<div class="preview"><span class="cap">Preview${state.cond !== 'base' ? ` · ${state.cond}` : ''}</span><${tag} style="${esc(declText({ ...d, 'font-size': d['font-size'] ? `min(${d['font-size']}, 30px)` : '24px' }))}">Slow pottery</${tag}></div>`;
+    }
+    const allProps = (s) => [...new Set([...Object.keys(s.decl), ...Object.values(s.states).flatMap((d) => Object.keys(d))])];
+    function editorA(s) {
+      const props = allProps(s);
+      const typoSet = TYPO.filter((p) => props.includes(p));
+      const typoRest = TYPO.filter((p) => !props.includes(p));
+      const other = props.filter((p) => !isTypo(p));
+      return `${preview(s)}${strip(s)}
+        <div class="gh">Typography<span class="x">${typoSet.length} set</span></div>${typoSet.map((p) => row(s, p)).join('')}
+        ${state.showAllTypo ? typoRest.map((p) => row(s, p)).join('') : `<button class="btn sm link more" type="button" data-alltypo>+ ${typoRest.length} more typography properties</button>`}
+        ${other.length ? `<div class="gh">Effect<span class="x">${s.effect ? `from ${effect(s.effect).label}` : ''}</span></div>${other.map((p) => row(s, p)).join('')}` : ''}
+        <button class="btn sm more" type="button">${icon('plus', 11)} Add a property</button>`;
+    }
+    function editorB(s) {
+      const props = allProps(s);
+      const cards = [
+        { id: 'typography', name: 'Text style', hc: 300, props: TYPO },
+        { id: 'surface', name: 'Background', hc: 40, props: ['background', 'background-color', 'background-image', 'background-repeat', 'background-position', 'background-size', 'background-clip'] },
+        { id: 'spacing', name: 'Spacing', hc: 200, props: ['padding', 'margin'] },
+        { id: 'effects', name: 'Effects', hc: 330, props: ['filter', 'box-decoration-break', 'opacity', 'mix-blend-mode'] },
+      ];
+      return `${preview(s)}${strip(s)}<div class="cards">${cards.map((c) => {
+        const set = c.props.filter((p) => props.includes(p) && (condValue(s, p) || s.decl[p]));
+        const open = state.card === c.id;
+        if (!open) return `<button type="button" class="card${set.length ? '' : ' empty'}" style="--hc:${c.hc}" data-card="${c.id}"><span class="ct">${c.name}${set.length ? `<span class="cnt">${set.length}</span>` : ''}</span><span class="sum">${set.length ? set.map((p) => esc(condValue(s, p) || s.decl[p]).slice(0, 18)).join(' · ') : 'Empty'}</span></button>`;
+        const shown = set.length ? set : c.props.slice(0, 3);
+        return `<div class="card open" style="--hc:${c.hc}"><span class="ct">${c.name}${set.length ? `<span class="cnt">${set.length}</span>` : ''}<button class="btn sm link" type="button" data-card="" style="margin-left:auto">Close</button></span>
+          ${c.id === 'surface' && set.length ? '<span class="rule">The Background card\'s layers, paint and placement editor goes here, as in Styles.</span>' : ''}<div class="rows">${shown.map((p) => row(s, p)).join('')}</div></div>`;
+      }).join('')}</div>`;
+    }
+    function editorC(s) {
+      const props = allProps(s);
+      const recipe = s.effect ? `<div class="recipe"><div class="gh">Made from an effect<span class="x">${effect(s.effect).label} · ${s.color}</span></div>
+        <div class="tiles">${EFFECTS.filter((e) => e.g === effect(s.effect).g).map((e) => `<button type="button" class="tile" data-recipe="${e.id}" aria-pressed="${s.effect === e.id}" title="${e.label}"><${e.mark ? 'mark' : 'span'} class="w" style="${esc(declText(e.css(color(s.color))))}">Aa</${e.mark ? 'mark' : 'span'}><span class="n">${e.label}</span></button>`).join('')}</div>
+        <div class="colors"><span class="lab">Colour</span>${COLORS.map((c) => `<button type="button" class="dot" data-recolor="${c.id}" aria-checked="${s.color === c.id}" aria-label="${c.id}" style="background:linear-gradient(135deg, ${c.a}, ${c.b})"></button>`).join('')}</div>
+        <p class="hint" style="margin:0">Picking rewrites the style's declarations below; a change you made by hand is kept.</p></div>` : '';
+      const tabs = `<div class="tabs" role="tablist"><button type="button" class="tab" data-cond="base" aria-selected="${state.cond === 'base'}">Base</button>${Object.keys(s.states).map((st) => `<button type="button" class="tab" data-cond="${st}" aria-selected="${state.cond === st}">${st}</button>`).join('')}<button type="button" class="tab" data-addstate aria-selected="false">+ State</button></div>`;
+      return `${preview(s)}${recipe}${tabs}<div class="gh">Declarations<span class="x">${(state.cond === 'base' ? Object.keys(s.decl) : Object.keys(s.states[state.cond] ?? {})).length} in .${s.cls}${state.cond === 'base' ? '' : state.cond}</span></div>
+        ${(state.cond === 'base' ? Object.keys(s.decl) : props.filter((p) => s.states[state.cond]?.[p] || s.decl[p])).map((p) => row(s, p)).join('')}
+        <button class="btn sm more" type="button">${icon('plus', 11)} Add a property</button>`;
+    }
+    function editor() {
+      const s = styleBy(state.picked);
+      const list = STYLES.map((one) => `<button type="button" class="srow" data-pick="${one.cls}" aria-current="${one.cls === state.picked}"><span class="wrapl"><span class="look" style="${esc(looks(one))}">${esc(one.name)}</span></span><span class="meta">${one.effect ? '<span class="kind">✦ effect</span>' : ''}${Object.keys(one.states).length ? `<span class="kind" style="color:var(--heo-state)">${Object.keys(one.states).join(' ')}</span>` : ''}</span></button>`).join('');
+      const body = state.variant === 'A' ? editorA(s) : state.variant === 'B' ? editorB(s) : editorC(s);
+      return `<div class="sec">Text styles <span class="n">${STYLES.length}</span></div><div class="stylelist">${list}</div>
+        <div class="ed" data-editor="${s.cls}"><div class="gh">${esc(s.name)}<span class="x">.${s.cls}</span></div>${body}
+          <p class="hint" style="margin:0">${document.querySelectorAll('.' + s.cls).length} uses on this page follow every change.</p></div>`;
+    }
+
+    function render() {
+      writeCss();
+      const fmt = [['bold', 'Bold'], ['italic', 'Italic'], ['underline', 'Underline'], ['strike', 'Strikethrough']];
+      document.getElementById('tb').innerHTML = `${fmt.map(([i, t]) => `<button class="ib" type="button" aria-label="${t}">${icon(i)}</button>`).join('')}<button class="ib wide" type="button" aria-label="Text effects" aria-expanded="true">${icon('textFx', 14)}${icon('chevronDown', 9)}</button><span class="sep"></span><button class="ib" type="button" aria-label="Link">${icon('link')}</button><span class="sep"></span><span class="done">${icon('check', 12)} Done</span>`;
+      const q = document.activeElement?.id === 'q';
+      document.getElementById('menu').innerHTML = menu();
+      if (q) { const el = document.getElementById('q'); el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      const keep = document.activeElement?.dataset?.prop;
+      document.getElementById('dbody').innerHTML = editor();
+      if (keep) document.querySelector(`[data-prop="${keep}"]`)?.focus();
+      document.getElementById('notes').innerHTML = NOTES[state.variant].html;
+      document.getElementById('proto-label').textContent = `${state.variant} — ${NOTES[state.variant].name}`;
+    }
+
+    /* ---- Events --------------------------------------------------------------- */
+    document.addEventListener('pointerdown', (event) => { if (event.target.closest('.menu, .tb') && !event.target.closest('input')) event.preventDefault(); });
+    document.addEventListener('selectionchange', () => {
+      const sel = getSelection(); if (!sel.rangeCount) return;
+      const r = sel.getRangeAt(0);
+      if (document.getElementById('p').contains(r.commonAncestorContainer)) { state.range = r.cloneRange(); document.getElementById('menu').innerHTML = menu(); }
+    });
+    document.addEventListener('click', (event) => {
+      const b = event.target.closest('button'); if (!b) return;
+      const d = b.dataset; const s = styleBy(state.picked);
+      if (d.effect) return applyEffect(d.effect);
+      if (d.style) return applyStyle(d.style);
+      if (d.color) { state.color = d.color; return render(); }
+      if (d.tab) { state.tab = d.tab; return render(); }
+      if (d.remove !== undefined) { const c = currentWrapper(); if (c) c.replaceWith(...c.childNodes); return render(); }
+      if (d.edit) { state.picked = d.edit.split(' ')[0]; state.cond = 'base'; return render(); }
+      if (d.pick) { state.picked = d.pick; state.cond = 'base'; return render(); }
+      if (d.cond) { state.cond = d.cond; return render(); }
+      if (d.addstate !== undefined) { const next = [':hover', ':focus-visible', ':active'].find((st) => !s.states[st]); if (next) { s.states[next] = {}; state.cond = next; } return render(); }
+      if (d.alltypo !== undefined) { state.showAllTypo = true; return render(); }
+      if (d.card !== undefined) { state.card = d.card; return render(); }
+      if (d.kill) { if (state.cond === 'base') delete s.decl[d.kill]; else delete s.states[state.cond][d.kill]; return render(); }
+      if (d.recipe || d.recolor) { s.effect = d.recipe ?? s.effect; s.color = d.recolor ?? s.color; s.decl = { ...effect(s.effect).css(color(s.color)) }; return render(); }
+    });
+    document.addEventListener('change', (event) => {
+      const t = event.target; if (!t.dataset.prop) return;
+      const s = styleBy(state.picked); const p = t.dataset.prop; const v = t.value.trim();
+      const into = state.cond === 'base' ? s.decl : (s.states[state.cond] ??= {});
+      if (v) into[p] = v; else delete into[p];
+      render();
+    });
+    document.addEventListener('input', (event) => { if (event.target.id === 'q') { state.query = event.target.value; render(); } });
+    function go(step) {
+      const o = ['A', 'B', 'C'];
+      state.variant = o[(o.indexOf(state.variant) + step + 3) % 3];
+      const url = new URL(location.href); url.searchParams.set('variant', state.variant); history.replaceState(null, '', url);
+      render();
+    }
+    document.querySelectorAll('.proto-bar [data-step]').forEach((b) => b.addEventListener('click', () => go(Number(b.dataset.step))));
+    document.getElementById('theme').addEventListener('click', () => { const r = document.documentElement; r.dataset.theme = r.dataset.theme === 'dark' ? 'light' : 'dark'; });
+    addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      const a = document.activeElement;
+      if (a && a !== document.body && !a.closest('.proto-bar')) return;
+      go(event.key === 'ArrowLeft' ? -1 : 1);
+    });
+    render();
+  </script>
+</body>
+</html>

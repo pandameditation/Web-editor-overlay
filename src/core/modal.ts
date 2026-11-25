@@ -34,6 +34,24 @@ export function modalOpen(): boolean {
 }
 
 /**
+ * Whether `node` is inside the modal currently in charge, crossing shadow roots.
+ *
+ * False when no modal is open. A key's handlers use it to tell "in the dialog" from "behind
+ * it": the overlay's dialogs are shadow hosts nested in other shadow trees, so `contains` alone
+ * never sees a control rendered inside one.
+ */
+export function inTopModal(node: Node | null): boolean {
+  const top = topModal();
+  if (!top) return false;
+  for (let at: Node | null = node; at;) {
+    if (at === top) return true;
+    const root: Node = at.getRootNode();
+    at = at.parentNode ?? (root instanceof ShadowRoot ? root.host : null);
+  }
+  return false;
+}
+
+/**
  * Claim modal status, imperatively.
  *
  * `ModalController` is the right shape when a component *is* the dialog, which is

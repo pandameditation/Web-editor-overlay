@@ -20,7 +20,7 @@ import { filterPreview } from '../../core/filter.js';
 import { miniShadow } from './shadow-editor.js';
 import { pushEscapeLayer } from '../../core/keymap.js';
 import { tieLayer } from '../../core/focus.js';
-import { firstFocusable } from '../../core/modal.js';
+import { firstFocusable, inTopModal } from '../../core/modal.js';
 import './shadow-editor.js';
 import './filter-editor.js';
 import './font-picker.js';
@@ -2573,6 +2573,13 @@ export class HeoValueField extends LitElement {
         this.draft = this.value;
         return;
       }
+      /*
+       * In a modal (the class dialog), a field with nothing to revert lets Escape through, so the
+       * dialog closes. It used to take the press and blur, which put focus on the page behind the
+       * backdrop: the dialog never closed, and the next Escape closed the menus behind it.
+       */
+      const modal = inTopModal(this);
+      if (!this.open && modal && this.draft === this.value) return;
       event.preventDefault();
       event.stopPropagation();
       if (this.open) {
@@ -2581,7 +2588,8 @@ export class HeoValueField extends LitElement {
       }
       this.draft = this.value;
       this.#emit('value-input');
-      this.textInput.blur();
+      // Reverted in place inside a modal: there is nowhere behind it for focus to go.
+      if (!modal) this.textInput.blur();
       return;
     }
 
