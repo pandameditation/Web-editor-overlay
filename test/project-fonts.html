@@ -18,7 +18,11 @@
       --display-face: Fraunces;
       --text-lg: 20px;
     }
-    .kicker { font-family: var(--display-face); }
+
+    .kicker {
+      font-family: var(--display-face);
+    }
+
     .text-heading-1 {
       font-family: Georgia, serif;
       font-size: 36px;
@@ -516,7 +520,8 @@
         const closedAtFirst = Boolean(tp) && !tp.querySelector('.list');
         tp.querySelector('.slot[aria-current="true"] [data-chevron]').click();
         await settle(300);
-        const notItself = Boolean(tp) && !tp.querySelector('.frow[data-row="--brand-face"]') && Boolean(tp.querySelector('.frow[data-row="--display-face"]'));
+        // No typography token at all, itself or another: a token naming one can loop back to itself.
+        const notItself = Boolean(tp) && !tp.querySelector('.frow[data-row="--brand-face"]') && !tp.querySelector('.frow[data-row="--display-face"]');
         // A font of this machine, so it is there in any browser the suite runs in.
         const other = tp.querySelector('.frow[data-row="Georgia"] [data-font], .frow[data-row="Arial"] [data-font], .frow[data-row="system-ui"] [data-font]');
         other.click();
@@ -533,7 +538,7 @@
           aFontTokenHasTheFontField: isFont,
           itsListIsClosedAtFirst: closedAtFirst,
           itsButtonOpensThePicker: Boolean(tp),
-          withoutOfferingTheTokenItself: notItself,
+          withoutOfferingAnyTypographyToken: notItself,
           // The picked family first, the token's other fallbacks kept after it.
           pickingSetsTheToken: written.startsWith(picked) && /serif$/.test(written),
         };

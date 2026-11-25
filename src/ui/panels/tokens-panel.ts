@@ -388,6 +388,12 @@ export class HeoTokensPanel extends HeoElement {
   @state() private facet: Facet = 'all';
   @state() private newName = '';
   @state() private newValue = '';
+  /**
+   * What the new token's field shows right now: typed, or a font the picker is previewing. Kept
+   * apart from newValue, which the field is bound to: a preview fed back as the field's value
+   * became its value, so leaving the font unpicked could not put the field back.
+   */
+  @state() private newDraft = '';
 
   /*
    * Four small forms share this panel, each with its own errors: submitting one never reveals
@@ -740,6 +746,7 @@ export class HeoTokensPanel extends HeoElement {
         .value=${token.value}
         data-token-name=${token.name}
         self-token=${isFont ? token.name : ''}
+        ?no-font-tokens=${isFont}
         .kind=${isColor ? 'color' : isShadow ? 'shadow' : isFont ? 'font' : DIMENSIONAL_GROUPS.has(token.group) ? 'length' : 'text'}
         .property=${isShadow ? 'box-shadow' : isFont ? 'font-family' : ''}
         .computed=${isShadow ? token.value : ''}
@@ -752,12 +759,12 @@ export class HeoTokensPanel extends HeoElement {
         ${count ? `${count}×` : ''}
       </span>
       ${renderKill({
-      label: `Delete --${token.name}`,
-      title: count
-        ? `Used ${count} times. Deleting will fall back to each var()'s default.`
-        : `Delete --${token.name}`,
-      onClick: () => this.#removeToken(token),
-    })}
+          label: `Delete --${token.name}`,
+          title: count
+            ? `Used ${count} times. Deleting will fall back to each var()'s default.`
+            : `Delete --${token.name}`,
+          onClick: () => this.#removeToken(token),
+        })}
     </div>`;
   }
 
@@ -780,6 +787,12 @@ export class HeoTokensPanel extends HeoElement {
   }
 
   #renderCreate(): TemplateResult {
+    /*
+     * A new typography token gets the font field, as a token naming a font does once it exists:
+     * its button opens the font picker, to find, add and build the stack. While nothing is typed,
+     * or what is typed names a font; a size or a weight typed instead is plain text.
+     */
+    const newFont = this.newGroup === 'font' && (!this.newValue.trim() || namesAFont(this.newValue));
     return html`<heo-section
       heading="New token"
       glyph="plus"
@@ -832,18 +845,25 @@ export class HeoTokensPanel extends HeoElement {
         ? 'color'
         : this.newGroup === 'shadow'
           ? 'shadow'
-          : DIMENSIONAL_GROUPS.has(this.newGroup)
-            ? 'length'
-            : 'text'}
-          .property=${this.newGroup === 'shadow' ? 'box-shadow' : ''}
+          : newFont
+            ? 'font'
+            : DIMENSIONAL_GROUPS.has(this.newGroup)
+              ? 'length'
+              : 'text'}
+          .property=${this.newGroup === 'shadow' ? 'box-shadow' : newFont ? 'font-family' : ''}
+          ?no-font-tokens=${newFont}
           .shadowTokens=${this.newGroup === 'shadow' ? shadowSwatches(this.editor) : []}
           .suggestions=${[]}
           placeholder="value"
           @value-input=${(event: CustomEvent<{ value: string }>) => {
-        this.newValue = event.detail.value;
+        this.newDraft = event.detail.value;
       }}
           @value-change=${(event: CustomEvent<{ value: string }>) => {
         this.newValue = event.detail.value;
+        this.newDraft = event.detail.value;
+      }}
+          @value-revert=${() => {
+        this.newDraft = this.newValue;
       }}
         ></heo-value-field>
         ${this.tokenForm.error('token-value')}
@@ -900,11 +920,11 @@ export class HeoTokensPanel extends HeoElement {
         placeholder="find or create a text style"
         .value=${this.textStyleDraft}
         @value-input=${(event: CustomEvent<{ value: string }>) => {
-          this.textStyleDraft = event.detail.value;
-        }}
+        this.textStyleDraft = event.detail.value;
+      }}
         @value-change=${(event: CustomEvent<{ value: string }>) => {
-          this.textStyleDraft = event.detail.value;
-        }}
+        this.textStyleDraft = event.detail.value;
+      }}
         @value-submit=${(event: CustomEvent<{ value: string }>) => this.#createTextStyle(event.detail.value)}
       ></heo-value-field>
       ${styles.length
@@ -914,36 +934,36 @@ export class HeoTokensPanel extends HeoElement {
               role="listitem"
               data-text-style-slot=${one.entry.name}
               @dragover=${(event: DragEvent) => {
-                if (this.#styleDragFrom === null) return;
-                event.preventDefault();
-                (event.currentTarget as HTMLElement).classList.add('over');
-              }}
+            if (this.#styleDragFrom === null) return;
+            event.preventDefault();
+            (event.currentTarget as HTMLElement).classList.add('over');
+          }}
               @dragleave=${(event: DragEvent) => (event.currentTarget as HTMLElement).classList.remove('over')}
               @drop=${(event: DragEvent) => {
-                (event.currentTarget as HTMLElement).classList.remove('over');
-                const from = this.#styleDragFrom;
-                this.#styleDragFrom = null;
-                if (from === null || from === index) return;
-                event.preventDefault();
-                this.#moveTextStyle(from, index);
-              }}
+            (event.currentTarget as HTMLElement).classList.remove('over');
+            const from = this.#styleDragFrom;
+            this.#styleDragFrom = null;
+            if (from === null || from === index) return;
+            event.preventDefault();
+            this.#moveTextStyle(from, index);
+          }}
             >
               ${movable
-                ? html`<span
+            ? html`<span
                     class="grip"
                     draggable="true"
                     title="Drag to reorder. The Styles panel lists them in this order."
                     aria-hidden="true"
                     @dragstart=${(event: DragEvent) => {
-                      this.#styleDragFrom = index;
-                      event.dataTransfer?.setData('text/plain', `text-style:${one.entry.name}`);
-                      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
-                    }}
+                this.#styleDragFrom = index;
+                event.dataTransfer?.setData('text/plain', `text-style:${one.entry.name}`);
+                if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+              }}
                     @dragend=${() => {
-                      this.#styleDragFrom = null;
-                    }}
+                this.#styleDragFrom = null;
+              }}
                   >${icon('grip', 12)}</span>`
-                : html`<span></span>`}
+            : html`<span></span>`}
               <button
                 class="tstyle"
                 type="button"
@@ -952,17 +972,17 @@ export class HeoTokensPanel extends HeoElement {
                 aria-keyshortcuts=${movable ? 'Alt+ArrowUp Alt+ArrowDown' : nothing}
                 title=${movable ? `Edit ${one.name}. Alt and an arrow move it.` : `Edit ${one.name}`}
                 @click=${() => {
-                  this.textStyle = picked?.entry.name === one.entry.name ? null : one.entry.name;
-                }}
+            this.textStyle = picked?.entry.name === one.entry.name ? null : one.entry.name;
+          }}
                 @keydown=${(event: KeyboardEvent) => {
-                  if (!movable || !event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
-                  event.preventDefault();
-                  const to = Math.max(0, Math.min(styles.length - 1, index + (event.key === 'ArrowUp' ? -1 : 1)));
-                  if (to === index) return;
-                  this.#moveTextStyle(index, to);
-                  void this.updateComplete.then(() =>
-                    this.renderRoot.querySelector<HTMLElement>(`[data-text-style="${CSS.escape(one.entry.name)}"]`)?.focus());
-                }}
+            if (!movable || !event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return;
+            event.preventDefault();
+            const to = Math.max(0, Math.min(styles.length - 1, index + (event.key === 'ArrowUp' ? -1 : 1)));
+            if (to === index) return;
+            this.#moveTextStyle(index, to);
+            void this.updateComplete.then(() =>
+              this.renderRoot.querySelector<HTMLElement>(`[data-text-style="${CSS.escape(one.entry.name)}"]`)?.focus());
+          }}
               >
                 <span class="p" style=${look(textStyleDeclarations(one.entry))}>${one.name}</span>
                 <span class="m">.${one.entry.name} · ${one.used}×</span>
@@ -971,11 +991,11 @@ export class HeoTokensPanel extends HeoElement {
           </div>`
         : draft
           ? this.#renderCreateOffer(
-              this.textStyleDraft,
-              createTextStyleLabel(this.textStyleDraft),
-              CREATE_TEXT_STYLE_TITLE,
-              () => this.#createTextStyle(this.textStyleDraft),
-            )
+            this.textStyleDraft,
+            createTextStyleLabel(this.textStyleDraft),
+            CREATE_TEXT_STYLE_TITLE,
+            () => this.#createTextStyle(this.textStyleDraft),
+          )
           : html`<p class="hint" style="margin:0">No text styles yet. Create one above, or style a text in Styles and save it from Typography.</p>`}
       ${picked ? this.#renderTextStyleEditor(picked.entry, picked.name, picked.used) : nothing}
     </heo-section>`;
@@ -1022,29 +1042,29 @@ export class HeoTokensPanel extends HeoElement {
         placeholder="find a font, or add one from Google…"
         .value=${this.fontDraft}
         @value-input=${(event: CustomEvent<{ value: string }>) => {
-          this.fontDraft = event.detail.value;
-        }}
+        this.fontDraft = event.detail.value;
+      }}
         @value-change=${(event: CustomEvent<{ value: string }>) => {
-          this.fontDraft = event.detail.value;
-        }}
+        this.fontDraft = event.detail.value;
+      }}
         @value-submit=${(event: CustomEvent<{ value: string }>) => {
-          const font = catalogueFont(event.detail.value) ?? addable[0];
-          if (font && !engine.fonts.has(font.name)) this.fontEditing = { family: font.name, mode: 'add' };
-        }}
+        const font = catalogueFont(event.detail.value) ?? addable[0];
+        if (font && !engine.fonts.has(font.name)) this.fontEditing = { family: font.name, mode: 'add' };
+      }}
       ></heo-value-field>
       ${this.fontEditing?.mode === 'add' ? this.#renderFontEditor(this.fontEditing.family, 'add') : nothing}
       ${addable.length && !this.fontEditing
         ? html`<div class="empty create" data-create-offer>
             ${shown.length ? nothing : html`<p>Nothing in the page matches <strong>${typed}</strong>.</p>`}
             ${addable.map((font) => html`<button class="btn sm" type="button" data-font-add=${font.name} title="Add it to the page: its files are kept with it" @click=${() => {
-              this.fontEditing = { family: font.name, mode: 'add' };
-            }}>${icon('plus', 12)} Add "${font.name}"</button>`)}
+          this.fontEditing = { family: font.name, mode: 'add' };
+        }}>${icon('plus', 12)} Add "${font.name}"</button>`)}
           </div>`
         : nothing}
       ${shown.map((font) => {
-        const open = this.openFont === font.family;
-        const users = open ? engine.fontUsers(font.family) : [];
-        return html`<div class="cls" data-project-font=${font.family}>
+          const open = this.openFont === font.family;
+          const users = open ? engine.fontUsers(font.family) : [];
+          return html`<div class="cls" data-project-font=${font.family}>
           ${renderCardHeader({
             name: font.family,
             plain: true,
@@ -1057,7 +1077,7 @@ export class HeoTokensPanel extends HeoElement {
             },
           })}
           ${open
-            ? html`<div class="font-body">
+              ? html`<div class="font-body">
                 <div class="faces">
                   ${font.faces.map((face) => html`<div class="face">
                     <span class="fs" style=${`font-family:"${font.family}";font-style:${face.fontStyle}`}>${styleLabel(face.style)} <span class="hint">${face.subset}</span></span>
@@ -1069,17 +1089,17 @@ export class HeoTokensPanel extends HeoElement {
                   ? this.#renderFontEditor(font.family, 'edit')
                   : html`<div class="apply">
                       <button class="btn sm" type="button" data-font-edit=${font.family} @click=${() => {
-                        this.fontEditing = { family: font.family, mode: 'edit' };
-                      }}>${icon('sliders', 12)} Edit font</button>
+                      this.fontEditing = { family: font.family, mode: 'edit' };
+                    }}>${icon('sliders', 12)} Edit font</button>
                       <button class="btn sm danger" type="button" data-font-delete=${font.family} @click=${() => {
-                        engine.removeProjectFont(font.family);
-                        this.openFont = null;
-                      }}>${icon('trash', 12)} Remove</button>
+                      engine.removeProjectFont(font.family);
+                      this.openFont = null;
+                    }}>${icon('trash', 12)} Remove</button>
                     </div>`}
               </div>`
-            : nothing}
+              : nothing}
         </div>`;
-      })}
+        })}
       ${own.map((name) => html`<div class="cls" data-page-font=${name}>
         <header class="card-head" style="cursor:default">
           <span class="n plain" style=${`font-family:"${name}"`}>${name}</span>
@@ -1179,9 +1199,9 @@ export class HeoTokensPanel extends HeoElement {
           action-hidden
           chevron-hidden
           @value-change=${(event: CustomEvent<{ value: string }>) => {
-            const next = event.detail.value.trim();
-            if (next && next !== name) engine.setClassDeclaration(entry.name, TEXT_STYLE_MARKER, textStyleMarker(next), undefined, `Rename text style to ${next}`);
-          }}
+        const next = event.detail.value.trim();
+        if (next && next !== name) engine.setClassDeclaration(entry.name, TEXT_STYLE_MARKER, textStyleMarker(next), undefined, `Rename text style to ${next}`);
+      }}
         ></heo-value-field>
         <span></span>
       </div>
@@ -1208,8 +1228,8 @@ export class HeoTokensPanel extends HeoElement {
                 .suggestions=${buildSuggestions(engine, row.property, null)}
                 .shadowTokens=${row.property === 'text-shadow' ? shadowSwatches(engine) : []}
                 @value-input=${(event: CustomEvent<{ value: string }>) => {
-                  if (event.detail.value.trim()) engine.previewClassDeclaration(entry.name, row.property, event.detail.value);
-                }}
+                if (event.detail.value.trim()) engine.previewClassDeclaration(entry.name, row.property, event.detail.value);
+              }}
                 @value-revert=${() => engine.cancelPreview()}
                 @value-change=${(event: CustomEvent<{ value: string }>) => write(row.property, event.detail.value)}
               ></heo-value-field>`}
@@ -1239,9 +1259,9 @@ export class HeoTokensPanel extends HeoElement {
         data-text-style-delete
         title=${used ? `Delete ${name}: ${used === 1 ? 'the element using it loses it' : `the ${used} elements using it lose it`}` : `Delete ${name}`}
         @click=${() => {
-          engine.removeClass(entry.name);
-          this.textStyle = null;
-        }}
+        engine.removeClass(entry.name);
+        this.textStyle = null;
+      }}
       >
         ${icon('trash', 12)} Delete
       </button>
@@ -1312,19 +1332,19 @@ export class HeoTokensPanel extends HeoElement {
       </button>
       ${classes.length === 0 && localQuery && !this.editor.classes.get(normalizeClassName(localQuery) ?? '')
         ? this.#renderCreateOffer(localQuery, createClassLabel(normalizeClassName(localQuery) || localQuery), CREATE_DESIGN_CLASS_TITLE, () => {
-            if (this.classForm.submit()) this.#createClass(this.classDraft);
-          })
+          if (this.classForm.submit()) this.#createClass(this.classDraft);
+        })
         : classes.length === 0
-        ? html`<p class="hint" style="margin:0 0 8px">
+          ? html`<p class="hint" style="margin:0 0 8px">
             ${globalClasses.length || localQuery
-            ? 'No reusable classes match the current filters.'
-            : "No classes yet. Extract one from an element's inline styles, or create one above and add its properties by hand."}
+              ? 'No reusable classes match the current filters.'
+              : "No classes yet. Extract one from an element's inline styles, or create one above and add its properties by hand."}
           </p>`
-        : repeat(
-          classes,
-          (entry) => entry.name,
-          (entry) => this.#renderClass(entry, usage.get(entry.name) ?? 0, el),
-        )}
+          : repeat(
+            classes,
+            (entry) => entry.name,
+            (entry) => this.#renderClass(entry, usage.get(entry.name) ?? 0, el),
+          )}
     </heo-section>`;
   }
 
@@ -1413,17 +1433,17 @@ export class HeoTokensPanel extends HeoElement {
       ${this.#renderRuleComposer(el)}
       ${rules.length === 0 && localQuery
         ? this.#renderCreateOffer(localQuery, createRuleLabel(localQuery), CREATE_RULE_TITLE, () => {
-            if (this.ruleForm.submit()) this.#createRule(this.ruleDraft);
-          })
+          if (this.ruleForm.submit()) this.#createRule(this.ruleDraft);
+        })
         : rules.length === 0
-        ? html`<p class="hint" style="margin:10px 0 0">
+          ? html`<p class="hint" style="margin:10px 0 0">
             ${globalRules.length || localQuery
-            ? 'No CSS rules match the current filters.'
-            : html`A rule styles everything its selector matches, so it reaches what selecting a
+              ? 'No CSS rules match the current filters.'
+              : html`A rule styles everything its selector matches, so it reaches what selecting a
                   single element cannot: every heading at once, a link on hover, a list marker.
                   Tokens and classes still apply — a rule can use both.`}
           </p>`
-        : html`
+          : html`
             <!--
               What the list is made of, before it is scrolled. The two halves behave
               differently — a page rule is edited in the file it came from and cannot be
@@ -1431,24 +1451,24 @@ export class HeoTokensPanel extends HeoElement {
             -->
             <p class="hint" style="margin:10px 0 8px">
               ${fromPage
-            ? html`${fromPage} read from this page's stylesheets${authored
-              ? html`, ${authored} written here (marked
+              ? html`${fromPage} read from this page's stylesheets${authored
+                ? html`, ${authored} written here (marked
                       <span class="legend-dot"></span>)`
-              : ''}.
+                : ''}.
                   Editing a page rule changes it in the file it came from; only the ones
                   written here are deleted from here.`
-            : html`${authored} written in this session.`}
+              : html`${authored} written in this session.`}
               ${this.editor.rules.truncated
-            ? html`<br />This page has more rules than are listed — the scan stops once
+              ? html`<br />This page has more rules than are listed — the scan stops once
                   the list would stop being usable.`
-            : nothing}
+              : nothing}
             </p>
             <div>
               ${repeat(
-              rules,
-              (entry) => designRuleKey(entry),
-              (entry) => this.#renderRule(entry, matches.get(designRuleKey(entry)) ?? 0, el),
-            )}
+                rules,
+                (entry) => designRuleKey(entry),
+                (entry) => this.#renderRule(entry, matches.get(designRuleKey(entry)) ?? 0, el),
+              )}
             </div>
           `}
     </heo-section>`;
@@ -1704,14 +1724,14 @@ export class HeoTokensPanel extends HeoElement {
     } else if (this.editor.tokens.get(name)) {
       issues.push({ field: 'token-name', message: `--${name} already exists. Choose another name, or edit it in the list.` });
     }
-    if (!this.newValue.trim()) issues.push({ field: 'token-value', message: 'Give the token a value.' });
+    if (!this.newDraft.trim()) issues.push({ field: 'token-value', message: 'Give the token a value.' });
     return issues;
   }
 
   #createToken(): void {
     if (!this.tokenForm.submit()) return;
     const name = this.newName.trim().replace(/^--/, '');
-    const value = this.newValue.trim();
+    const value = this.newDraft.trim();
     const token: DesignToken = {
       name,
       value,
@@ -1737,6 +1757,9 @@ export class HeoTokensPanel extends HeoElement {
     });
     this.newName = '';
     this.newValue = '';
+    this.newDraft = '';
+    // Emptied by hand: a value typed and never committed is not in the binding, which stays ''.
+    this.renderRoot.querySelector<HTMLElement & { reset?: (next?: string) => void }>('.create heo-value-field')?.reset?.('');
     this.editor.notify(`Added --${name}.`, 'success');
   }
 

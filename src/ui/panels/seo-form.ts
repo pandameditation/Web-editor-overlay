@@ -17,6 +17,7 @@ import { HeoElement } from '../context.js';
 import { icon } from '../icons.js';
 import { baseStyles } from '../theme.js';
 import '../controls/section.js';
+import '../controls/value-field.js';
 
 /**
  * The document head, as a form with the previews its values are for.
@@ -228,20 +229,6 @@ export class HeoSeoForm extends HeoElement {
         resize: vertical;
         line-height: 1.5;
       }
-      .swatchrow {
-        display: grid;
-        grid-template-columns: 1fr 28px;
-        gap: 5px;
-      }
-      .swatchrow input[type='color'] {
-        width: 28px;
-        height: 28px;
-        padding: 0;
-        border: 1px solid var(--heo-line);
-        border-radius: var(--heo-r-sm);
-        background: none;
-        cursor: pointer;
-      }
       .hint {
         margin: 0;
       }
@@ -399,25 +386,25 @@ export class HeoSeoForm extends HeoElement {
       ></textarea>`;
     }
 
+    /*
+     * The editor's colour field: its swatch opens the same colour picker as everywhere else. No
+     * tokens are offered, since a meta tag is read by the browser chrome, which cannot resolve a
+     * var(), and the value is written as the picker gives it.
+     */
     if (field.kind === 'color') {
-      return html`<div class="swatchrow">
-        <input
-          class="input mono"
-          type="text"
-          placeholder="#0b1220"
-          aria-label=${field.label}
-          .value=${value}
-          @input=${onInput}
-          @blur=${(event: Event) => commit((event.target as HTMLInputElement).value)}
-          @keydown=${(event: KeyboardEvent) => this.#onKeyDown(event, field)}
-        />
-        <input
-          type="color"
-          aria-label=${`${field.label} picker`}
-          .value=${/^#[0-9a-f]{6}$/i.test(value) ? value : '#000000'}
-          @change=${(event: Event) => commit((event.target as HTMLInputElement).value)}
-        />
-      </div>`;
+      return html`<heo-value-field
+        data-head-field=${field.id}
+        field-label=${field.label}
+        kind="color"
+        property="color"
+        placeholder="#0b1220"
+        .value=${value}
+        .suggestions=${[]}
+        @value-input=${(event: CustomEvent<{ value: string }>) => {
+        this.drafts = { ...this.drafts, [field.id]: event.detail.value };
+      }}
+        @value-change=${(event: CustomEvent<{ value: string }>) => commit(event.detail.value)}
+      ></heo-value-field>`;
     }
 
     return html`<input

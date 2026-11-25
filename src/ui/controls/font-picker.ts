@@ -365,9 +365,17 @@ export class HeoFontPicker extends LitElement {
         cursor: pointer;
       }
       .font:hover,
-      .font:focus-visible {
+      .font:focus-visible,
+      .font[data-active='true'] {
         background: var(--heo-hover);
         outline: none;
+      }
+      /* The highlighted row, which the field's arrows move: its action shows as on a hover. */
+      .frow.active .fact {
+        display: inline-flex;
+      }
+      .frow.active:has(.fact) .tag {
+        visibility: hidden;
       }
       .font[aria-current='true'] {
         border-color: var(--heo-accent-line);
@@ -477,7 +485,12 @@ export class HeoFontPicker extends LitElement {
    * Typography): left out of the tokens offered, since a token cannot be its own font.
    */
   @property({ type: String }) selfToken = '';
-  /** The page's font tokens' families, offered with its `@font-face` ones. */
+  /**
+   * No typography tokens offered: for a token's own value (Tokens › Typography). A token naming
+   * another is a reference that can loop back to itself, and a `var()` value is not a font stack
+   * to the field holding it, which then stopped being a font field with its picker open.
+   */
+  @property({ type: Boolean }) noTokens = false;
 
   @state() private query = '';
   @state() private web = (() => {
@@ -588,6 +601,8 @@ export class HeoFontPicker extends LitElement {
   }
 
   #closeList(): void {
+    this.active = -1;
+    this.activeByKey = false;
     this.#preview(null);
     this.listOpen = false;
   }
@@ -643,7 +658,7 @@ export class HeoFontPicker extends LitElement {
 
   #choices(): Array<{ group: string; items: Choice[] }> {
     // The tokens by content, not by registry revision: a preview bumps that on every hover.
-    const key = `${this.query}|${this.web}|${fontTokens().map((one) => `${one.name}=${one.value}`).join(';')}|${this.fontsRevision}`;
+    const key = `${this.query}|${this.web}|${this.noTokens}|${fontTokens().map((one) => `${one.name}=${one.value}`).join(';')}|${this.fontsRevision}`;
     if (key === this.#listKey) return this.#list;
     this.#listKey = key;
     this.#list = this.#readChoices();
@@ -676,7 +691,7 @@ export class HeoFontPicker extends LitElement {
       .map((name): Choice => ({ name, tag: sources.get(name) ?? 'Your stylesheet', pickable: true }));
     const page = take([...carried, ...own]);
     // Every typography token that names a font, as its own row: picking one writes `var(--…)`.
-    const tokens = fontTokens()
+    const tokens = (this.noTokens ? [] : fontTokens())
       .filter((one) => one.name !== this.selfToken)
       .filter((one) => match(one.name) || match(one.value))
       .map((one): Choice => ({ name: `--${one.name}`, tag: parseFamilies(one.value)[0] ?? '', face: one.value, token: `var(--${one.name})`, pickable: true }));
@@ -723,6 +738,64 @@ export class HeoFontPicker extends LitElement {
   @state() private listOpen = false;
   /** Sections folded away, by name. */
   @state() private collapsed = new Set<string>();
+  /**
+   * The highlighted row of the open list, as an index into `#rows()`, or -1. The focus stays in the
+   * slot's field, as a combobox's does: the arrows move this, the pointer moves it too, and Enter
+   * picks it. The rows used to take the focus themselves, so each arrow press was a blur and a
+   * focus with a preview on each, and a press on a row moved the focus before its click landed.
+   */
+  @state() private active = -1;
+  /**
+   * Whether the arrows put the highlight where it is. Only then is it shown in the field and taken
+   * by Escape: a pointer left resting over the list is not a choice.
+   */
+  @state() private activeByKey = false;
+
+  /** The rows the open list draws, in order: what the highlight indexes. */
+  #rows(): Choice[] {
+    return this.#visibleGroups()
+      .filter((group) => !this.collapsed.has(group.group))
+      .flatMap((group) => group.items);
+  }
+
+  #setActive(index: number, byKey: boolean): void {
+    const rows = this.#rows();
+    const choice = rows[index];
+    this.active = choice ? index : -1;
+    this.activeByKey = Boolean(choice) && byKey;
+    if (choice) this.#preview(choice);
+    else this.#preview(null);
+    if (byKey) this.#scrollToActive = true;
+  }
+
+  /** Bring the highlighted row into the list's view once it has rendered. */
+  #scrollToActive = false;
+
+  /** The arrows in the slot's field: through the list, opening it first. */
+  #arrow(direction: 1 | -1): void {
+    const rows = this.#rows();
+    if (!this.listOpen) {
+      // Opened by the keyboard, it starts on what the slot holds, so a look round can end where it began.
+      this.listOpen = true;
+      const current = (this.#slots[this.sel] ?? '').toLowerCase();
+      const at = rows.findIndex((one) => this.#valueOf(one).toLowerCase() === current);
+      this.#setActive(at >= 0 ? at : 0, true);
+      return;
+    }
+    if (!rows.length) return;
+    const next = this.active < 0 ? (direction > 0 ? 0 : rows.length - 1) : this.active + direction;
+    // Up past the first row goes back to what was typed, as an autocomplete does.
+    if (next < 0 || next >= rows.length) {
+      if (next < 0) this.#setActive(-1, true);
+      return;
+    }
+    this.#setActive(next, true);
+  }
+
+  /** The highlighted row, if there is one. */
+  get #activeChoice(): Choice | undefined {
+    return this.active >= 0 ? this.#rows()[this.active] : undefined;
+  }
 
   get #slots(): string[] {
     const slots = [...this.#families];
@@ -815,11 +888,17 @@ export class HeoFontPicker extends LitElement {
    * also "enters" under a pointer that is standing still when the list moves, and that is no
    * choice of the user's.
    */
-  #hover(event: PointerEvent, choice: Choice): void {
+  #hover(event: PointerEvent, choice: Choice, index: number): void {
     const at = { x: event.clientX, y: event.clientY };
     const moved = !this.#pointer || this.#pointer.x !== at.x || this.#pointer.y !== at.y;
     this.#pointer = at;
-    if (moved) this.#preview(choice);
+    if (!moved) return;
+    // The highlight follows the pointer too, so there is only ever one row lit.
+    if (this.active !== index || this.activeByKey) {
+      this.active = index;
+      this.activeByKey = false;
+    }
+    this.#preview(choice);
   }
 
   #pick(choice: Choice): void {
@@ -838,6 +917,8 @@ export class HeoFontPicker extends LitElement {
     this.pending = null;
     this.query = '';
     this.listOpen = false;
+    this.active = -1;
+    this.activeByKey = false;
     this.#setChain(parseFamilies(stack));
   }
 
@@ -851,6 +932,8 @@ export class HeoFontPicker extends LitElement {
     this.sel = index;
     this.query = '';
     this.listOpen = open;
+    this.active = -1;
+    this.activeByKey = false;
     // The slot is shown on the element at once, list open or not.
     this.#preview(null);
     this.#focusField();
@@ -871,6 +954,8 @@ export class HeoFontPicker extends LitElement {
     this.sel = at;
     this.query = '';
     this.listOpen = true;
+    this.active = -1;
+    this.activeByKey = false;
     void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLInputElement>(`.slot[data-at="${at}"] input`)?.focus());
   }
 
@@ -886,10 +971,22 @@ export class HeoFontPicker extends LitElement {
     this.#setChain(families);
   }
 
-  /** Enter in a slot: the first match that can be picked, or what was typed as a family name. */
+  /**
+   * Enter in a slot: the highlighted row; failing that the first match that can be picked, or what
+   * was typed as a family name. With nothing typed or highlighted, the list just closes.
+   */
   #submitTyped(): void {
+    // A row lit only because the pointer is resting on it is not what Enter meant.
+    const chosen = this.listOpen && (this.activeByKey || this.query.trim()) ? this.#activeChoice : undefined;
+    if (chosen) {
+      this.#pick(chosen);
+      return;
+    }
     const typed = this.query.trim().replace(/^(['"])(.*)\1$/, '$2').trim();
-    if (!typed) return;
+    if (!typed) {
+      if (this.listOpen) this.#closeList();
+      return;
+    }
     const first = this.#visibleGroups().flatMap((group) => group.items).find((one) => one.pickable);
     if (first) this.#pick(first);
     else this.#put(this.#withSlot(typed));
@@ -912,6 +1009,8 @@ export class HeoFontPicker extends LitElement {
     this.sel = 0;
     this.pending = null;
     this.listOpen = false;
+    this.active = -1;
+    this.activeByKey = false;
     void this.updateComplete.then(() => {
       const target = name
         ? this.renderRoot.querySelector<HTMLElement>('.tokenbar button')
@@ -974,6 +1073,23 @@ export class HeoFontPicker extends LitElement {
   override updated(): void {
     this.#loadWebNames();
     this.#showList();
+    if (this.#scrollToActive) {
+      this.#scrollToActive = false;
+      /*
+       * By hand, inside the list only: scrollIntoView on a row also scrolled the panel the dialog
+       * sits in, which moved the field the list hangs from.
+       */
+      const list = this.renderRoot.querySelector<HTMLElement>('.list');
+      const row = list?.querySelector<HTMLElement>(`[data-index="${this.active}"]`);
+      if (list && row) {
+        // From the boxes: the row's offset parent is its own wrapper, not the list.
+        const top = row.getBoundingClientRect().top - list.getBoundingClientRect().top - list.clientTop + list.scrollTop;
+        const height = row.offsetHeight;
+        const pad = 4;
+        if (top - pad < list.scrollTop) list.scrollTop = Math.max(0, top - pad);
+        else if (top + height + pad > list.scrollTop + list.clientHeight) list.scrollTop = top + height + pad - list.clientHeight;
+      } else if (list && this.active < 0) list.scrollTop = 0;
+    }
     if (!this.#hovered?.startsWith('row:')) this.#preview(null);
     if (this.#refocus === null) return;
     const at = this.#refocus;
@@ -1034,20 +1150,20 @@ export class HeoFontPicker extends LitElement {
     return html`
       ${this.tokenEdit && !this.draft
         ? html`<div class="tokenbar" data-token-edit=${this.tokenEdit} @keydown=${(event: KeyboardEvent) => {
-            if (event.key !== 'Escape') return;
-            event.stopPropagation();
-            event.preventDefault();
-            this.#editToken(null);
-          }}>
+          if (event.key !== 'Escape') return;
+          event.stopPropagation();
+          event.preventDefault();
+          this.#editToken(null);
+        }}>
             <span class="what">Font of <code>--${this.tokenEdit}</code>, for every element that uses it</span>
             <button class="btn sm" type="button" @click=${() => this.#editToken(null)}>Done</button>
           </div>`
         : nothing}
  ${this.listOpen && !this.draft
         ? html`<div class="scrim" aria-hidden="true" @pointerdown=${(event: Event) => {
-            event.preventDefault();
-            this.#closeList();
-          }}></div>${this.#renderList(this.#slots[this.sel] ?? '')}`
+          event.preventDefault();
+          this.#closeList();
+        }}></div>${this.#renderList(this.#slots[this.sel] ?? '')}`
         : nothing}
       <div class="slots" role="list" aria-label="The font, then its fallbacks, in order" ?hidden=${Boolean(this.draft)}>
         ${(slots.length ? slots : ['']).map((one, at) => this.#renderSlot(one, at, slots.length))}
@@ -1060,17 +1176,17 @@ export class HeoFontPicker extends LitElement {
             .family=${this.draft.family}
             .mode=${this.draft.mode}
             @font-editor-close=${(event: Event) => {
-              event.stopPropagation();
-              this.#closeDraft();
-            }}
+            event.stopPropagation();
+            this.#closeDraft();
+          }}
             @font-editor-done=${(event: CustomEvent<{ family: string; mode: 'add' | 'edit' }>) => {
-              event.stopPropagation();
-              this.draft = null;
-              this.#hovered = null;
-              // "Add and use": once it is in the page, it is what the selected slot holds.
-              if (event.detail.mode !== 'add') return;
-              this.#put(this.#withSlot(event.detail.family, catalogueFont(event.detail.family)));
-            }}
+            event.stopPropagation();
+            this.draft = null;
+            this.#hovered = null;
+            // "Add and use": once it is in the page, it is what the selected slot holds.
+            if (event.detail.mode !== 'add') return;
+            this.#put(this.#withSlot(event.detail.family, catalogueFont(event.detail.family)));
+          }}
           ></heo-font-editor>`
         : nothing}
     `;
@@ -1110,56 +1226,31 @@ export class HeoFontPicker extends LitElement {
         >${movable ? icon('grip', 10) : nothing}</span>
         <div class="slotbody">
           <div class=${selected ? 'vf on' : 'vf'} @pointerdown=${(event: PointerEvent) => {
-            /*
-             * On the press, not the click: a slot not yet selected is replaced by its field as it
-             * takes the focus, and the click that should have opened its list then landed on an
-             * element that was gone — it opened on the second click.
-             */
-            if (event.button !== 0 || (event.composedPath()[0] as HTMLElement).closest?.('[data-chevron]')) return;
-            if (this.sel !== at) this.#select(at, true);
-            else if (!this.listOpen) this.listOpen = true;
-          }} @click=${(event: MouseEvent) => {
-            // Enter or Space on a slot (a click with no press before it) opens it the same way.
-            if ((event.composedPath()[0] as HTMLElement).closest?.('[data-chevron]')) return;
-            if (this.sel !== at) this.#select(at, true);
-            else if (!this.listOpen) this.listOpen = true;
-          }}>
+        /*
+         * On the press, not the click: a slot not yet selected is replaced by its field as it
+         * takes the focus, and the click that should have opened its list then landed on an
+         * element that was gone — it opened on the second click.
+         */
+        if (event.button !== 0 || (event.composedPath()[0] as HTMLElement).closest?.('[data-chevron]')) return;
+        if (this.sel !== at) this.#select(at, true);
+        else if (!this.listOpen) this.listOpen = true;
+      }} @click=${(event: MouseEvent) => {
+        // Enter or Space on a slot (a click with no press before it) opens it the same way.
+        if ((event.composedPath()[0] as HTMLElement).closest?.('[data-chevron]')) return;
+        if (this.sel !== at) this.#select(at, true);
+        else if (!this.listOpen) this.listOpen = true;
+      }}>
             ${selected
-              ? html`<input
-                  @focus=${() => {
-                    if (this.#byTab() && !this.listOpen) this.listOpen = true;
-                  }}
-                  type="text"
-                  aria-label=${`${role}: search fonts, or type a family`}
-                  placeholder=${label || (at ? 'type or pick a fallback' : 'type or pick a font')}
-                  style=${`font-family:${face.replace(/[;{}<>]/g, '')}`}
-                  .value=${this.query}
-                  @input=${(event: Event) => {
-                    this.query = (event.target as HTMLInputElement).value;
-                    this.listOpen = true;
-                  }}
-                  @keydown=${(event: KeyboardEvent) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      this.#submitTyped();
-                    } else if (event.key === 'Escape') {
-                      this.#listEscape(event);
-                    } else if (event.key === 'ArrowDown') {
-                      event.preventDefault();
-                      this.listOpen = true;
-                      void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>('.list [data-font]')?.focus());
-                    }
-                  }}
-                />`
-              : html`<button
+        ? this.#renderSlotInput(label, role, face, at)
+        : html`<button
                   class="v"
                   type="button"
                   style=${`font-family:${face.replace(/[;{}<>]/g, '')}`}
                   title=${`${role}: change it`}
                   @focus=${() => {
-                    // Tabbed to, the list opens as it would for a click; focused by the editor, it does not.
-                    if (this.sel !== at) this.#select(at, this.#byTab());
-                  }}
+            // Tabbed to, the list opens as it would for a click; focused by the editor, it does not.
+            if (this.sel !== at) this.#select(at, this.#byTab());
+          }}
                 >${label || (at ? 'type or pick a fallback' : 'type or pick a font')}</button>`}
             <span class="role">${role}</span>
             <button
@@ -1169,52 +1260,64 @@ export class HeoFontPicker extends LitElement {
               aria-label=${`Show the fonts for ${role.toLowerCase()}`}
               aria-expanded=${selected && this.listOpen ? 'true' : 'false'}
               @click=${(event: Event) => {
-                event.stopPropagation();
-                if (!selected) this.#select(at);
-                else {
-                  this.listOpen = !this.listOpen;
-                  this.#focusField();
-                }
-              }}
+        event.stopPropagation();
+        if (!selected) this.#select(at);
+        else {
+          this.listOpen = !this.listOpen;
+          this.#focusField();
+        }
+      }}
             >${icon('chevronDown', 11)}</button>
           </div>
 
         </div>
         ${at > 0
-          ? html`<span class="x">${renderKill({ label: `Remove ${label || 'this fallback'}`, tight: true, onClick: () => this.#removeSlot(at) })}</span>`
-          : html`<span></span>`}
+        ? html`<span class="x">${renderKill({ label: `Remove ${label || 'this fallback'}`, tight: true, onClick: () => this.#removeSlot(at) })}</span>`
+        : html`<span></span>`}
       </div>`;
   }
 
   #renderList(current: string): TemplateResult {
     const groups = this.#visibleGroups();
     const value = current.toLowerCase();
+    // Each row's place in #rows(), counted over the open sections only, as the highlight is.
+    let index = 0;
     return html`<div
       class="list"
       popover="manual"
       role="listbox"
+      id="heo-font-list"
       aria-label="Fonts"
-      @pointerleave=${() => this.#preview(null)}
+      @pointerleave=${() => {
+        // A highlight the arrows put there stays: only the pointer's own goes with the pointer.
+        if (this.activeByKey) return;
+        this.active = -1;
+        this.#preview(null);
+      }}
       @keydown=${(event: KeyboardEvent) => this.#listEscape(event)}
     >
       ${groups.map((group) => {
         const open = !this.collapsed.has(group.group);
+        const first = index;
+        if (open) index += group.items.length;
         return html`<button
             class="group"
             type="button"
             data-group=${group.group}
             aria-expanded=${open ? 'true' : 'false'}
             @click=${() => {
-              const next = new Set(this.collapsed);
-              if (open) next.add(group.group);
-              else next.delete(group.group);
-              this.collapsed = next;
-            }}
+            const next = new Set(this.collapsed);
+            if (open) next.add(group.group);
+            else next.delete(group.group);
+            this.collapsed = next;
+            this.active = -1;
+            this.activeByKey = false;
+          }}
           ><span class="tw" aria-hidden="true">${icon('chevronDown', 9)}</span>${group.group}<span class="n">${group.items.length}</span></button>
           ${open && group.group === 'Google Fonts'
             ? html`<p class="gnote">Previewed from Google. Adding one keeps its files with the page, so visitors never ask Google for it.</p>`
             : nothing}
-          ${open ? group.items.map((choice) => this.#renderRow(choice, value)) : nothing}`;
+          ${open ? group.items.map((choice, at) => this.#renderRow(choice, value, first + at)) : nothing}`;
       })}
       ${!groups.length ? html`<p class="note">No font matches “${this.query}”. Enter uses it as typed.</p>` : nothing}
       ${this.web
@@ -1223,34 +1326,38 @@ export class HeoFontPicker extends LitElement {
           <div class="webask">
             <p class="gnote">Google fonts can be previewed here. Showing them asks Google for each font, which tells it this page's address.</p>
             <button class="btn sm" type="button" data-web-fonts @click=${() => {
-              this.web = true;
-              try {
-                localStorage.setItem(WEB_FONTS_KEY, 'on');
-              } catch {
-                // No storage: on for this session.
-              }
-            }}>Show Google fonts</button>
+            this.web = true;
+            try {
+              localStorage.setItem(WEB_FONTS_KEY, 'on');
+            } catch {
+              // No storage: on for this session.
+            }
+          }}>Show Google fonts</button>
           </div>`}
     </div>`;
   }
 
-  #renderRow(choice: Choice, current: string): TemplateResult {
+  #renderRow(choice: Choice, current: string, index: number): TemplateResult {
     const action = choice.token ? 'token' : choice.project ? 'edit' : !choice.pickable ? 'add' : null;
     const picked = this.#valueOf(choice).toLowerCase() === current;
-    return html`<div class="frow" data-row=${choice.name} @pointermove=${(event: PointerEvent) => this.#hover(event, choice)}>
+    const active = index === this.active;
+    return html`<div class=${active ? 'frow active' : 'frow'} data-row=${choice.name} @pointermove=${(event: PointerEvent) => this.#hover(event, choice, index)}>
       <button
         class="font"
         type="button"
         role="option"
+        id=${`heo-font-opt-${index}`}
+        tabindex="-1"
+        data-index=${index}
+        data-active=${active ? 'true' : 'false'}
         data-font=${choice.name}
         data-pickable=${choice.pickable ? 'true' : 'false'}
         aria-current=${picked ? 'true' : 'false'}
         aria-selected=${picked ? 'true' : 'false'}
         title=${choice.pickable
-          ? `${choice.label ?? choice.name}: hover to see it on the element, click to use it`
-          : `${choice.name}: hover to see it on the element; add it to the page to use it`}
-        @focus=${() => this.#preview(choice)}
-        @blur=${() => this.#preview(null)}
+        ? `${choice.label ?? choice.name}: hover to see it on the element, click to use it`
+        : `${choice.name}: hover to see it on the element; add it to the page to use it`}
+        @mousedown=${keepFieldFocus}
         @click=${() => this.#pick(choice)}
         @keydown=${(event: KeyboardEvent) => this.#rowKey(event)}
       >
@@ -1264,23 +1371,115 @@ export class HeoFontPicker extends LitElement {
             data-font-action=${action}
             aria-label=${`${action === 'add' ? 'Add font' : 'Edit font'} ${choice.name}`}
             title=${action === 'token' ? `Choose the font ${choice.name} sets, for every element that uses it` : nothing}
-            @focus=${() => this.#preview(choice)}
+            tabindex="-1"
+            @mousedown=${keepFieldFocus}
+            @keydown=${(event: KeyboardEvent) => {
+            // Back to the field, where the arrows go on through the list.
+            if (event.key !== 'ArrowLeft' && event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+            event.preventDefault();
+            this.#focusField();
+            if (event.key !== 'ArrowLeft') this.#arrow(event.key === 'ArrowDown' ? 1 : -1);
+          }}
             @click=${() => (action === 'token' ? this.#editToken(choice.name.replace(/^--/, '')) : this.#openDraft(choice.name, action))}
           >${action === 'add' ? html`${icon('plus', 10)} Add font` : html`${icon('sliders', 10)} Edit font`}</button>`
         : nothing}
     </div>`;
   }
 
-  /** Up and down through the list's rows; up from the first goes back to the slot's field. */
+  /**
+   * A row that has the focus all the same (a test, or assistive technology moving it): the arrows
+   * hand it back to the field and go on from there, as they would have.
+   */
   #rowKey(event: KeyboardEvent): void {
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     event.preventDefault();
-    const rows = Array.from(this.renderRoot.querySelectorAll<HTMLElement>('.list [data-font]'));
-    const at = rows.indexOf(event.currentTarget as HTMLElement);
-    const next = rows[at + (event.key === 'ArrowDown' ? 1 : -1)];
-    if (next) next.focus();
-    else if (event.key === 'ArrowUp') this.renderRoot.querySelector<HTMLElement>('.slot[aria-current="true"] input')?.focus();
+    const at = Number((event.currentTarget as HTMLElement).dataset.index);
+    if (Number.isFinite(at)) this.active = at;
+    this.#focusField();
+    this.#arrow(event.key === 'ArrowDown' ? 1 : -1);
   }
+
+  /**
+   * The selected slot's field, with the combobox's keys.
+   *
+   * The focus stays here while the list is open: the arrows move the highlight, and the
+   * highlighted font is shown in the field and on the element at once. Enter picks it, and so
+   * does Escape -- the list closes on what was chosen, and a second Escape closes the dialog.
+   */
+  #renderSlotInput(label: string, role: string, face: string, at: number): TemplateResult {
+    const chosen = this.listOpen && this.activeByKey ? this.#activeChoice : undefined;
+    const shownFace = chosen
+      ? chosen.face ?? formatFamilies([chosen.name, chosen.generic ? chosen.name : chosen.category ? GENERIC_FOR[chosen.category] : 'sans-serif'])
+      : face;
+    return html`<input
+      @focus=${() => {
+        if (this.#byTab() && !this.listOpen) this.listOpen = true;
+      }}
+      type="text"
+      role="combobox"
+      aria-autocomplete="list"
+      aria-controls="heo-font-list"
+      aria-expanded=${this.listOpen ? 'true' : 'false'}
+      aria-activedescendant=${this.listOpen && this.active >= 0 ? `heo-font-opt-${this.active}` : nothing}
+      aria-label=${`${role}: search fonts, or type a family`}
+      placeholder=${label || (at ? 'type or pick a fallback' : 'type or pick a font')}
+      style=${`font-family:${shownFace.replace(/[;{}<>]/g, '')}`}
+      .value=${chosen ? chosen.label ?? chosen.name : this.query}
+      @input=${(event: Event) => {
+        this.query = (event.target as HTMLInputElement).value;
+        this.listOpen = true;
+        // Typing searches again: the first font that can be picked is what Enter would take.
+        const rows = this.#rows();
+        const first = this.query.trim() ? rows.findIndex((one) => one.pickable) : -1;
+        this.active = first;
+        this.activeByKey = false;
+        if (first < 0) this.#preview(null);
+        this.#scrollToActive = true;
+      }}
+      @keydown=${(event: KeyboardEvent) => this.#onSlotKey(event)}
+    />`;
+  }
+
+  #onSlotKey(event: KeyboardEvent): void {
+    switch (event.key) {
+      case 'ArrowDown':
+      case 'ArrowUp':
+        event.preventDefault();
+        this.#arrow(event.key === 'ArrowDown' ? 1 : -1);
+        return;
+      case 'ArrowRight': {
+        // A highlighted font with its own action (Add font, Edit font): the arrow reaches it.
+        const input = event.currentTarget as HTMLInputElement;
+        if (!this.listOpen || !this.activeByKey || input.selectionStart !== input.value.length) return;
+        const action = this.renderRoot.querySelector<HTMLElement>('.frow.active .fact');
+        if (!action) return;
+        event.preventDefault();
+        action.focus();
+        return;
+      }
+      case 'Enter':
+        event.preventDefault();
+        this.#submitTyped();
+        return;
+      case 'Escape': {
+        if (!this.listOpen) return;
+        event.preventDefault();
+        event.stopPropagation();
+        // Close and confirm: a font the arrows chose is kept, as Enter would keep it.
+        const chosen = this.activeByKey ? this.#activeChoice : undefined;
+        if (chosen?.pickable) this.#pick(chosen);
+        else this.#closeList();
+        this.#focusField();
+        return;
+      }
+      default:
+    }
+  }
+}
+
+/** A press on a row keeps the focus in the slot's field: the click is the choice, not the press. */
+function keepFieldFocus(event: MouseEvent): void {
+  event.preventDefault();
 }
 
 declare global {

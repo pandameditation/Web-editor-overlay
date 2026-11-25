@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <title>Font autocomplete</title>
+  <meta name="theme-color" content="#0b1220">
+  <!--
+    The font picker's slot field is a combobox, driven here with real keys and a real pointer: the
+    focus stays in the field, the arrows move a highlight that is shown in the field and on the
+    element at once, Enter and Escape both close the list on it, and a click on any row picks it.
+
+    In Tokens, a typography token's font field (a token's own, or a new one) offers no typography
+    tokens, and its dialog never turns into the shadow editor. SEO's theme colour is the editor's
+    colour field.
+  -->
+  <style id="site">
+    :root {
+      --brand-face: "House Serif", Georgia, serif;
+      --display-face: Fraunces;
+      --text-lg: 20px;
+    }
+    .kicker { font-family: var(--display-face); }
+    .text-heading-1 {
+      font-family: Georgia, serif;
+      font-size: 36px;
+      --heo-text-style: "Heading 1";
+    }
+  </style>
+</head>
+
+<body>
+  <h2 id="h" class="text-heading-1">Slow pottery for fast mornings</h2>
+  <p class="kicker">Wheel-thrown stoneware.</p>
+  <pre id="progress">start</pre>
+  <pre id="out">pending</pre>
+  <script src="../dist/html-editor-overlay.iife.js"></script>
+  <script>
+    (async () => {
+      const results = {};
+      const errors = [];
+      addEventListener('error', (event) => errors.push('error: ' + event.message));
+      addEventListener('unhandledrejection', (event) => errors.push('rejection: ' + event.reason));
+      const progress = document.getElementById('progress');
+      const settle = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
+      const check = async (name, fn) => {
+        progress.textContent = name;
+        try { results[name] = await fn(); } catch (err) { results[name] = 'THREW: ' + String(err && err.stack); }
+      };
+      const deep = (selector, root = document) => {
+        const direct = root.querySelector?.(selector);
+        if (direct) return direct;
+        for (const el of root.querySelectorAll?.('*') ?? []) {
+          if (!el.shadowRoot) continue;
+          const found = deep(selector, el.shadowRoot);
+          if (found) return found;
+        }
+        return null;
+      };
+      const until = async (test, ms = 4000) => {
+        for (let t = 0; t < ms; t += 50) {
+          if (test()) return true;
+          await settle(50);
+        }
+        return false;
+      };
+      const press = (payload) => new Promise((resolve) => {
+        const id = Math.random().toString(36).slice(2);
+        window.__heoKeysDone = (done) => { if (done === id) resolve(); };
+        window.__heoPressKeys(JSON.stringify({ id, ...payload }));
+      });
+      const keys = async (...list) => {
+        for (const key of list) {
+          await press({ keys: [key] });
+          await settle(200);
+        }
+      };
+      const clickAt = async (el, dx = 30) => {
+        const b = el.getBoundingClientRect();
+        const x = b.left + Math.min(dx, b.width - 8);
+        const y = b.top + b.height / 2;
+        await press({ mouse: [{ type: 'hover', x: x - 4, y }, { type: 'hover', x, y }, { type: 'down', x, y }, { type: 'up', x, y }] });
+        await settle(400);
+      };
+      /** The innermost focused element, through every shadow root. */
+      const focused = () => {
+        let at = document.activeElement;
+        while (at?.shadowRoot?.activeElement) at = at.shadowRoot.activeElement;
+        return at;
+      };
+      const openSection = async (section) => {
+        if (section && !section.open) {
+          section.shadowRoot?.querySelector('button')?.click();
+          await settle(400);
+        }
+      };
+
+      const api = window.HtmlEditorOverlay.mount({ theme: 'light', presets: false, detectScriptContent: false });
+      const engine = api.engine;
+      api.setEditing(true);
+      await engine.whenReady();
+      const h = document.getElementById('h');
+      api.select(h);
+      engine.setDockTab('styles');
+      await settle(700);
+      deep('heo-styles-panel').shadowRoot.querySelector('heo-section[data-card="typography"]')?.shadowRoot?.querySelector('.tile')?.click();
+      await settle(300);
+
+      const field = () => deep('heo-styles-panel').shadowRoot.querySelector('heo-value-field[data-property="font-family"]');
+      const picker = () => field()?.shadowRoot.querySelector('heo-font-picker')?.shadowRoot;
+      const slotInput = (root = picker()) => root?.querySelector('.slot[aria-current="true"] input');
+      const activeRow = (root = picker()) => root?.querySelector('.list [data-active="true"]');
+      const openPicker = async () => {
+        if (picker()) return;
+        field().scrollIntoView({ block: 'center' });
+        await settle(200);
+        field().openShadowEditor();
+        await until(() => slotInput());
+        await settle(300);
+        // Into the slot's field, with a real click: the keys below are real ones.
+        await clickAt(slotInput());
+        if (picker().querySelector('.list')) await keys('Escape');
+      };
+
+      await check('arrows', async () => {
+        await openPicker();
+        const recordsBefore = engine.history.records.length;
+        const committed = field().value;
+        const before = getComputedStyle(h).fontFamily;
+        // Down on a closed list opens it, on what the slot holds.
+        await keys('ArrowDown');
+        const opened = Boolean(picker().querySelector('.list'));
+        const startsOnTheCurrent = activeRow()?.dataset.font === 'Georgia';
+        await keys('ArrowDown');
+        const one = activeRow()?.dataset.font;
+        await keys('ArrowDown');
+        const two = activeRow()?.dataset.font;
+        const input = slotInput();
+        return {
+          downOpensTheList: opened,
+          onWhatTheSlotHolds: startsOnTheCurrent,
+          // Each press is a row further, and the focus never leaves the field.
+          eachPressMovesTheHighlight: Boolean(one && two && one !== two && one !== 'Georgia'),
+          theFocusStaysInTheField: focused() === input,
+          // Live: the field shows the highlighted font, and the element is drawn in it.
+          theFieldShowsIt: input?.value === two,
+          andTheElementPreviewsIt: getComputedStyle(h).fontFamily !== before && getComputedStyle(h).fontFamily.includes(two),
+          theFieldIsTheCombobox: input?.getAttribute('role') === 'combobox' && input?.getAttribute('aria-activedescendant') === activeRow()?.id,
+          withoutWriting: engine.history.records.length === recordsBefore && field().value === committed,
+        };
+      });
+
+      await check('enter', async () => {
+        const chosen = activeRow()?.dataset.font;
+        await keys('Enter');
+        return {
+          picksTheHighlightedFont: Boolean(chosen) && field().value.includes(chosen),
+          andClosesTheList: !picker().querySelector('.list'),
+          theDialogStays: Boolean(field().shadowRoot.querySelector('.popup.dialog')),
+          theFocusStaysInTheField: focused() === slotInput(),
+        };
+      });
+
+      await check('escape', async () => {
+        await keys('ArrowDown', 'ArrowDown');
+        const chosen = activeRow()?.dataset.font;
+        await keys('Escape');
+        const kept = Boolean(chosen) && field().value.includes(chosen);
+        const listClosed = !picker()?.querySelector('.list');
+        const dialogStays = Boolean(field().shadowRoot.querySelector('.popup.dialog'));
+        await keys('Escape');
+        return {
+          closesAndConfirms: kept && listClosed,
+          theDialogStaysForTheFirst: dialogStays,
+          theSecondClosesTheDialog: !field().shadowRoot.querySelector('.popup.dialog'),
+          andTheChoiceStands: kept && field().value.includes(chosen),
+        };
+      });
+
+      await check('upPastTheFirst', async () => {
+        await openPicker();
+        const committed = field().value;
+        const before = getComputedStyle(h).fontFamily;
+        await keys('ArrowDown', 'ArrowDown');
+        const moved = getComputedStyle(h).fontFamily !== before;
+        // Up to the first row, and past it: back to what was typed (nothing), and to the element as it is.
+        for (let i = 0; i < 40 && activeRow(); i += 1) await keys('ArrowUp');
+        const input = slotInput();
+        const back = !activeRow() && input?.value === '' && getComputedStyle(h).fontFamily === before;
+        await keys('Escape');
+        return {
+          theArrowsPreviewed: moved,
+          upPastTheFirstGoesBack: back,
+          andEscapeThenConfirmsNothing: field().value === committed && !picker().querySelector('.list'),
+        };
+      });
+
+      await check('clicks', async () => {
+        await openPicker();
+        const log = [];
+        for (let i = 0; i < 6; i += 1) {
+          const chevron = picker().querySelector('.slot[aria-current="true"] [data-chevron]');
+          if (chevron.getAttribute('aria-expanded') !== 'true') {
+            chevron.click();
+            await until(() => picker().querySelector('.list [data-font]'));
+            await settle(200);
+          }
+          const rows = Array.from(picker().querySelectorAll('.list .frow'))
+            .filter((one) => !one.querySelector('.fact') && one.querySelector('[data-font]').dataset.pickable === 'true');
+          const row = rows[(i * 2 + 1) % rows.length].querySelector('[data-font]');
+          // Inside the list's own scroll, as a user scrolls it to the row.
+          const list = picker().querySelector('.list');
+          list.scrollTop = Math.max(0, row.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop - 60);
+          await settle(200);
+          const name = row.dataset.font;
+          // At the name, and further along the row.
+          await clickAt(row, i % 2 ? row.getBoundingClientRect().width * 0.6 : 30);
+          log.push(field().value.includes(name) && !picker().querySelector('.list'));
+        }
+        // After the arrows have lit one row, a click on another picks the clicked one.
+        picker().querySelector('.slot[aria-current="true"] [data-chevron]').click();
+        await until(() => picker().querySelector('.list [data-font]'));
+        await settle(200);
+        await keys('ArrowDown', 'ArrowDown');
+        const lit = activeRow()?.dataset.font;
+        const other = Array.from(picker().querySelectorAll('.list [data-font][data-pickable="true"]'))
+          .find((one) => one.dataset.font !== lit && !one.closest('.frow').querySelector('.fact') && one.getBoundingClientRect().height > 0 && one.getBoundingClientRect().top > picker().querySelector('.list').getBoundingClientRect().top);
+        const otherName = other?.dataset.font;
+        await clickAt(other);
+        const clickedWins = Boolean(otherName) && field().value.includes(otherName);
+        return {
+          everyClickPicks: log.length === 6 && log.every(Boolean),
+          theClickedRowWinsOverTheLitOne: clickedWins,
+          theFocusStaysInTheField: focused() === slotInput(),
+        };
+      });
+
+      await check('typing', async () => {
+        await openPicker();
+        const input = slotInput();
+        input.value = 'Verd';
+        input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await settle(300);
+        const first = activeRow()?.dataset.font;
+        await keys('Enter');
+        const taken = field().value;
+        field().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        return {
+          typingLightsTheFirstMatch: first === 'Verdana',
+          enterTakesIt: taken.startsWith('Verdana'),
+        };
+      });
+
+      engine.setDockTab('tokens');
+      await settle(800);
+      const troot = () => deep('heo-tokens-panel').shadowRoot;
+      const brand = () => troot().querySelector('heo-value-field[data-token-name="brand-face"]');
+
+      await check('tokenRow', async () => {
+        await openSection(brand().closest('heo-section'));
+        brand().scrollIntoView({ block: 'center' });
+        await settle(200);
+        brand().openShadowEditor();
+        const tp = () => brand().shadowRoot.querySelector('heo-font-picker')?.shadowRoot;
+        await until(() => slotInput(tp()));
+        await settle(300);
+        await clickAt(slotInput(tp()));
+        if (tp().querySelector('.list')) await keys('Escape');
+        await keys('ArrowDown');
+        const groups = Array.from(tp().querySelectorAll('.list .group')).map((one) => one.dataset.group);
+        const seen = [];
+        let shadowEver = false;
+        let kindKept = true;
+        for (let i = 0; i < 6; i += 1) {
+          await keys('ArrowDown');
+          seen.push(activeRow(tp())?.dataset.font);
+          shadowEver ||= Boolean(brand().shadowRoot.querySelector('heo-shadow-editor'));
+          kindKept &&= brand().kind === 'font';
+        }
+        const chosen = activeRow(tp())?.dataset.font;
+        await keys('Enter');
+        const written = engine.tokens.get('brand-face')?.value ?? '';
+        engine.undo();
+        await settle(300);
+        brand().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        return {
+          noTypographyTokensOffered: !groups.includes('Typography tokens') && !seen.some((one) => one?.startsWith('--')),
+          theArrowsGoThroughTheFonts: new Set(seen).size === seen.length && seen.every(Boolean),
+          neverTheShadowEditor: !shadowEver,
+          theFieldStaysAFontField: kindKept,
+          enterSetsTheToken: Boolean(chosen) && written.startsWith(chosen.includes(' ') ? `"${chosen}"` : chosen),
+        };
+      });
+
+      await check('newToken', async () => {
+        const create = Array.from(troot().querySelectorAll('heo-section')).find((one) => one.getAttribute('heading') === 'New token');
+        await openSection(create);
+        const select = create.querySelector('select[aria-label="Token group"]');
+        select.value = 'font';
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        await settle(400);
+        const nf = () => create.querySelector('heo-value-field');
+        const isFont = nf().kind === 'font' && Boolean(nf().shadowRoot.querySelector('.font-btn'));
+        nf().scrollIntoView({ block: 'center' });
+        await settle(200);
+        nf().openShadowEditor();
+        const cp = () => nf().shadowRoot.querySelector('heo-font-picker')?.shadowRoot;
+        await until(() => slotInput(cp()));
+        await settle(300);
+        await clickAt(slotInput(cp()));
+        if (cp().querySelector('.list')) await keys('Escape');
+        await keys('ArrowDown');
+        const groups = Array.from(cp().querySelectorAll('.list .group')).map((one) => one.dataset.group);
+        await keys('ArrowDown', 'ArrowDown');
+        const shown = nf().shadowRoot.querySelector('input')?.value ?? '';
+        const lit = activeRow(cp())?.dataset.font;
+        const stillAFont = nf().kind === 'font' && !nf().shadowRoot.querySelector('heo-shadow-editor') && Boolean(cp());
+        // Back up past the first: the field shows nothing again, as nothing was picked.
+        for (let i = 0; i < 40 && activeRow(cp()); i += 1) await keys('ArrowUp');
+        const reverted = (nf().shadowRoot.querySelector('input')?.value ?? '') === '';
+        await keys('ArrowDown', 'ArrowDown');
+        const chosen = activeRow(cp())?.dataset.font;
+        await keys('Enter');
+        nf().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        const name = create.querySelector('input[aria-label="Token name"]');
+        name.value = 'body-face';
+        name.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        await settle(200);
+        Array.from(create.querySelectorAll('button.btn')).find((one) => /Add/.test(one.textContent))?.click();
+        await settle(400);
+        const made = engine.tokens.get('body-face');
+        return {
+          aNewTypographyTokenHasTheFontField: isFont,
+          itsPickerOffersNoTokens: groups.length > 0 && !groups.includes('Typography tokens'),
+          theArrowsShowTheFontInTheField: Boolean(lit) && shown.includes(lit),
+          andItStaysTheFontPicker: stillAFont,
+          upPastTheFirstPutsTheFieldBack: reverted,
+          addMakesTheTokenWithThePickedFont: Boolean(chosen) && Boolean(made?.value.includes(chosen)) && made?.group === 'font',
+          theFormIsEmptiedAfter: (nf().shadowRoot.querySelector('input')?.value ?? '') === '',
+        };
+      });
+
+      await check('kindChange', async () => {
+        // A host that changes the kind under an open font picker closes it, rather than showing the shadow editor.
+        brand().scrollIntoView({ block: 'center' });
+        await settle(200);
+        brand().openShadowEditor();
+        await until(() => brand().shadowRoot.querySelector('heo-font-picker'));
+        await settle(300);
+        const field = brand();
+        field.kind = 'text';
+        await settle(300);
+        const shadow = Boolean(field.shadowRoot.querySelector('heo-shadow-editor'));
+        const closed = !field.shadowRoot.querySelector('.popup.dialog');
+        field.kind = 'font';
+        await settle(200);
+        return { neverTheShadowEditor: !shadow, theDialogCloses: closed };
+      });
+
+      await check('seo', async () => {
+        engine.setDockTab('seo');
+        await settle(700);
+        const form = deep('heo-seo-form');
+        const color = () => form.shadowRoot.querySelector('heo-value-field[data-head-field="themeColor"]');
+        await openSection(color()?.closest('heo-section'));
+        const isTheColorField = color()?.kind === 'color' && color()?.value === '#0b1220';
+        const native = form.shadowRoot.querySelector('input[type="color"]');
+        color().scrollIntoView({ block: 'center' });
+        await settle(200);
+        color().pickColor();
+        await until(() => color().shadowRoot.querySelector('heo-color-picker'));
+        const opens = Boolean(color().shadowRoot.querySelector('heo-color-picker'));
+        // Its swatch offers no colour tokens: the browser chrome reading the tag cannot resolve a var().
+        const swatches = color().shadowRoot.querySelector('heo-color-picker')?.swatches ?? [];
+        color().shadowRoot.querySelector('.dialog-head button[aria-label="Close"]')?.click();
+        await settle(300);
+        color().dispatchEvent(new CustomEvent('value-change', { detail: { value: '#ff0000' }, bubbles: true, composed: true }));
+        await settle(400);
+        const written = document.querySelector('meta[name="theme-color"]')?.getAttribute('content');
+        engine.undo();
+        await settle(300);
+        return {
+          theThemeColorIsTheColorField: isTheColorField,
+          andNotTheBrowsersInput: !native,
+          itsSwatchOpensTheColorPicker: opens,
+          withNoTokenSwatches: swatches.length === 0,
+          aChangeIsWritten: written === '#ff0000',
+        };
+      });
+
+      const failed = Object.entries(results)
+        .filter(([, group]) => group && typeof group === 'object')
+        .filter(([, group]) => Object.values(group).some((value) => value === false))
+        .map(([name]) => name);
+      const threw = Object.entries(results).filter(([, v]) => typeof v === 'string').map(([k]) => k);
+      document.getElementById('out').textContent =
+        'RESULTS:' + JSON.stringify({ ok: !failed.length && !threw.length && !errors.length, failed: [...failed, ...threw], errors, results }, null, 2) + ':END';
+    })();
+  </script>
+</body>
+
+</html>

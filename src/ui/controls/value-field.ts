@@ -804,6 +804,8 @@ export class HeoValueField extends LitElement {
   @property({ type: String, attribute: 'empty-text' }) emptyText = '';
   /** For a font field that is a token's own value: that token, left out of the picker's tokens. */
   @property({ type: String, attribute: 'self-token' }) selfToken = '';
+  /** A font field whose picker offers no typography tokens: a token's own value, in Tokens. */
+  @property({ type: Boolean, attribute: 'no-font-tokens' }) noFontTokens = false;
   @property({ type: String, attribute: 'action-icon' }) actionIcon = 'plus';
   /**
    * Submit without the action button: Enter and a pick from the list submit, and nothing beside
@@ -990,6 +992,16 @@ export class HeoValueField extends LitElement {
      * up far from the field. The Styles panel hid it by handing new suggestions on every preview.
      */
     if (changed.has('suggestions') || changed.has('value') || (changed as Map<PropertyKey, unknown>).has('draft')) this.#placer.invalidate();
+    /*
+     * A dialog belongs to the kind that opened it. A host that decides the kind from the value
+     * (Tokens decides "font" from what the value reads as) changed it under an open font picker,
+     * and the render, seeing a dialog open on a field that was no longer a font, drew the shadow
+     * editor in its place. The dialog closes with the kind instead.
+     */
+    if (changed.has('kind') && this.open) {
+      const dialogKinds: readonly ValueKind[] = ['shadow', 'filter', 'font'];
+      if ((this.shadowing && !dialogKinds.includes(this.kind)) || (this.picking && this.kind !== 'color')) this.closePopup();
+    }
     // Adopt an external value change unless the user is mid-edit. `:focus-within`
     // is the question that can actually be answered here: `document.activeElement`
     // reports the outermost shadow host, so comparing it against this element was
@@ -1298,6 +1310,7 @@ export class HeoValueField extends LitElement {
       <heo-font-picker
         .value=${this.#painted ? this.#fontBase : this.value || this.computed}
         .selfToken=${this.selfToken}
+        .noTokens=${this.noFontTokens}
         @font-preview=${(event: CustomEvent<{ value: string | null }>) => {
         event.stopPropagation();
         if (event.detail.value) {
