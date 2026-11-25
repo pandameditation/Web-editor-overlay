@@ -304,6 +304,65 @@
           };
         }
 
+        progress.textContent = 'side picker';
+        // The side picker is a target, not an icon: it was a 22px glyph with 3px bars, impossible to hit.
+        // And the frame's edges show they can be pressed before any hover.
+        {
+          await select('d');
+          const shadow = () => editor()?.shadowRoot;
+          editor().scrollIntoView({ block: 'center' });
+          await settle(200);
+          const glyph = shadow().querySelector('.glyph');
+          const gb = glyph.getBoundingClientRect();
+          const buttons = Array.from(glyph.querySelectorAll('button'));
+          // Every side's band is at least 12px deep, and its middle is that button and no other.
+          const hits = buttons.every((one) => {
+            const b = one.getBoundingClientRect();
+            const at = shadow().elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+            return at === one && Math.min(b.width, b.height) >= 12;
+          });
+          const pickedBy = (key) => {
+            shadow().querySelector('.glyph button[tabindex="0"]').dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, composed: true, cancelable: true }));
+          };
+          const checked = () => shadow().querySelector('.glyph button[aria-checked="true"]');
+          pickedBy('ArrowUp');
+          await settle(150);
+          const up = checked()?.dataset.side === 'top' && Boolean(field('border-top-width')) && shadow().activeElement === checked();
+          pickedBy('ArrowDown');
+          await settle(150);
+          const backToAll = checked()?.classList.contains('all');
+          pickedBy('ArrowRight');
+          await settle(150);
+          const right = checked()?.dataset.side === 'right';
+          pickedBy('Home');
+          await settle(150);
+          const home = checked()?.classList.contains('all') && Boolean(field('border-width'));
+          // The edges' handles are drawn at rest: a visible bar on each, not only a hover tint.
+          const handles = Array.from(shadow().querySelectorAll('.frame.border > .edge')).map((one) => {
+            const before = getComputedStyle(one, '::before');
+            return parseFloat(before.width) * parseFloat(before.height) >= 80 && before.backgroundColor !== 'rgba(0, 0, 0, 0)';
+          });
+          const bottom = shadow().querySelector('.frame.border > .edge.bottom');
+          bottom.click();
+          await settle(150);
+          const edgeScopes = checked()?.dataset.side === 'bottom' && bottom.classList.contains('on');
+          shadow().querySelector('.frame.border > .edge.bottom').click();
+          await settle(150);
+          const edgeAgainReturns = Boolean(checked()?.classList.contains('all'));
+          results.sidePicker = {
+            theRadiosAreOneGroup: glyph.getAttribute('role') === 'radiogroup' && buttons.every((one) => one.getAttribute('role') === 'radio'),
+            onlyTheChosenIsTabbable: buttons.filter((one) => one.tabIndex === 0).length === 1,
+            fortyPixelsSquare: Math.round(gb.width) === 40 && Math.round(gb.height) === 40,
+            eachSideIsItsOwnTarget: hits,
+            upPicksTheTop: up,
+            theOppositeArrowGoesBackToAll: backToAll,
+            rightPicksTheRight: right,
+            homeIsAllSides: home,
+            everyEdgeShowsAHandle: handles.length === 4 && handles.every(Boolean),
+            clickingAnEdgeScopesIt: edgeScopes,
+            clickingItAgainGoesBackToAll: edgeAgainReturns,
+          };
+        }
         progress.textContent = 'search';
         {
           engine.store.value; // keep the selection

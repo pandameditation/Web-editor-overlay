@@ -190,101 +190,162 @@ export class HeoBorderEditor extends LitElement {
         outline-offset: 1px;
         border-radius: 3px;
       }
+      /*
+       * The side picker: a square the size of a fingertip, each side a band to press, its line drawn
+       * in the middle of it, and "all sides" the square inside. It was a 22px glyph with 3px bars,
+       * which a pointer could barely land on and which read as an icon rather than a control.
+       * The bands are 12px deep and the whole picker 40px, so each side is a real target.
+       */
       .glyph {
-        position: relative;
-        width: 22px;
-        height: 22px;
+        display: grid;
+        grid-template-columns: 12px 16px 12px;
+        grid-template-rows: 12px 16px 12px;
+        width: 40px;
+        height: 40px;
         flex: none;
+        border-radius: 6px;
+        background: var(--heo-sunken);
+        box-shadow: inset 0 0 0 1px var(--heo-line);
       }
       .glyph button {
         all: unset;
-        position: absolute;
+        position: relative;
+        display: grid;
+        place-items: center;
         cursor: pointer;
+        border-radius: 4px;
+      }
+      .glyph button::before {
+        content: '';
         border-radius: 2px;
         background: var(--heo-text-faint);
+        transition: background var(--heo-fast, 120ms);
       }
       .glyph button:hover {
-        background: color-mix(in oklab, var(--heo-accent) 55%, transparent);
+        background: color-mix(in oklab, var(--heo-accent) 16%, transparent);
+      }
+      .glyph button:hover::before {
+        background: color-mix(in oklab, var(--heo-accent) 70%, var(--heo-text-faint));
       }
       .glyph button:focus-visible {
         outline: 2px solid var(--heo-focus-ring);
-        outline-offset: 1px;
+        outline-offset: -1px;
       }
-      .glyph button.set {
+      /* A side with its own line. */
+      .glyph button.set::before {
         background: var(--heo-danger);
       }
-      .glyph button[aria-pressed='true'] {
+      .glyph button[aria-checked='true'] {
+        background: color-mix(in oklab, var(--heo-accent) 22%, transparent);
+      }
+      .glyph button[aria-checked='true']::before {
         background: var(--heo-accent);
       }
-      .glyph .all {
-        inset: 5px;
-        background: color-mix(in oklab, var(--heo-danger) 14%, transparent);
-      }
-      .glyph .all[aria-pressed='true'] {
-        background: color-mix(in oklab, var(--heo-accent) 40%, transparent);
-      }
-      .glyph .top,
-      .glyph .bottom {
-        left: 5px;
-        right: 5px;
-        height: 3px;
-      }
-      .glyph .left,
-      .glyph .right {
-        top: 5px;
-        bottom: 5px;
-        width: 3px;
-      }
       .glyph .top {
-        top: 0;
+        grid-area: 1 / 1 / 2 / 4;
       }
       .glyph .bottom {
-        bottom: 0;
+        grid-area: 3 / 1 / 4 / 4;
       }
       .glyph .left {
-        left: 0;
+        grid-area: 2 / 1 / 3 / 2;
       }
       .glyph .right {
-        right: 0;
+        grid-area: 2 / 3 / 3 / 4;
+      }
+      .glyph .all {
+        grid-area: 2 / 2 / 3 / 3;
+      }
+      .glyph .top::before,
+      .glyph .bottom::before {
+        width: 22px;
+        height: 4px;
+      }
+      .glyph .left::before,
+      .glyph .right::before {
+        width: 4px;
+        height: 14px;
+      }
+      .glyph .all::before {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+        background: color-mix(in oklab, var(--heo-text-faint) 45%, transparent);
+      }
+      .glyph .all[aria-checked='true']::before {
+        background: color-mix(in oklab, var(--heo-accent) 70%, transparent);
       }
 
-      /* The border frame's own edges, to click: a pointer target over the line, not a button, since
-         the header glyph is the keyboard's way to the same choice. */
+      /*
+       * The border frame's own edges, to click: a band over each line with a handle drawn at its
+       * middle, there before any hover, so the frame reads as something to press and not only as a
+       * drawing. Pointer targets only: the side picker above is the keyboard's way to the same choice.
+       */
       .edge {
         position: absolute;
         z-index: 1;
+        display: grid;
+        place-items: center;
         cursor: pointer;
-        border-radius: 3px;
+        border-radius: 4px;
+        transition: background var(--heo-fast, 120ms);
+      }
+      .edge::before {
+        content: '';
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--heo-danger) 55%, var(--heo-text-faint));
+        box-shadow: 0 0 0 2px var(--heo-surface, var(--heo-raised));
+        transition: background var(--heo-fast, 120ms), scale var(--heo-fast, 120ms);
       }
       .edge.top,
       .edge.bottom {
-        left: 14px;
-        right: 14px;
-        height: 9px;
+        left: 16px;
+        right: 16px;
+        height: 12px;
       }
       .edge.left,
       .edge.right {
-        top: 14px;
-        bottom: 14px;
-        width: 9px;
+        top: 16px;
+        bottom: 16px;
+        width: 12px;
+      }
+      .edge.top::before,
+      .edge.bottom::before {
+        width: 26px;
+        height: 4px;
+      }
+      .edge.left::before,
+      .edge.right::before {
+        width: 4px;
+        height: 26px;
       }
       .edge.top {
-        top: -4px;
+        top: -6px;
       }
       .edge.bottom {
-        bottom: -4px;
+        bottom: -6px;
       }
       .edge.left {
-        left: -4px;
+        left: -6px;
       }
       .edge.right {
-        right: -4px;
+        right: -6px;
       }
       .edge:hover {
-        background: color-mix(in oklab, var(--heo-accent) 30%, transparent);
+        background: color-mix(in oklab, var(--heo-accent) 26%, transparent);
+      }
+      .edge:hover::before {
+        background: var(--heo-accent);
+        scale: 1.15;
+      }
+      .edge.set::before {
+        background: var(--heo-danger);
       }
       .edge.on {
-        background: color-mix(in oklab, var(--heo-accent) 55%, transparent);
+        background: color-mix(in oklab, var(--heo-accent) 45%, transparent);
+      }
+      .edge.on::before {
+        background: var(--heo-accent);
       }
 
       .core {
@@ -349,10 +410,11 @@ export class HeoBorderEditor extends LitElement {
           style=${`${this.#borderStyle(border)}${radius ? `border-radius:${diagramRadius(radius)};` : ''}`}
         >
           ${SIDES.map((side) => html`<span
-            class=${`edge ${side}${this.scope === side ? ' on' : ''}`}
+            class=${`edge ${side}${this.scope === side ? ' on' : ''}${this.#ownLine(border, side) ? ' set' : ''}`}
             data-side=${side}
-            title=${`Edit the ${side} side`}
-            @click=${() => this.#pick(side)}
+            aria-hidden="true"
+            title=${this.scope === side ? `Editing the ${side} side` : `Edit the ${side} side on its own`}
+            @click=${() => this.#pick(this.scope === side ? 'all' : side)}
           ></span>`)}
           ${this.#renderHead('border', 'Border', border, this.#renderScope(border))}
           ${this.scope === 'all' ? this.#renderFields('border', border) : this.#renderEdgeFields(border, this.scope)}
@@ -363,7 +425,7 @@ export class HeoBorderEditor extends LitElement {
           </div>
         </div>
       </div>
-      <p class="tip">Click an edge of the border to give that side its own line.</p>
+      <p class="tip">Click an edge of the border, or a side of the picker, to give that side its own line.</p>
     `;
   }
 
@@ -393,19 +455,22 @@ export class HeoBorderEditor extends LitElement {
   /** "All sides" and the glyph, or the side being edited, the way back, and its reset. */
   #renderScope(border: LineView): TemplateResult {
     const scope = this.scope;
-    const own = (side: Side): boolean => Boolean(border.edges && LINE_PARTS.some((part) => border.edges![side].parts[part]));
-    const glyph = html`<span class="glyph" role="group" aria-label="Sides">
-      <button type="button" class="all" aria-pressed=${String(scope === 'all')} aria-label="All sides" title="All sides"
-        @click=${() => this.#pick('all')}></button>
+    const own = (side: Side): boolean => this.#ownLine(border, side);
+    // One radio group: Tab reaches the chosen one, the arrows move to the side they point at.
+    const glyph = html`<span class="glyph" role="radiogroup" aria-label="Sides" @keydown=${this.#onGlyphKey}>
       ${SIDES.map((side) => html`<button
         type="button"
+        role="radio"
         class=${`${side}${own(side) ? ' set' : ''}`}
         data-side=${side}
-        aria-pressed=${String(scope === side)}
+        aria-checked=${String(scope === side)}
+        tabindex=${scope === side ? '0' : '-1'}
         aria-label=${`${NAME_OF[side]} side${own(side) ? ', has its own line' : ''}`}
         title=${NAME_OF[side]}
         @click=${() => this.#pick(side)}
       ></button>`)}
+      <button type="button" role="radio" class="all" aria-checked=${String(scope === 'all')} tabindex=${scope === 'all' ? '0' : '-1'}
+        aria-label="All sides" title="All sides" @click=${() => this.#pick('all')}></button>
     </span>`;
     if (scope === 'all') return html`<span class="scope"><b>All sides</b>${glyph}</span>`;
     return html`<span class="scope">
@@ -469,6 +534,30 @@ export class HeoBorderEditor extends LitElement {
   #pick(scope: Scope): void {
     this.scope = scope;
   }
+
+  #ownLine(border: LineView, side: Side): boolean {
+    return Boolean(border.edges && LINE_PARTS.some((part) => border.edges![side].parts[part]));
+  }
+
+  /**
+   * The picker's arrows go where they point: up to the top, left to the left. From a side, the
+   * arrow pointing back across the square (down from the top) goes to all sides. Home is all sides.
+   */
+  #onGlyphKey = (event: KeyboardEvent): void => {
+    const toward: Record<string, Side> = { ArrowUp: 'top', ArrowDown: 'bottom', ArrowLeft: 'left', ArrowRight: 'right' };
+    const opposite: Record<Side, Side> = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' };
+    let next: Scope | null = null;
+    if (event.key === 'Home') next = 'all';
+    else if (toward[event.key]) {
+      const side = toward[event.key];
+      next = this.scope !== 'all' && opposite[this.scope] === side ? 'all' : side;
+    }
+    if (!next) return;
+    event.preventDefault();
+    this.#pick(next);
+    void this.updateComplete.then(() =>
+      this.renderRoot.querySelector<HTMLElement>(`.glyph button${next === 'all' ? '.all' : `[data-side="${next}"]`}`)?.focus());
+  };
 
   #reset(side: Side): void {
     this.dispatchEvent(new CustomEvent('line-reset', { detail: { property: `border-${side}` }, bubbles: true, composed: true }));
