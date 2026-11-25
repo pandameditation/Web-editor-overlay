@@ -41,14 +41,34 @@
  *   node scripts/check-all.mjs --fast          the quick tier only
  *   node scripts/check-all.mjs --jobs 4        cap the pages in flight
  *   node scripts/check-all.mjs --serial        one at a time, for comparing against the old shape
+ *   node scripts/check-all.mjs --changed       only the fixtures the diff against HEAD can affect
+ *   node scripts/check-all.mjs --changed --base main   ... against another ref
+ *   node scripts/check-all.mjs --changed --list        print that selection and its reasons, run nothing
+ *   node scripts/check-all.mjs --record-coverage       record which src/ files each page runs
  *
- * Every form reads and then updates node_modules/.cache/heo-check/timings.json.
+ * Every form reads and then updates node_modules/.cache/heo-check/timings.json, except a
+ * recording run: coverage slows pages down, and its times would skew the scheduling.
+ *
+ * `--changed` (npm run check:changed) is for the inner loop and never the gate: it picks pages by
+ * the coverage map (`scripts/affected.mjs`, recorded by npm run check:map into
+ * node_modules/.cache/heo-check/coverage.json), runs the whole suite when a changed file cannot
+ * be placed, saying why, and ends with a CHANGED-ONLY line. It combines with `--fast` as the
+ * intersection. `--record-coverage` refreshes the map for the pages it ran, so it combines with
+ * `--fast` or `--changed` too.
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  changedFiles,
+  loadCoverage,
+  saveCoverage,
+  selectAffected,
+  srcFilesFromCoverage,
+  unmappedBundles,
+} from './affected.mjs';
 import { FIXTURES, fixtureName, scheduled, unaccountedPages } from './fixtures.mjs';
 import { loadTimings, saveTimings } from './timings.mjs';
 import { answerKeys, KEYS_BINDING } from './trusted-keys.mjs';
@@ -68,8 +88,20 @@ const option = (name, fallback) => {
   const at = argv.indexOf(`--${name}`);
   return at > -1 && argv[at + 1] ? Number(argv[at + 1]) : fallback;
 };
+const textOption = (name, fallback) => {
+  const at = argv.indexOf(`--${name}`);
+  return at > -1 && argv[at + 1] && !argv[at + 1].startsWith('--') ? argv[at + 1] : fallback;
+};
 
 const onlyFast = flag('fast');
+const onlyChanged = flag('changed');
+const listOnly = flag('list');
+const recording = flag('record-coverage');
+const base = textOption('base', 'HEAD');
+if ((listOnly || argv.includes('--base')) && !onlyChanged) {
+  console.error('--list and --base go with --changed.');
+  process.exit(2);
+}
 /*
  * Six by default, and not `availableParallelism()`.
  *
@@ -80,7 +112,26 @@ const onlyFast = flag('fast');
  */
 const jobs = flag('serial') ? 1 : Math.max(1, Math.min(option('jobs', 6), availableParallelism()));
 
-const chosen = onlyFast ? FIXTURES.filter((f) => f.fast) : FIXTURES;
+let chosen = onlyFast ? FIXTURES.filter((f) => f.fast) : FIXTURES;
+let selection = null;
+if (onlyChanged) {
+  let changed;
+  try {
+    changed = changedFiles(base);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(2);
+  }
+  selection = selectAffected({
+    changed,
+    fixtures: FIXTURES,
+    coverage: loadCoverage(),
+    readPage: (page) => readFileSync(page, 'utf8'),
+  });
+  const picked = new Set(selection.selected);
+  chosen = chosen.filter((f) => picked.has(f));
+  selection.changed = changed;
+}
 const missing = chosen.filter((f) => !existsSync(f.page));
 if (missing.length) {
   console.error(`Missing fixture file(s):\n${missing.map((f) => `  ${f.page}`).join('\n')}`);
@@ -90,10 +141,10 @@ if (missing.length) {
 /*
  * Refuse to run a suite that is quietly incomplete.
  *
- * Checked on the full run only: the fast tier is meant to be a subset, so a page missing from it
- * is the design rather than a mistake.
+ * Checked on the full run and a changed-only one (which may well select the whole suite): the
+ * fast tier is meant to be a subset, so a page missing from it is the design rather than a mistake.
  */
-if (!onlyFast) {
+if (!onlyFast || onlyChanged) {
   const unaccounted = unaccountedPages();
   if (unaccounted.length) {
     console.error(
@@ -103,6 +154,20 @@ if (!onlyFast) {
     );
     process.exit(2);
   }
+}
+
+/* What a changed-only run picked and why, before anything starts. */
+if (selection) {
+  const lines = [`\nchanged against ${base}: ${selection.changed.length} file(s)`];
+  for (const path of selection.changed) lines.push(`  ${path}`);
+  if (selection.all) lines.push(`selected all ${chosen.length} of ${FIXTURES.length} fixtures: ${selection.all}`);
+  else {
+    lines.push(`selected ${chosen.length} of ${FIXTURES.length} fixtures${onlyFast ? ' (within the fast tier)' : ''}:`);
+    for (const f of chosen) lines.push(`  ${fixtureName(f).padEnd(28)}${selection.why.get(fixtureName(f))}`);
+  }
+  if (selection.ignored.length) lines.push(`ignored: ${selection.ignored.join(', ')}`);
+  process.stderr.write(`${lines.join('\n')}\n`);
+  if (listOnly) process.exit(0);
 }
 
 const binary = CHROME_CANDIDATES.find((path) => existsSync(path));
@@ -239,8 +304,11 @@ class Browser {
     });
   }
 
-  /** An isolated page: its own storage, its own cookies, its own session. */
-  async openIsolated(url) {
+  /**
+   * An isolated page: its own storage, its own cookies, its own session. With `coverage`, V8
+   * precise coverage runs from before the page's first script, for `--record-coverage`.
+   */
+  async openIsolated(url, { coverage = false } = {}) {
     const { browserContextId } = await this.send('Target.createBrowserContext', {
       disposeOnDetach: false,
     });
@@ -252,6 +320,10 @@ class Browser {
     await this.send('Log.enable', {}, sessionId);
     await this.send('Runtime.addBinding', { name: KEYS_BINDING }, sessionId).catch(() => { });
     await this.send('Page.enable', {}, sessionId);
+    if (coverage) {
+      await this.send('Profiler.enable', {}, sessionId);
+      await this.send('Profiler.startPreciseCoverage', { callCount: false, detailed: false }, sessionId);
+    }
     await this.send('Page.navigate', { url }, sessionId);
     return { browserContextId, targetId, sessionId };
   }
@@ -294,6 +366,20 @@ class Browser {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * The src/ files a finished page ran (plus any unmapped `dist/` bundle it ran), or null if the
+ * coverage could not be read in time: then the page simply gets no entry this run.
+ */
+async function takeCoverage(browser, sessionId) {
+  const taken = await Promise.race([
+    browser.send('Profiler.takePreciseCoverage', {}, sessionId).catch(() => null),
+    sleep(30000).then(() => null),
+  ]);
+  if (!taken?.result) return null;
+  const root = process.cwd();
+  return [...srcFilesFromCoverage(taken.result, root), ...unmappedBundles(taken.result, root)];
+}
+
+/**
  * Open a fixture, wait for it to report, and hand back what it said.
  *
  * The completion contract is the fixtures' own and unchanged: they write
@@ -303,7 +389,7 @@ class Browser {
 async function runFixture(browser, fixture) {
   const url = pathToFileURL(resolve(process.cwd(), fixture.page)).href;
   const started = Date.now();
-  const handle = await browser.openIsolated(url);
+  const handle = await browser.openIsolated(url, { coverage: recording });
   let lastProgress = '(none)';
 
   /*
@@ -347,6 +433,7 @@ async function runFixture(browser, fixture) {
           ok: true,
           payload: text.slice(text.indexOf('RESULTS:') + 8, text.lastIndexOf(':END')),
           logs: browser.logsFor(handle.sessionId),
+          ...(recording ? { coverage: await takeCoverage(browser, handle.sessionId) } : {}),
         };
       }
       const progress = await read('progress');
@@ -446,7 +533,13 @@ try {
   browsers.shared?.destroy();
   browsers.strict?.destroy();
 }
-saveTimings(all, FIXTURES);
+if (recording) {
+  const entries = new Map(all.filter((r) => r.ok && r.coverage).map((r) => [r.name, r.coverage]));
+  saveCoverage(entries);
+  process.stderr.write(`coverage: recorded ${entries.size} of ${all.length} fixture(s)\n`);
+} else {
+  saveTimings(all, FIXTURES);
+}
 
 /*
  * Printed one payload after another, in the shapes the single-page harness used.
@@ -472,6 +565,12 @@ for (const result of all) {
 const elapsed = (Date.now() - startedAll) / 1000;
 console.log(`\n${'='.repeat(58)}`);
 console.log(`${all.length} fixtures in ${elapsed.toFixed(1)}s, ${jobs} at a time`);
+if (onlyChanged) {
+  console.log(
+    `CHANGED-ONLY: ${all.length} of ${FIXTURES.length} fixtures for the diff against ${base}. ` +
+    'Not the gate: run npm run check before finishing.',
+  );
+}
 if (failures.length) {
   console.log(`\n${failures.length} failed:`);
   for (const failure of failures) console.log(`  ${failure.name} — ${failure.reason}`);

@@ -1,18 +1,28 @@
 /**
  * Tests the suite runner's own logic: the scheduling order, the timings cache, the section
- * filter pages use for `?only=` and the event-based settle pages use instead of fixed sleeps.
+ * filter pages use for `?only=`, the event-based settle pages use instead of fixed sleeps, and
+ * the diff-based selection behind `--changed` with the coverage map it reads.
  *
- * Plain Node, no browser: `scheduled()` and `loadTimings`/`saveTimings` are pure enough to drive
- * with made-up fixtures and a temporary file, and `test/sections.js` runs in a `node:vm` context
+ * Plain Node, no browser: `scheduled()`, `loadTimings`/`saveTimings`, `selectAffected`,
+ * `srcFilesFromCoverage` and `saveCoverage` are pure enough to drive with made-up fixtures, a
+ * hand-written bundle and source map, and a temporary file, and `test/sections.js` runs in a `node:vm` context
  * with a stub window, document and location. `test/settle.js` runs in one whose timers and frames
  * are on a fake clock the test advances. Run with: npm run test:harness
  */
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createContext, runInContext } from 'node:vm';
-import { scheduled } from '../scripts/fixtures.mjs';
+import {
+  loadCoverage,
+  saveCoverage,
+  selectAffected,
+  srcFilesFromCoverage,
+  unmappedBundles,
+} from '../scripts/affected.mjs';
+import { fixtureName, scheduled } from '../scripts/fixtures.mjs';
 import { loadTimings, saveTimings } from '../scripts/timings.mjs';
 
 const page = (name, extra = {}) => ({ page: `test/${name}.html`, budget: 1000, ...extra });
@@ -144,6 +154,26 @@ const CHAIN = {
 
 /** The names `run` lets through, asked in declared order as a page does. */
 const ranOf = (sections) => CHAIN.names.filter((name) => sections.run(name));
+
+/* A made-up suite for selectAffected: b runs shared and strict, c has no coverage entry yet. */
+const AFFECTED = [page('a'), page('b'), page('b', { strict: true }), page('c')];
+const COVERAGE = {
+  recordedAt: '2026-11-25T00:00:00.000Z',
+  fixtures: {
+    a: ['src/core/x.ts'],
+    b: ['src/core/x.ts', 'src/ui/y.ts'],
+    'b (strict)': ['src/ui/y.ts'],
+  },
+};
+const PAGES = {
+  'test/a.html': '<script src="sections.js"></script>',
+  'test/b.html': '<script src="sections.js"></script><script>fetch("./nested/theme.css")</script>',
+  'test/c.html': '<p>no helpers</p>',
+};
+/** `selectAffected` over the made-up suite; `fixtures` defaults to the ones with an entry. */
+const affected = (changed, { fixtures = AFFECTED.slice(0, 3), coverage = COVERAGE } = {}) =>
+  selectAffected({ changed, fixtures, coverage, readPage: (p) => PAGES[p] ?? '' });
+const names = (selection) => selection.selected.map(fixtureName);
 
 /** A scratch directory for one test, removed afterwards. */
 async function inTemp(run) {
@@ -367,6 +397,121 @@ const tests = {
     await timeOf(Promise.all([timed(settle.quiet(300)), timed(settle.fixed(100)), timed(settle.quiet(300))]));
     assert.deepEqual(times, [3 * FRAME_MS, 3 * FRAME_MS, 100]);
     assert.deepEqual({ ...settle.stats() }, { calls: 2, early: 2, toDeadline: 0, savedMs: 2 * (300 - 3 * FRAME_MS) });
+  },
+  async aMappedSrcFileSelectsExactlyItsFixtures() {
+    const selection = affected(['src/ui/y.ts']);
+    assert.equal(selection.all, null);
+    assert.deepEqual(names(selection), ['b', 'b (strict)']);
+    assert.equal(selection.why.get('b'), 'covers src/ui/y.ts');
+    assert.deepEqual(names(affected(['src/core/x.ts'])), ['a', 'b']);
+  },
+  async aSrcFileInNoEntrySelectsAll() {
+    const selection = affected(['src/ui/y.ts', 'src/new.ts']);
+    assert.equal(selection.all, 'src/new.ts is not in the coverage map (run npm run check:map)');
+    assert.deepEqual(names(selection), ['a', 'b', 'b (strict)']);
+  },
+  async noCoverageMapSelectsAll() {
+    const selection = affected(['src/ui/y.ts'], { coverage: null });
+    assert.equal(selection.all, 'src/ui/y.ts is not in the coverage map (run npm run check:map)');
+    assert.equal(selection.selected.length, 3);
+  },
+  async aFixtureWithoutAnEntryRunsForSrcChangesOnly() {
+    const forSrc = affected(['src/ui/y.ts'], { fixtures: AFFECTED });
+    assert.deepEqual(names(forSrc), ['b', 'b (strict)', 'c']);
+    assert.equal(forSrc.why.get('c'), 'no coverage entry yet');
+    assert.deepEqual(names(affected(['test/a.html'], { fixtures: AFFECTED })), ['a']);
+  },
+  async anUnmappedBundleRunsForEverySrcChange() {
+    const coverage = { ...COVERAGE, fixtures: { ...COVERAGE.fixtures, c: ['dist/heo-capture.js'] } };
+    const selection = affected(['src/ui/y.ts'], { fixtures: AFFECTED, coverage });
+    assert.deepEqual(names(selection), ['b', 'b (strict)', 'c']);
+    assert.equal(selection.why.get('c'), 'runs dist/heo-capture.js, which has no source map');
+    assert.deepEqual(names(affected(['test/a.html'], { fixtures: AFFECTED, coverage })), ['a']);
+  },
+  async aChangedPageSelectsBothItsVariants() {
+    const selection = affected(['test/b.html']);
+    assert.deepEqual(names(selection), ['b', 'b (strict)']);
+    assert.equal(selection.why.get('b (strict)'), 'its page changed');
+  },
+  async aHelperSelectsEveryPageThatNamesIt() {
+    assert.deepEqual(names(affected(['test/sections.js'])), ['a', 'b', 'b (strict)']);
+    // A fetched asset counts too, by its path relative to test/.
+    assert.deepEqual(names(affected(['test/nested/theme.css'])), ['b', 'b (strict)']);
+  },
+  async anUnreferencedTestAssetSelectsAll() {
+    const selection = affected(['test/unused.css']);
+    assert.equal(selection.all, 'test/unused.css is used by no fixture page that the scan can see');
+    assert.equal(selection.selected.length, 3);
+  },
+  async theHarnessSelectsAll() {
+    const selection = affected(['scripts/check-all.mjs']);
+    assert.equal(selection.all, 'scripts/check-all.mjs affects the harness or the build');
+    assert.equal(selection.selected.length, 3);
+    assert.equal(affected(['package.json', 'src/ui/y.ts']).selected.length, 3);
+  },
+  async docsAndNodeSuitesSelectNothing() {
+    const selection = affected(['README.md', '.kiro/x.md', 'test/color.test.ts', 'demo/a.html']);
+    assert.equal(selection.all, null);
+    assert.deepEqual(names(selection), []);
+    assert.deepEqual(selection.ignored, [
+      'README.md (docs)',
+      '.kiro/x.md (docs)',
+      'test/color.test.ts (node suite, run its npm script)',
+      'demo/a.html (not part of the suite)',
+    ]);
+  },
+  async coverageMapsCalledFunctionsToTheirSourceAndSkipsTheWrapper() {
+    await inTemp((dir) => {
+      mkdirSync(join(dir, 'dist'));
+      // A bundle of three modules: index (the wrapper's own line), a and b, one line each, and
+      // after b a bundler helper with no mapping of its own, which runs at load.
+      const text = 'var X=function(){\nfunction a(){return 1}\nfunction b(){return 2}var h=()=>0;\nreturn h(),a()}();\n';
+      writeFileSync(join(dir, 'dist', 'app.js'), text);
+      writeFileSync(
+        join(dir, 'dist', 'app.js.map'),
+        JSON.stringify({
+          version: 3,
+          file: 'app.js',
+          sources: ['../src/index.ts', '../src/a.ts', '../src/b.ts'],
+          names: [],
+          mappings: 'AAAA;ACAA;ACAA;AFAA',
+        }),
+      );
+      writeFileSync(join(dir, 'dist', 'raw.js'), 'function r(){}r();\n');
+      const fn = (start, end, count) => ({ functionName: '', isBlockCoverage: false, ranges: [{ startOffset: start, endOffset: end, count }] });
+      const lineA = text.indexOf('function a');
+      const lineB = text.indexOf('function b');
+      const helper = text.indexOf('()=>0');
+      const coverage = [
+        {
+          url: pathToFileURL(join(dir, 'dist', 'app.js')).href,
+          functions: [
+            fn(0, text.length, 1), // the script's top level
+            fn(text.indexOf('function()'), text.length - 4, 1), // the bundle wrapper, mapped to src/index.ts
+            fn(lineA, lineA + 22, 1),
+            fn(lineB, lineB + 22, 0),
+            fn(helper, helper + 5, 1), // nearest mapping is src/b.ts, but not its own: skipped
+          ],
+        },
+        { url: pathToFileURL(join(dir, 'dist', 'raw.js')).href, functions: [fn(0, 19, 1), fn(0, 14, 1), fn(13, 14, 1)] },
+        { url: pathToFileURL(join(dir, 'test', 'page.js')).href, functions: [fn(5, 9, 1)] },
+      ];
+      assert.deepEqual(srcFilesFromCoverage(coverage, dir), ['src/a.ts']);
+      assert.deepEqual(unmappedBundles(coverage, dir), ['dist/raw.js']);
+    });
+  },
+  async saveCoverageMergesAndPrunes() {
+    await inTemp((dir) => {
+      const file = join(dir, 'cache', 'coverage.json');
+      assert.equal(loadCoverage(file), null);
+      saveCoverage({ a: ['src/b.ts', 'src/a.ts'], gone: ['src/a.ts'] }, file, [page('a'), page('gone'), page('b')]);
+      saveCoverage(new Map([['b', ['src/c.ts']]]), file, [page('a'), page('b')]);
+      const loaded = loadCoverage(file);
+      assert.deepEqual(loaded.fixtures, { a: ['src/a.ts', 'src/b.ts'], b: ['src/c.ts'] });
+      assert.ok(!Number.isNaN(Date.parse(loaded.recordedAt)));
+      writeFileSync(file, '{"version": 2, "fixtures": {}}');
+      assert.equal(loadCoverage(file), null);
+    });
   },
   async reportListsRanAndSkippedInDeclaredOrder() {
     const sections = sectionsAt('?only=typing,stops').create(CHAIN);
