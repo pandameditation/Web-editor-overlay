@@ -405,6 +405,10 @@ const NEW_ID_RULE = 'new-id-rule';
  */
 const userToggled = new Map<string, boolean>();
 
+/** Close all: every card moves on this one clock, the HEO easing, a little longer than one card's morph. */
+const CLOSE_ALL_MS = 420;
+const CLOSE_ALL_EASE = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+
 /**
  * Whether a section renders open.
  *
@@ -589,6 +593,58 @@ export class HeoStylesPanel extends HeoElement {
       .viewrow heo-segmented.views {
         flex: 1 1 auto;
         min-width: 0;
+      }
+      /* Close all cards: as tall as the toggle, its open count in a quiet chip on the corner. */
+      .closeall {
+        position: relative;
+        display: grid;
+        place-items: center;
+        flex: none;
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: 9px;
+        background: var(--heo-raised);
+        color: var(--heo-text-dim);
+        cursor: pointer;
+        transition:
+          background var(--heo-fast),
+          color var(--heo-fast),
+          border-color var(--heo-fast);
+      }
+      .closeall:hover:not([aria-disabled='true']) {
+        border-color: var(--heo-accent-line);
+        background: var(--heo-hover);
+        color: var(--heo-text);
+      }
+      .closeall:focus-visible {
+        outline: 2px solid var(--heo-focus-ring);
+        outline-offset: 2px;
+      }
+      /* Off as HEO draws a disabled button: dashed, no fill. It keeps its place and its reason. */
+      .closeall[aria-disabled='true'] {
+        border-style: dashed;
+        background: transparent;
+        cursor: default;
+      }
+      .closeall .n {
+        position: absolute;
+        top: -5px;
+        right: -5px;
+        min-width: 16px;
+        height: 16px;
+        padding: 0 4px;
+        box-sizing: border-box;
+        border: 1px solid var(--heo-line-strong);
+        border-radius: 999px;
+        background: var(--heo-active);
+        color: var(--heo-text-dim);
+        font-size: 9.5px;
+        font-weight: 650;
+        line-height: 14px;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
       }
       /* The search's adder, right under it, above the cards it adds to. */
       .search-add {
@@ -1121,6 +1177,7 @@ export class HeoStylesPanel extends HeoElement {
           <heo-segmented
             class="views"
             size="lg"
+            toggle
             label="View"
             .options=${VIEWS}
             .value=${this.ui.view}
@@ -1129,6 +1186,7 @@ export class HeoStylesPanel extends HeoElement {
         if (view === 'cards' || view === 'applied') this.#patch({ view });
       }}
           ></heo-segmented>
+          ${this.#renderCloseAll(cards)}
         </div>
       </div>
       ${this.ui.adder?.id === SEARCH_ADDER ? this.#renderSearchAdder(cards) : nothing}
@@ -3085,27 +3143,27 @@ export class HeoStylesPanel extends HeoElement {
       </div>` : nothing}
       <div class="rows" data-declarations="typography">
         ${
-        /*
-         * One list, the labelled rows and the extras together, so a font shorthand and the parts
-         * its block declares beside it are one family with its order control, as margin and its
-         * sides are: drawn apart, nothing said which of font and font-size was in charge.
-         */
-        renderPropertyRows([...rows.map((row) => row.property), ...extras], (property) => {
-          const row = rows.find((one) => one.property === property);
-          return row
-            ? {
-              property: row.property,
-              scope,
-              element: el,
-              model,
-              listId: 'typography',
-              label: row.label,
-              sub: row.sub,
-              segments: row.segments,
-              ...(inline ? { preferInline: true } : {}),
-            }
-            : cards.spec(property, 'typography');
-        }, host)}
+      /*
+       * One list, the labelled rows and the extras together, so a font shorthand and the parts
+       * its block declares beside it are one family with its order control, as margin and its
+       * sides are: drawn apart, nothing said which of font and font-size was in charge.
+       */
+      renderPropertyRows([...rows.map((row) => row.property), ...extras], (property) => {
+        const row = rows.find((one) => one.property === property);
+        return row
+          ? {
+            property: row.property,
+            scope,
+            element: el,
+            model,
+            listId: 'typography',
+            label: row.label,
+            sub: row.sub,
+            segments: row.segments,
+            ...(inline ? { preferInline: true } : {}),
+          }
+          : cards.spec(property, 'typography');
+      }, host)}
       </div>
       ${tuneShown
         ? html`<button class="more" type="button" aria-expanded=${this.#typeTune ? 'true' : 'false'} @click=${() => {
@@ -3341,6 +3399,85 @@ export class HeoStylesPanel extends HeoElement {
     this.renderRoot
       .querySelector<HTMLElement & { reset?: (next?: string) => void }>('.top heo-search-field')
       ?.reset?.('');
+  }
+
+  /** The cards open now, in grid order: none while searching, when every match is held open. */
+  #openCards(cards: CardRender): string[] {
+    if (cards.host.filtering || this.ui.view !== 'cards') return [];
+    return cards.visible.filter((card) => this.#cardOpen(card, cards)).map((card) => card.id);
+  }
+
+  /**
+   * Close all: at the end of the view row, with how many cards are open. Off (and saying why) in
+   * Applied, while searching, and with none open — not hidden, so the row does not shift.
+   */
+  #renderCloseAll(cards: CardRender): TemplateResult {
+    const open = this.#openCards(cards);
+    const why = this.ui.view !== 'cards'
+      ? 'Applied has no cards to close'
+      : cards.host.filtering
+        ? 'Cards stay open while searching'
+        : open.length
+          ? `Close all ${open.length} open card${open.length === 1 ? '' : 's'}`
+          : 'No card is open';
+    return html`<button
+      class="closeall"
+      type="button"
+      data-close-all
+      aria-disabled=${open.length ? 'false' : 'true'}
+      aria-label=${why}
+      title=${why}
+      @click=${() => this.#closeAllCards(cards)}
+    >
+      ${icon('foldAll', 15)}
+      ${open.length ? html`<span class="n" aria-hidden="true">${open.length}</span>` : nothing}
+    </button>`;
+  }
+
+  /**
+   * Close every open card at once, as one movement: each card is measured where it is, the open
+   * ones are closed, and then every card in the grid moves from where it was to where it lands on
+   * the same clock. A card closing shrinks into its tile as it goes, the rest slide up into the
+   * room it gave back. Nothing is staggered: one after the other read as a queue, not a collapse.
+   */
+  #closeAllCards(cards: CardRender): void {
+    const open = this.#openCards(cards);
+    if (!open.length) return;
+    const grid = this.renderRoot.querySelector<HTMLElement>('.cats[data-cards="all"]');
+    const tiles = Array.from(grid?.children ?? []).filter((one): one is HTMLElement => one instanceof HTMLElement);
+    const motion = typeof this.animate === 'function' && !matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const before = new Map(motion ? tiles.map((one) => [one, one.getBoundingClientRect()]) : []);
+    for (const id of open) userToggled.set(id, false);
+    this.requestUpdate();
+    if (!motion) return;
+    const closing = new Set(open);
+    void this.updateComplete.then(() => {
+      for (const [one, from] of before) {
+        if (!one.isConnected) continue;
+        const to = one.getBoundingClientRect();
+        const dx = from.left - to.left;
+        const dy = from.top - to.top;
+        const timing = { duration: CLOSE_ALL_MS, easing: CLOSE_ALL_EASE };
+        if (closing.has(one.dataset.card ?? '')) {
+          /*
+           * The tile starts where the open card's head was, a touch large and faded, and lands in
+           * its cell with a small settle: the card folding down into its tile, on the same clock
+           * as everything sliding round it.
+           */
+          one.animate(
+            [
+              { translate: `${dx}px ${dy}px`, scale: '1.04', opacity: 0.55, transformOrigin: 'top left' },
+              { translate: '0px 0px', scale: '0.985', opacity: 1, offset: 0.8, transformOrigin: 'top left' },
+              { translate: '0px 0px', scale: '1', opacity: 1, transformOrigin: 'top left' },
+            ],
+            timing,
+          );
+          continue;
+        }
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue;
+        one.animate([{ translate: `${dx}px ${dy}px` }, { translate: '0px 0px' }], timing);
+      }
+    });
   }
 
   #remember(id: string, open: boolean): void {

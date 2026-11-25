@@ -72,6 +72,8 @@ const PATHS: Record<string, string> = {
   moveIn: 'M6 4.5h4.5a2 2 0 012 2v5M10.5 6.5l2-2 2 2M3.5 11.5h6',
   expand: 'M9.8 2.8h3.4v3.4M13.2 2.8L9.3 6.7M6.2 13.2H2.8V9.8M2.8 13.2l3.9-3.9',
   collapse: 'M13.2 6.2H9.8V2.8M9.8 6.2l3.4-3.4M2.8 9.8h3.4v3.4M6.2 9.8l-3.4 3.4',
+  // Close every open card: two chevrons folding in on a line.
+  foldAll: 'M4.5 2.8L8 5.6l3.5-2.8M4.5 13.2L8 10.4l3.5 2.8M3 8h10',
   /** Wider, both ways: a Styles card tile opens across the whole row. */
   widen: 'M2.4 8h11.2M2.4 8l2.6-2.6M2.4 8l2.6 2.6M13.6 8L11 5.4M13.6 8L11 10.6',
 

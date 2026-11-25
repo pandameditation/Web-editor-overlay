@@ -201,7 +201,7 @@
           // The view switch on a line of its own under the search, each view with its picture.
           results.switch.theViewSwitchHasItsOwnLineWithIcons =
             Boolean(switcher?.closest('.viewrow')) && switcher.getBoundingClientRect().top >= search.bottom &&
-            switcher.shadowRoot.querySelectorAll('button[aria-pressed] svg').length === 2;
+            switcher.shadowRoot.querySelectorAll('.flip .opt svg').length === 2;
         }
         progress.textContent = 'switch: open in place';
         {
@@ -311,6 +311,98 @@
             views()?.value === 'cards' && Boolean(card('border')?.open) && card('border').classList.contains('flash') &&
             Boolean(card('border').querySelector('heo-border-editor'));
           await closeCard('border');
+        }
+
+        progress.textContent = 'toggle';
+        results.toggle = {};
+        {
+          const press = (payload) => new Promise((resolve) => {
+            const id = Math.random().toString(36).slice(2);
+            window.__heoKeysDone = (done) => { if (done === id) resolve(); };
+            window.__heoPressKeys(JSON.stringify({ id, ...payload }));
+          });
+          const flip = () => views().shadowRoot.querySelector('.flip');
+          const clickAt = async (el, fx) => {
+            const b = el.getBoundingClientRect();
+            const x = b.left + b.width * fx;
+            const y = b.top + b.height / 2;
+            await press({ mouse: [{ type: 'hover', x, y }, { type: 'down', x, y }, { type: 'up', x, y }] });
+            await settle(60);
+          };
+          views().scrollIntoView({ block: 'center' });
+          await settle(100);
+          // One control, not two tabs: a switch that is on for Applied.
+          results.toggle.oneSwitchForBothViews =
+            flip()?.getAttribute('role') === 'switch' && flip()?.getAttribute('aria-checked') === 'false' &&
+            views().shadowRoot.querySelectorAll('button').length === 1 && flip().getAttribute('aria-label') === 'View: Applied';
+          // A press on the half already picked flips it too: anywhere on it is the target.
+          await clickAt(flip(), 0.25);
+          const flipped = views().value === 'applied' && Boolean(root().querySelector('.applied')) && flip().getAttribute('aria-checked') === 'true';
+          const thumbAnimations = views().shadowRoot.querySelector('.thumb').getAnimations();
+          const iconFrames = (views().shadowRoot.querySelector('.opt.on svg')?.getAnimations() ?? []).flatMap((one) => one.effect.getKeyframes());
+          results.toggle.aPressOnThePickedHalfFlipsIt = flipped;
+          results.toggle.theThumbSpringsAcross = thumbAnimations.length > 0 && getComputedStyle(views().shadowRoot.querySelector('.thumb')).translate !== 'none';
+          // The picked icon swells once, and does not turn: a rotating icon read as a spinner.
+          results.toggle.theIconSwellsWithoutTurning = iconFrames.length > 0 && iconFrames.every((frame) => !frame.rotate && !/rotate/.test(frame.transform ?? ''));
+          flip().focus();
+          await press({ keys: ['ArrowLeft'] });
+          await settle(60);
+          results.toggle.leftPicksCards = views().value === 'cards';
+          await press({ keys: ['Enter'] });
+          await settle(60);
+          results.toggle.enterFlipsIt = views().value === 'applied';
+          const offInApplied = root().querySelector('[data-close-all]')?.getAttribute('aria-disabled') === 'true';
+          await press({ keys: ['ArrowLeft'] });
+          await settle(500);
+          results.toggle.closeAllIsOffInApplied = offInApplied;
+        }
+        progress.textContent = 'close all';
+        results.closeAll = {};
+        {
+          const button = () => root().querySelector('[data-close-all]');
+          const noneOpenAtFirst = button()?.getAttribute('aria-disabled') === 'true' && !button().querySelector('.n') && /No card is open/.test(button().title);
+          await openCard('spacing');
+          await openCard('typography');
+          await openCard('border');
+          // Past each opening's own motion (its glow runs 900ms), so only close-all's is measured.
+          await settle(1400);
+          const count = button()?.querySelector('.n');
+          const counted = text(count) === '3' && button().getAttribute('aria-label') === 'Close all 3 open cards';
+          // The count is quiet: a neutral chip, not the accent the toggle's picked icon uses.
+          const chip = count ? getComputedStyle(count).backgroundColor : '';
+          const accent = getComputedStyle(views().shadowRoot.querySelector('.opt.on svg')).color;
+          const neutral = Boolean(chip) && chip !== accent && !/rgb\(99, 102, 241/.test(chip);
+          const before = allCardIds();
+          button().focus();
+          button().click();
+          await panel().updateComplete;
+          await frames();
+          const tiles = Array.from(root().querySelectorAll('.cats[data-cards="all"] > heo-section'));
+          // Script animations only: a hover or border-colour CSS transition on a card is not the movement.
+          const moving = (one) => one.getAnimations().filter((animation) => !(animation instanceof CSSTransition) && !(animation instanceof CSSAnimation));
+          const animations = tiles.flatMap((one) => moving(one).map((animation) => ({ one, timing: animation.effect.getTiming() })));
+          const closedOnes = tiles.filter((one) => ['spacing', 'typography', 'border'].includes(one.dataset.card));
+          results.closeAll = {
+            offWithNothingOpen: noneOpenAtFirst,
+            countsTheOpenCards: counted,
+            inANeutralChip: neutral,
+            closesEveryCard: tiles.every((one) => !one.open),
+            keepingTheirOrder: allCardIds().join(',') === before.join(','),
+            // One movement: every card that moved is on one clock, started together, none delayed.
+            everyCardMovesAtOnce: animations.length >= 4 && new Set(animations.map((one) => one.timing.duration)).size === 1 &&
+              animations.every((one) => !one.timing.delay),
+            eachClosedCardFoldsIntoItsTile: closedOnes.length === 3 && closedOnes.every((one) => moving(one).length === 1),
+            andTheOthersSlide: tiles.some((one) => !closedOnes.includes(one) && moving(one).length),
+            theFocusStaysOnTheButton: root().activeElement === button(),
+            whichThenSaysNothingIsOpen: button().getAttribute('aria-disabled') === 'true',
+          };
+          await settle(500);
+          // While searching every match is held open, so there is nothing to close.
+          root().querySelector('heo-search-field')?.dispatchEvent(new CustomEvent('search-input', { detail: { value: 'padding' }, bubbles: true, composed: true }));
+          await settle(200);
+          results.closeAll.offWhileSearching = button()?.getAttribute('aria-disabled') === 'true' && /while searching/.test(button().title);
+          root().querySelector('heo-search-field')?.dispatchEvent(new CustomEvent('search-input', { detail: { value: '' }, bubbles: true, composed: true }));
+          await settle(200);
         }
 
         /* ------------------------------------------------------------------ *

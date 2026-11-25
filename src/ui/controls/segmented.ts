@@ -114,6 +114,77 @@ export class HeoSegmented extends LitElement {
       :host([size='lg']) button[aria-pressed='true'] svg {
         color: var(--heo-accent-text);
       }
+      /*
+       * Toggle: two options drawn as the large tabs, but one control. A press anywhere on it picks
+       * the other option, so the whole bar is the target and not only the half that is not picked;
+       * the raised thumb springs across and squashes on the way, which says what changed.
+       */
+      .flip {
+        all: unset;
+        position: relative;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 3px;
+        width: 100%;
+        box-sizing: border-box;
+        padding: 3px;
+        border: 1px solid var(--heo-line);
+        border-radius: 9px;
+        background: var(--heo-sunken);
+        cursor: pointer;
+        isolation: isolate;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .flip:focus-visible {
+        outline: 2px solid var(--heo-focus-ring);
+        outline-offset: 2px;
+      }
+      .flip .thumb {
+        position: absolute;
+        z-index: 0;
+        top: 3px;
+        bottom: 3px;
+        left: 3px;
+        width: calc((100% - 9px) / 2);
+        border-radius: 6px;
+        background: var(--heo-raised);
+        box-shadow: var(--heo-shadow-sm), inset 0 0 0 1px var(--heo-line-strong);
+        transition: translate 460ms cubic-bezier(0.34, 1.45, 0.5, 1);
+      }
+      .flip[aria-checked='true'] .thumb {
+        translate: calc(100% + 3px) 0;
+      }
+      .flip .opt {
+        position: relative;
+        z-index: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        min-width: 0;
+        height: 28px;
+        padding: 0 6px;
+        border-radius: 6px;
+        color: var(--heo-text-dim);
+        font-size: 11.5px;
+        white-space: nowrap;
+        transition: color var(--heo-med), background var(--heo-fast);
+      }
+      .flip .opt.on {
+        color: var(--heo-text);
+        font-weight: 600;
+      }
+      .flip .opt.on svg {
+        color: var(--heo-accent-text);
+      }
+      /* Hovering anywhere on it lights the side a press picks: it reads as a switch, not two tabs. */
+      .flip:hover .opt:not(.on) {
+        background: var(--heo-hover);
+        color: var(--heo-text);
+      }
+      .flip:disabled {
+        cursor: not-allowed;
+      }
       /* Matches the value field's clear button, so every set row ends the same way. */
       button.remove {
         flex: 0 0 22px;
@@ -133,12 +204,18 @@ export class HeoSegmented extends LitElement {
   @property({ type: String }) label = '';
   /** Show a ✕ that clears the value. For a value that is set, rather than inherited or computed. */
   @property({ type: Boolean }) removable = false;
+  /**
+   * Two options as one toggle (the Styles panel's Cards | Applied): drawn as the large tabs, a press
+   * anywhere on it picks the other one, and the arrows pick the one they point at.
+   */
+  @property({ type: Boolean, reflect: true }) toggle = false;
   /** 'lg' for a switch between views; the default fits a property row. */
   @property({ type: String, reflect: true }) size = '';
   /** Every segment off, for a choice the page cannot offer right now; the host's title says why. */
   @property({ type: Boolean, reflect: true }) disabled = false;
 
   override render(): TemplateResult {
+    if (this.toggle && this.options.length === 2) return this.#renderToggle();
     return html`<div class=${this.wrap ? 'bar wrap' : 'bar'} role="group" aria-label=${this.label || 'Options'}>
       ${this.options.map((option) => {
       const active = option.value === this.value;
@@ -171,6 +248,65 @@ export class HeoSegmented extends LitElement {
           </button>`
         : nothing}
     </div>`;
+  }
+
+  #renderToggle(): TemplateResult {
+    const [first, second] = this.options as [SegmentOption, SegmentOption];
+    const onSecond = this.value === second.value;
+    const current = onSecond ? second : first;
+    const other = onSecond ? first : second;
+    const name = (option: SegmentOption): string => option.label ?? option.ariaLabel ?? option.value;
+    /*
+     * A switch, on for the second option: "View: Applied, switch, off" says what it is and what
+     * a press does, where one button's name changing under the focus says neither.
+     */
+    return html`<button
+      class="flip"
+      type="button"
+      role="switch"
+      aria-checked=${onSecond ? 'true' : 'false'}
+      aria-label=${`${this.label || 'Options'}: ${name(second)}`}
+      title=${`${current.title ?? name(current)}. Press for ${name(other)}`}
+      ?disabled=${this.disabled}
+      @click=${() => this.#pick(other, false)}
+      @keydown=${(event: KeyboardEvent) => {
+        const to = event.key === 'ArrowLeft' ? first : event.key === 'ArrowRight' ? second : null;
+        if (!to) return;
+        event.preventDefault();
+        if (to !== current) this.#pick(to, false);
+      }}
+    >
+      <span class="thumb" aria-hidden="true"></span>
+      ${[first, second].map((option) => html`<span class=${option === current ? 'opt on' : 'opt'} data-value=${option.value} aria-hidden="true">
+        ${option.icon ? icon(option.icon, 13) : nothing}${name(option)}
+      </span>`)}
+    </button>`;
+  }
+
+  /** The value the toggle last drew, so a change (and only a change) plays its motion. */
+  #drawn: string | null = null;
+
+  override updated(): void {
+    if (!this.toggle) return;
+    const before = this.#drawn;
+    this.#drawn = this.value;
+    if (before === null || before === this.value) return;
+    if (typeof this.animate !== 'function' || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // The thumb squashes as it springs across, and the picked side's icon swells once. No turn:
+    // a rotating icon read as a loading spinner.
+    this.renderRoot.querySelector('.thumb')?.animate(
+      [
+        { scale: '1 1' },
+        { scale: '1.14 0.86', boxShadow: 'var(--heo-shadow-sm), inset 0 0 0 1px var(--heo-accent-line), 0 0 0 4px var(--heo-accent-soft)', offset: 0.35 },
+        { scale: '0.97 1.04', offset: 0.7 },
+        { scale: '1 1' },
+      ],
+      { duration: 460, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
+    );
+    this.renderRoot.querySelector('.opt.on svg')?.animate(
+      [{ scale: 0.7 }, { scale: 1.18, offset: 0.6 }, { scale: 1 }],
+      { duration: 380, easing: 'cubic-bezier(0.34, 1.45, 0.5, 1)' },
+    );
   }
 
   #remove(): void {

@@ -1,0 +1,1378 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PROTOTYPE — Styles: Cards / Applied toggle, and close all cards</title>
+  <!--
+  PROTOTYPE — throwaway, not part of the overlay build. Open the file directly in a browser.
+
+  The question: the Cards | Applied tabs become one toggle (still drawn as today's tabs, a press
+  anywhere on it flips it, with a transition that says which is picked), and a way to close every
+  open card at once. Three variants, structurally different — ?variant=A|B|C, the bottom bar, or
+  the ← → keys (when nothing in the panel has the focus):
+
+    A — Slide & squash. The toggle keeps today's full width; the thumb springs across and squashes
+        on the way. "Close all" is an icon button at the end of the row, with the open count.
+    B — Caterpillar. The toggle shrinks to its labels; the thumb's leading edge goes first and its
+        trailing edge follows, so it stretches and contracts. "Close all (n)" is a text button that
+        appears only while a card is open, and turns into "Reopen" for a few seconds after.
+    C — Ripple & slide. Full width; a ripple starts where it was pressed and the view below slides
+        in from that side. "Close all" is a pill stuck to the top of the cards, there while two or
+        more are open, however far the panel is scrolled.
+
+  Tokens are src/ui/tokens.ts (dark and light), the tiles mirror src/ui/controls/section.ts and the
+  tabs src/ui/controls/segmented.ts (size lg). Theme: the bar's ◐ button.
+-->
+  <style>
+    :root {
+      --heo-accent: #6366f1;
+      --heo-accent-ink: #fff;
+      --heo-accent-soft: color-mix(in oklab, var(--heo-accent) 18%, transparent);
+      --heo-accent-line: color-mix(in oklab, var(--heo-accent) 55%, transparent);
+      --heo-bg: oklch(19% 0.014 265);
+      --heo-bg-glass: oklch(16% 0.014 265 / 86%);
+      --heo-raised: oklch(23.5% 0.016 265);
+      --heo-sunken: oklch(16% 0.012 265);
+      --heo-hover: oklch(28% 0.018 265);
+      --heo-active: oklch(32% 0.02 265);
+      --heo-text: oklch(96% 0.005 265);
+      --heo-text-dim: oklch(74% 0.012 265);
+      --heo-text-faint: oklch(68% 0.014 265);
+      --heo-line: oklch(100% 0 0 / 9%);
+      --heo-line-strong: oklch(100% 0 0 / 16%);
+      --heo-focus-ring: color-mix(in oklab, var(--heo-accent) 60%, white);
+      --heo-accent-text: var(--heo-focus-ring);
+      --heo-card-ink: 80% 0.13;
+      --heo-card-well-a: 36% 0.08;
+      --heo-card-well-b: 22% 0.04;
+      --heo-card-tint: 25.5% 0.03;
+      --heo-card-line: 72% 0.12;
+      --heo-card-chip: 32% 0.07;
+      --heo-card-chip-ink: 86% 0.12;
+      --heo-card-count: 80% 0.12;
+      --heo-card-count-ink: 22% 0.05;
+      --heo-r-sm: 7px;
+      --heo-r-md: 10px;
+      --heo-shadow-sm: 0 1px 2px oklch(0% 0 0 / 30%);
+      --heo-shadow-md: 0 8px 24px -6px oklch(0% 0 0 / 45%), 0 2px 6px oklch(0% 0 0 / 25%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(0% 0 0 / 60%), 0 6px 16px oklch(0% 0 0 / 30%);
+      --heo-font: 'Inter var', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --heo-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+      --heo-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+      --heo-fast: 120ms var(--heo-ease);
+      --heo-med: 200ms var(--heo-ease);
+      /* A spring for the toggle: overshoots a little and settles. */
+      --spring: cubic-bezier(0.34, 1.5, 0.5, 1);
+    }
+
+    [data-theme='light'] {
+      --heo-bg: oklch(99% 0.002 265);
+      --heo-bg-glass: oklch(99% 0.002 265 / 92%);
+      --heo-raised: oklch(100% 0 0);
+      --heo-sunken: oklch(96.5% 0.004 265);
+      --heo-hover: oklch(95% 0.006 265);
+      --heo-active: oklch(92% 0.008 265);
+      --heo-text: oklch(24% 0.014 265);
+      --heo-text-dim: oklch(45% 0.014 265);
+      --heo-text-faint: oklch(50% 0.012 265);
+      --heo-line: oklch(20% 0.02 265 / 11%);
+      --heo-line-strong: oklch(20% 0.02 265 / 20%);
+      --heo-focus-ring: var(--heo-accent);
+      --heo-accent-text: color-mix(in oklab, var(--heo-accent) 80%, black);
+      --heo-card-ink: 58% 0.15;
+      --heo-card-well-a: 95.5% 0.03;
+      --heo-card-well-b: 89% 0.05;
+      --heo-card-tint: 98.8% 0.01;
+      --heo-card-line: 60% 0.14;
+      --heo-card-chip: 93% 0.045;
+      --heo-card-chip-ink: 45% 0.14;
+      --heo-card-count: 46% 0.14;
+      --heo-card-count-ink: 99% 0.005;
+      --heo-shadow-sm: 0 1px 2px oklch(50% 0.03 265 / 12%);
+      --heo-shadow-md: 0 8px 24px -6px oklch(50% 0.03 265 / 18%), 0 2px 6px oklch(50% 0.03 265 / 10%);
+      --heo-shadow-lg: 0 24px 60px -12px oklch(50% 0.03 265 / 24%), 0 6px 16px oklch(50% 0.03 265 / 14%);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 372px;
+      gap: 24px;
+      padding: 20px 24px 20px 32px;
+      background: linear-gradient(135deg, #e9ecf2, #dfe4ee);
+      color: var(--heo-text);
+      font: 12.5px/1.45 var(--heo-font);
+    }
+
+    [data-theme='dark'] body {
+      background: linear-gradient(135deg, #f4f5f8, #e6e9f0);
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+    }
+
+    .sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
+
+    /* ---- The page and the notes ---------------------------------------- */
+    .stage {
+      overflow: auto;
+      padding-bottom: 90px;
+      color: #1f2330;
+    }
+
+    .stage h1 {
+      margin: 0 0 4px;
+      font: 600 11px/1 var(--heo-font);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: #64748b;
+    }
+
+    .stage h2 {
+      margin: 0 0 14px;
+      font: 650 22px/1.2 var(--heo-font);
+    }
+
+    .notes {
+      max-width: 560px;
+      display: grid;
+      gap: 10px;
+      font-size: 13px;
+      line-height: 1.55;
+      color: #333a48;
+    }
+
+    .notes ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .notes li {
+      margin: 3px 0;
+    }
+
+    .notes b {
+      color: #111827;
+    }
+
+    .notes .q {
+      padding: 10px 12px;
+      border-left: 3px solid var(--heo-accent);
+      border-radius: 0 8px 8px 0;
+      background: #fff;
+    }
+
+    .state {
+      font: 11px/1.5 var(--heo-mono);
+      color: #475569;
+      background: #fff;
+      border-radius: 8px;
+      padding: 8px 10px;
+      white-space: pre;
+    }
+
+    /* ---- The dock ------------------------------------------------------ */
+    .dock {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      border: 1px solid var(--heo-line);
+      border-radius: 14px;
+      background: var(--heo-bg-glass);
+      backdrop-filter: blur(18px);
+      box-shadow: var(--heo-shadow-lg);
+      overflow: hidden;
+    }
+
+    .dhead {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 14px 4px;
+    }
+
+    .dhead b {
+      font-size: 14px;
+    }
+
+    .dhead code {
+      color: var(--heo-text-faint);
+      font: 10.5px var(--heo-mono);
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 6px 10px 8px;
+      border-bottom: 1px solid var(--heo-line);
+    }
+
+    .tabs span {
+      padding: 5px 10px;
+      border-radius: 7px;
+      color: var(--heo-text-faint);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: .08em;
+    }
+
+    .tabs span.on {
+      background: var(--heo-accent-soft);
+      color: var(--heo-accent-text);
+      box-shadow: inset 0 0 0 1px var(--heo-accent-line);
+    }
+
+    .body {
+      position: relative;
+      flex: 1;
+      overflow: auto;
+      padding: 10px 12px 16px;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+    }
+
+    .strip {
+      display: flex;
+      gap: 6px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 24px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: var(--heo-raised);
+      box-shadow: inset 0 0 0 1px var(--heo-line-strong);
+      font-size: 11px;
+    }
+
+    .chip i {
+      font-style: normal;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--heo-hover);
+      color: var(--heo-text-dim);
+      font-size: 9.5px;
+    }
+
+    .chip.add {
+      color: var(--heo-text-faint);
+      background: transparent;
+      box-shadow: inset 0 0 0 1px var(--heo-line);
+    }
+
+    .search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 32px;
+      padding: 0 10px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-sunken);
+      color: var(--heo-text-faint);
+      font-size: 11.5px;
+    }
+
+    .search .add {
+      margin-left: auto;
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 6px;
+      background: var(--heo-hover);
+      color: var(--heo-text-dim);
+    }
+
+    svg {
+      flex: none;
+    }
+
+    /* ---- The view row (each variant draws its own) ---------------------- */
+    .viewrow {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+    }
+
+    .toggle {
+      all: unset;
+      position: relative;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      padding: 3px;
+      border: 1px solid var(--heo-line);
+      border-radius: 9px;
+      background: var(--heo-sunken);
+      cursor: pointer;
+      isolation: isolate;
+      overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .toggle:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    .toggle .opt {
+      position: relative;
+      z-index: 2;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      height: 28px;
+      padding: 0 12px;
+      color: var(--heo-text-dim);
+      font-size: 11.5px;
+      white-space: nowrap;
+      transition: color var(--heo-med), font-weight var(--heo-med);
+    }
+
+    .toggle .opt.on {
+      color: var(--heo-text);
+      font-weight: 600;
+    }
+
+    .toggle .opt.on svg {
+      color: var(--heo-accent-text);
+    }
+
+    /* Hovering the whole control lights the side a press would pick: it says the press flips it. */
+    .toggle:hover .opt:not(.on) {
+      color: var(--heo-text);
+    }
+
+    .toggle:hover .opt:not(.on)::after {
+      content: '';
+      position: absolute;
+      inset: 2px;
+      z-index: -1;
+      border-radius: 6px;
+      background: var(--heo-hover);
+      opacity: .7;
+    }
+
+    .toggle:active .thumb {
+      filter: brightness(.96);
+    }
+
+    .thumb {
+      position: absolute;
+      z-index: 1;
+      top: 3px;
+      bottom: 3px;
+      left: 3px;
+      width: calc(50% - 3px);
+      border-radius: 6px;
+      background: var(--heo-raised);
+      box-shadow: var(--heo-shadow-sm), inset 0 0 0 1px var(--heo-line-strong), 0 0 0 0 var(--heo-accent-soft);
+    }
+
+    /* A — slide and squash. */
+    [data-variant='A'] .toggle {
+      flex: 1;
+    }
+
+    [data-variant='A'] .thumb {
+      transition: translate 460ms var(--spring);
+    }
+
+    [data-variant='A'] .toggle[aria-checked='true'] .thumb {
+      translate: 100% 0;
+    }
+
+    [data-variant='A'] .thumb.squash {
+      animation: squash 460ms var(--heo-ease);
+    }
+
+    @keyframes squash {
+      0% {
+        scale: 1 1;
+      }
+
+      35% {
+        scale: 1.16 0.84;
+        box-shadow: var(--heo-shadow-sm), inset 0 0 0 1px var(--heo-accent-line), 0 0 0 4px var(--heo-accent-soft);
+      }
+
+      70% {
+        scale: 0.97 1.04;
+      }
+
+      100% {
+        scale: 1 1;
+      }
+    }
+
+    .opt.pop svg {
+      animation: pop 420ms var(--spring);
+    }
+
+    @keyframes pop {
+      0% {
+        scale: .6;
+        rotate: -20deg;
+      }
+
+      60% {
+        scale: 1.25;
+      }
+
+      100% {
+        scale: 1;
+        rotate: 0deg;
+      }
+    }
+
+    /* The close-all icon button (A): a ghost button with the open count, dashed when there is nothing to close. */
+    .closeall {
+      all: unset;
+      position: relative;
+      display: grid;
+      place-items: center;
+      flex: none;
+      width: 34px;
+      height: 34px;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: 9px;
+      background: var(--heo-raised);
+      color: var(--heo-text-dim);
+      cursor: pointer;
+      transition: background var(--heo-fast), color var(--heo-fast), border-color var(--heo-fast);
+    }
+
+    .closeall:hover:not([aria-disabled='true']) {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+      border-color: var(--heo-accent-line);
+    }
+
+    .closeall:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    .closeall[aria-disabled='true'] {
+      border-style: dashed;
+      background: transparent;
+      color: var(--heo-text-faint);
+      cursor: default;
+    }
+
+    .closeall .n {
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      min-width: 16px;
+      height: 16px;
+      padding: 0 4px;
+      border-radius: 999px;
+      background: var(--heo-accent);
+      color: var(--heo-accent-ink);
+      font-size: 9.5px;
+      font-weight: 700;
+      line-height: 16px;
+      text-align: center;
+      box-shadow: 0 0 0 2px var(--heo-bg);
+      transition: scale var(--heo-med);
+    }
+
+    .closeall[aria-disabled='true'] .n {
+      scale: 0;
+    }
+
+    .closeall .n.bump {
+      animation: pop 380ms var(--spring);
+    }
+
+    /* B — caterpillar: the leading edge goes first, the trailing one follows. */
+    [data-variant='B'] .toggle {
+      flex: none;
+    }
+
+    [data-variant='B'] .thumb {
+      width: auto;
+    }
+
+    /* Each edge on its own clock: the one in the direction of travel goes now, the other 110ms later. */
+    [data-variant='B'] .toggle[aria-checked='false'] .thumb {
+      left: 3px;
+      right: 50%;
+      transition: left 240ms var(--spring), right 260ms 110ms var(--heo-ease);
+    }
+
+    [data-variant='B'] .toggle[aria-checked='true'] .thumb {
+      left: 50%;
+      right: 3px;
+      transition: right 240ms var(--spring), left 260ms 110ms var(--heo-ease);
+    }
+
+    [data-variant='B'] .spacer {
+      flex: 1;
+    }
+
+    .textbtn {
+      all: unset;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 28px;
+      padding: 0 10px;
+      border-radius: 7px;
+      color: var(--heo-text-dim);
+      font-size: 11px;
+      font-weight: 500;
+      cursor: pointer;
+      white-space: nowrap;
+      animation: slidein 260ms var(--heo-ease);
+    }
+
+    .textbtn:hover {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+
+    .textbtn:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 1px;
+    }
+
+    .textbtn .n {
+      padding: 0 6px;
+      border-radius: 999px;
+      background: var(--heo-accent-soft);
+      color: var(--heo-accent-text);
+      font-size: 9.5px;
+      font-weight: 700;
+      line-height: 16px;
+    }
+
+    .textbtn.undo {
+      color: var(--heo-accent-text);
+    }
+
+    @keyframes slidein {
+      from {
+        opacity: 0;
+        translate: 8px 0;
+      }
+    }
+
+    /* C — ripple and slide. */
+    [data-variant='C'] .toggle {
+      flex: 1;
+    }
+
+    [data-variant='C'] .thumb {
+      transition: translate 380ms var(--spring), box-shadow 380ms var(--heo-ease);
+    }
+
+    [data-variant='C'] .toggle[aria-checked='true'] .thumb {
+      translate: 100% 0;
+    }
+
+    [data-variant='C'] .thumb::before {
+      /* A trail behind the thumb while it moves: the eye follows it to the new side. */
+      content: '';
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: linear-gradient(90deg, transparent, var(--heo-accent-soft));
+      opacity: 0;
+    }
+
+    [data-variant='C'] .toggle[aria-checked='false'] .thumb::before {
+      background: linear-gradient(270deg, transparent, var(--heo-accent-soft));
+    }
+
+    [data-variant='C'] .thumb.trail::before {
+      animation: trail 420ms var(--heo-ease);
+    }
+
+    @keyframes trail {
+      0% {
+        opacity: 0;
+        scale: 1 1;
+      }
+
+      30% {
+        opacity: 1;
+        scale: 1.5 1;
+      }
+
+      100% {
+        opacity: 0;
+        scale: 1 1;
+      }
+    }
+
+    .ripple {
+      position: absolute;
+      z-index: 0;
+      width: 16px;
+      height: 16px;
+      margin: -8px 0 0 -8px;
+      border-radius: 50%;
+      background: var(--heo-accent-soft);
+      pointer-events: none;
+      animation: ripple 520ms var(--heo-ease) forwards;
+    }
+
+    @keyframes ripple {
+      to {
+        scale: 26;
+        opacity: 0;
+      }
+    }
+
+    .view.from-right {
+      animation: from-right 300ms var(--heo-ease);
+    }
+
+    .view.from-left {
+      animation: from-left 300ms var(--heo-ease);
+    }
+
+    @keyframes from-right {
+      from {
+        opacity: 0;
+        translate: 24px 0;
+      }
+    }
+
+    @keyframes from-left {
+      from {
+        opacity: 0;
+        translate: -24px 0;
+      }
+    }
+
+    /* The sticky pill: on top of the cards while two or more are open, wherever the panel is scrolled. */
+    .stickpill {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      justify-self: center;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: -2px 0 -6px;
+      padding: 4px 4px 4px 12px;
+      border: 1px solid var(--heo-accent-line);
+      border-radius: 999px;
+      background: color-mix(in oklab, var(--heo-raised) 92%, var(--heo-accent));
+      box-shadow: var(--heo-shadow-md);
+      color: var(--heo-text-dim);
+      font-size: 11px;
+      animation: drop 280ms var(--spring);
+    }
+
+    .stickpill b {
+      color: var(--heo-text);
+    }
+
+    .stickpill button {
+      all: unset;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 24px;
+      padding: 0 10px;
+      border-radius: 999px;
+      background: var(--heo-accent);
+      color: var(--heo-accent-ink);
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .stickpill button:hover {
+      filter: brightness(1.08);
+    }
+
+    .stickpill button:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: 2px;
+    }
+
+    @keyframes drop {
+      from {
+        opacity: 0;
+        translate: 0 -10px;
+        scale: .96;
+      }
+    }
+
+    /* ---- Cards (as section.ts draws them) ------------------------------ */
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .card {
+      --hue: var(--h, 265);
+      position: relative;
+      min-width: 0;
+      border: 1px solid oklch(var(--heo-card-line) var(--hue) / 24%);
+      border-radius: 12px;
+      background: linear-gradient(180deg, oklch(var(--heo-card-tint) var(--hue)), var(--heo-raised) 62%);
+      transition: transform var(--heo-med), box-shadow var(--heo-med), border-color var(--heo-med);
+    }
+
+    .card.empty {
+      border-style: dashed;
+      border-color: var(--heo-line-strong);
+      background: transparent;
+    }
+
+    .card:not(.open):hover {
+      transform: translateY(-2px);
+      border-color: oklch(var(--heo-card-line) var(--hue) / 60%);
+    }
+
+    .card.open {
+      grid-column: 1 / -1;
+      border-color: oklch(var(--heo-card-line) var(--hue) / 45%);
+      background: var(--heo-raised);
+      box-shadow: 0 16px 36px -24px oklch(var(--heo-card-line) var(--hue) / 70%);
+    }
+
+    .card.open.empty {
+      border-style: solid;
+      border-color: var(--heo-line-strong);
+      box-shadow: none;
+    }
+
+    .tile {
+      all: unset;
+      display: grid;
+      gap: 4px;
+      width: 100%;
+      padding: 6px 6px 8px;
+      box-sizing: border-box;
+      border-radius: 11px;
+      cursor: pointer;
+    }
+
+    .tile:focus-visible,
+    .chead:focus-visible {
+      outline: 2px solid var(--heo-focus-ring);
+      outline-offset: -2px;
+    }
+
+    .art {
+      display: grid;
+      place-items: center;
+      height: 58px;
+      border-radius: 8px;
+      background: radial-gradient(120% 120% at 20% 0%, oklch(var(--heo-card-well-a) var(--hue)), oklch(var(--heo-card-well-b) var(--hue)));
+      color: oklch(var(--heo-card-ink) var(--hue));
+    }
+
+    .card.empty .art {
+      filter: grayscale(.85);
+      opacity: .5;
+    }
+
+    .ct {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 2px;
+      min-width: 0;
+    }
+
+    .ic {
+      display: grid;
+      place-items: center;
+      width: 18px;
+      height: 18px;
+      flex: none;
+      border-radius: 5px;
+      background: oklch(var(--heo-card-chip) var(--hue));
+      color: oklch(var(--heo-card-chip-ink) var(--hue));
+    }
+
+    .card.empty .ic {
+      background: var(--heo-hover);
+      color: var(--heo-text-dim);
+    }
+
+    .title {
+      overflow: hidden;
+      font-size: 11.5px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .card.empty .title {
+      color: var(--heo-text-dim);
+      font-weight: 500;
+    }
+
+    .count {
+      margin-left: auto;
+      padding: 0 6px;
+      border-radius: 999px;
+      background: oklch(var(--heo-card-count) var(--hue));
+      color: oklch(var(--heo-card-count-ink) var(--hue));
+      font-size: 9.5px;
+      font-weight: 650;
+      line-height: 15px;
+    }
+
+    .sum {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 0 3px;
+      color: var(--heo-text-dim);
+      font: 10px/1.35 var(--heo-mono);
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    .sum .dot {
+      width: 6px;
+      height: 6px;
+      flex: none;
+      border-radius: 50%;
+      background: oklch(var(--heo-card-ink) var(--hue));
+    }
+
+    .card.empty .sum {
+      color: var(--heo-text-faint);
+      font-family: var(--heo-font);
+    }
+
+    .card.empty .sum .dot {
+      background: transparent;
+      box-shadow: inset 0 0 0 1.5px var(--heo-text-faint);
+    }
+
+    .chead {
+      all: unset;
+      display: grid;
+      grid-template-columns: 52px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      box-sizing: border-box;
+      padding: 5px 6px;
+      border-radius: 11px 11px 0 0;
+      background: linear-gradient(90deg, oklch(var(--heo-card-chip) var(--hue)), oklch(var(--heo-card-tint) var(--hue)) 70%);
+      cursor: pointer;
+    }
+
+    .chead .art {
+      height: 34px;
+    }
+
+    .chead .tt {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .chead .up {
+      display: grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      color: var(--heo-text-dim);
+    }
+
+    .chead:hover .up {
+      background: var(--heo-hover);
+      color: var(--heo-text);
+    }
+
+    .cbody {
+      display: grid;
+      grid-template-rows: 1fr;
+      transition: grid-template-rows 240ms var(--heo-ease), opacity 200ms var(--heo-ease);
+    }
+
+    .cbody>div {
+      overflow: hidden;
+    }
+
+    .cbody .rows {
+      display: grid;
+      gap: 6px;
+      padding: 10px;
+    }
+
+    .card.closing .cbody {
+      grid-template-rows: 0fr;
+      opacity: 0;
+    }
+
+    .card.closing {
+      transition: transform 240ms var(--heo-ease);
+      transform: scale(.985);
+    }
+
+    .card.arrive {
+      animation: arrive 320ms var(--spring) both;
+    }
+
+    @keyframes arrive {
+      from {
+        opacity: .3;
+        scale: .94;
+      }
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+    }
+
+    .row .pn {
+      color: var(--heo-text-dim);
+      font: 10.5px var(--heo-mono);
+    }
+
+    .row .vf {
+      height: 28px;
+      padding: 0 8px;
+      display: flex;
+      align-items: center;
+      border: 1px solid var(--heo-line-strong);
+      border-radius: var(--heo-r-sm);
+      background: var(--heo-sunken);
+      font: 11px var(--heo-mono);
+    }
+
+    /* ---- Applied ------------------------------------------------------- */
+    .applied {
+      display: grid;
+      gap: 10px;
+    }
+
+    .agroup {
+      --hue: var(--h, 265);
+      display: grid;
+      gap: 4px;
+    }
+
+    .ahead {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--heo-text-faint);
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+    }
+
+    .ahead .ic {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* ---- Toast (B's Reopen lives in the row; this is the shared announcement) ---- */
+    .toast {
+      position: absolute;
+      left: 50%;
+      bottom: 14px;
+      translate: -50% 0;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: var(--heo-text);
+      color: var(--heo-bg);
+      font-size: 11px;
+      box-shadow: var(--heo-shadow-md);
+      animation: drop 260ms var(--spring);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+
+      *,
+      *::before,
+      *::after {
+        animation-duration: 1ms !important;
+        transition-duration: 1ms !important;
+        transition-delay: 0ms !important;
+      }
+    }
+
+    /* ---- The prototype's own bar (not part of the design) --------------- */
+    .proto-bar {
+      position: fixed;
+      left: calc((100% - 372px) / 2);
+      bottom: 18px;
+      translate: -50% 0;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px;
+      border-radius: 999px;
+      background: #111;
+      color: #fff;
+      font: 600 12px var(--heo-font);
+      z-index: 50;
+      box-shadow: 0 10px 30px rgb(0 0 0 / 30%);
+    }
+
+    .proto-bar button {
+      border: 0;
+      background: #333;
+      color: #fff;
+      border-radius: 999px;
+      min-width: 28px;
+      height: 28px;
+      cursor: pointer;
+    }
+
+    .proto-bar span {
+      padding: 0 10px;
+      min-width: 230px;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="stage">
+    <h1>Prototype · Styles panel</h1>
+    <h2>Cards / Applied as one toggle, and close all cards</h2>
+    <div class="notes" id="notes"></div>
+    <div class="state" id="state"></div>
+  </main>
+
+  <aside class="dock" aria-label="Styles panel (prototype)">
+    <div class="dhead"><b>Styles</b><code>h2.hero-title</code></div>
+    <div class="tabs" aria-hidden="true"><span
+        class="on">STYLES</span><span>PROPS</span><span>MEDIA</span><span>CODE</span></div>
+    <div class="body" id="body"></div>
+  </aside>
+
+  <div class="proto-bar" role="toolbar" aria-label="Prototype variant switcher">
+    <button type="button" data-step="-1" aria-label="Previous variant">←</button>
+    <span id="proto-label"></span>
+    <button type="button" data-step="1" aria-label="Next variant">→</button>
+    <button type="button" id="theme" aria-label="Switch theme" title="Dark / light">◐</button>
+  </div>
+
+  <script>
+    const PATHS = {
+      grid: 'M2.6 2.6h4.6v4.6H2.6zM8.8 2.6h4.6v4.6H8.8zM2.6 8.8h4.6v4.6H2.6zM8.8 8.8h4.6v4.6H8.8z',
+      list: 'M2.6 4.4h1.8M2.6 8h1.8M2.6 11.6h1.8M6.8 4.4h6.6M6.8 8h6.6M6.8 11.6h6.6',
+      collapse: 'M13.2 6.2H9.8V2.8M9.8 6.2l3.4-3.4M2.8 9.8h3.4v3.4M6.2 9.8l-3.4 3.4',
+      chevronUp: 'M4 10l4-4 4 4',
+      foldAll: 'M4 3.5l4 3 4-3M4 12.5l4-3 4 3',
+      undo: 'M4.5 6.5H10a3 3 0 010 6H6.5M4.5 6.5L7 4M4.5 6.5L7 9',
+      search: 'M7 12a5 5 0 100-10 5 5 0 000 10zM10.6 10.6L14 14',
+      plus: 'M8 3.5v9M3.5 8h9',
+      frame: 'M4.5 2h7A2.5 2.5 0 0114 4.5v7a2.5 2.5 0 01-2.5 2.5h-7A2.5 2.5 0 012 11.5v-7A2.5 2.5 0 014.5 2zM6 5h4a1 1 0 011 1v4a1 1 0 01-1 1H6a1 1 0 01-1-1V6a1 1 0 011-1z',
+      sliders: 'M3 5h4M11 5h2M3 11h2M9 11h4M8.4 3.4v3.2M6.4 9.4v3.2',
+      text: 'M3.4 4.2V3h9.2v1.2M8 3v10M6 13h4',
+      font: 'M3.2 13L7 3h2l3.8 10M4.7 9.2h6.6',
+      image: 'M2.6 3.4h10.8v9.2H2.6zM5.6 7.2a1 1 0 100-2 1 1 0 000 2zM2.6 10.6l3-2.8 3.2 3 2-1.8 2.6 2.4',
+      sparkle: 'M8 2v3M8 11v3M3.5 8h3M9.5 8h3M4.8 4.8l2 2M9.2 9.2l2 2M11.2 4.8l-2 2M6.8 9.2l-2 2',
+      play: 'M5.4 3.6l7.2 4.4-7.2 4.4z',
+      code: 'M5.6 4.8L2.4 8l3.2 3.2M10.4 4.8L13.6 8l-3.2 3.2',
+    };
+    const svg = (name, size = 13) => `<svg viewBox="0 0 16 16" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${PATHS[name]}"/></svg>`;
+
+    const CARDS = [
+      { id: 'layout', name: 'Layout', h: 265, icon: 'frame', sum: 'flex · column · gap 12px', n: 3, rows: [['display', 'flex'], ['flex-direction', 'column'], ['gap', '12px']] },
+      { id: 'spacing', name: 'Spacing', h: 200, icon: 'sliders', sum: 'padding 24px 32px', n: 1, rows: [['padding', '24px 32px']] },
+      { id: 'type', name: 'Text style', h: 300, icon: 'font', sum: 'Inter · 32px · 700', n: 3, rows: [['font-family', 'Inter, sans-serif'], ['font-size', '32px'], ['font-weight', '700']] },
+      { id: 'size', name: 'Size', h: 160, icon: 'frame', sum: 'max-width 640px', n: 1, rows: [['max-width', '640px']] },
+      { id: 'bg', name: 'Background', h: 40, icon: 'image', sum: '#0b1220', n: 1, rows: [['background', '#0b1220']] },
+      { id: 'border', name: 'Border', h: 20, icon: 'frame', sum: '1px solid var(--line)', n: 2, rows: [['border', '1px solid var(--line)'], ['border-radius', '12px']] },
+      { id: 'shadow', name: 'Shadow & effects', h: 330, icon: 'sparkle', empty: true },
+      { id: 'motion', name: 'Motion', h: 100, icon: 'play', empty: true },
+      { id: 'interaction', name: 'Interaction', h: 230, icon: 'sparkle', empty: true },
+      { id: 'other', name: 'Other', h: 265, icon: 'code', empty: true },
+    ];
+
+    const VARIANTS = {
+      A: {
+        name: 'Slide & squash',
+        notes: `<p class="q">The tabs stay full width and keep today's look. <b>A press anywhere on them flips the view</b>: the thumb springs to the other side and squashes on the way, and the picked side's icon pops.</p>
+          <ul>
+            <li><b>Close all</b> is an icon button at the end of the row, with the number of open cards on it. With none open it is dashed, as HEO draws a disabled button, and its tooltip says why.</li>
+            <li>Hovering the toggle lights the side a press would pick, so it reads as a switch and not as two tabs.</li>
+            <li>Keyboard: Tab to it, then Space or Enter flips it. ← picks Cards, → picks Applied.</li>
+          </ul>`,
+      },
+      B: {
+        name: 'Caterpillar',
+        notes: `<p class="q">The toggle shrinks to its labels and sits at the start of the row. <b>When pressed, its thumb stretches</b>: the leading edge moves first and the trailing edge follows, so you see the selection travel.</p>
+          <ul>
+            <li><b>Close all <span style="font-variant-numeric:tabular-nums">(n)</span></b> is a text button at the end of the row. It shows only while a card is open.</li>
+            <li>After closing, the button becomes <b>Reopen</b> for 5 seconds, so a mis-click costs nothing.</li>
+            <li>It takes the least room. The tabs no longer fill the row, which matches the condition strip above.</li>
+          </ul>`,
+      },
+      C: {
+        name: 'Ripple & slide',
+        notes: `<p class="q">Full width, like today. <b>A press sends a ripple out from where it landed</b>, the thumb slides with a short trail, and the view below slides in from that side. The change is visible in the panel itself, not only in the toggle.</p>
+          <ul>
+            <li><b>Close all</b> is a pill stuck to the top of the cards, shown while two or more are open. It stays in reach however far the open cards have pushed the panel down, where a button in the header row would have scrolled away.</li>
+            <li>The cards close one after the other, top first, and a short notice says how many closed.</li>
+          </ul>`,
+      },
+    };
+    const ORDER = Object.keys(VARIANTS);
+
+    const state = {
+      variant: new URLSearchParams(location.search).get('variant')?.toUpperCase() ?? 'A',
+      view: 'cards',
+      open: new Set(['type', 'border', 'spacing']),
+      undo: null,
+      undoTimer: 0,
+      toast: '',
+      anim: null,
+    };
+    if (!VARIANTS[state.variant]) state.variant = 'A';
+
+    const body = document.getElementById('body');
+
+    function toggleHTML() {
+      const applied = state.view === 'applied';
+      return `<button type="button" class="toggle" role="switch" aria-checked="${applied}"
+          aria-label="Applied view" title="${applied ? 'Applied: everything set on this element. Press for Cards' : 'Cards: edit by category. Press for Applied'}">
+          <span class="thumb"></span>
+          <span class="opt ${applied ? '' : 'on'}" data-opt="cards">${svg('grid')}Cards</span>
+          <span class="opt ${applied ? 'on' : ''}" data-opt="applied">${svg('list')}Applied</span>
+        </button>`;
+    }
+
+    function viewRowHTML() {
+      const n = state.open.size;
+      const cards = state.view === 'cards';
+      if (state.variant === 'A') {
+        const off = !cards || !n;
+        const why = !cards ? 'Cards are not shown in Applied' : !n ? 'No card is open' : `Close all ${n} open card${n === 1 ? '' : 's'}`;
+        return `<div class="viewrow">${toggleHTML()}
+          <button type="button" class="closeall" data-close-all aria-disabled="${off}" aria-label="${why}" title="${why}">
+            ${svg('foldAll', 15)}<span class="n" aria-hidden="true">${n || ''}</span>
+          </button></div>`;
+      }
+      if (state.variant === 'B') {
+        const action = state.undo && cards
+          ? `<button type="button" class="textbtn undo" data-reopen title="Open the cards that were just closed">${svg('undo', 12)}Reopen ${state.undo.length}</button>`
+          : cards && n
+            ? `<button type="button" class="textbtn" data-close-all title="Close every open card">${svg('foldAll', 12)}Close all <span class="n">${n}</span></button>`
+            : '';
+        return `<div class="viewrow">${toggleHTML()}<span class="spacer"></span>${action}</div>`;
+      }
+      return `<div class="viewrow">${toggleHTML()}</div>`;
+    }
+
+    function cardHTML(card) {
+      const open = state.open.has(card.id);
+      const cls = `card${card.empty ? ' empty' : ''}${open ? ' open' : ''}`;
+      const sum = card.empty ? '<span class="sum"><span class="dot"></span>Empty</span>' : `<span class="sum"><span class="dot"></span>${card.sum}</span>`;
+      if (!open) {
+        return `<div class="${cls}" style="--h:${card.h}" data-card="${card.id}">
+          <button type="button" class="tile" aria-expanded="false" data-open="${card.id}">
+            <span class="art" aria-hidden="true">${svg(card.icon, 20)}</span>
+            <span class="ct"><span class="ic">${svg(card.icon, 11)}</span><span class="title">${card.name}</span>${card.n ? `<span class="count">${card.n}</span>` : ''}</span>
+            ${sum}
+          </button></div>`;
+      }
+      const rows = (card.rows ?? [['', '+ Add property']]).map(([p, v]) => `<div class="row"><span class="pn">${p}</span><span class="vf">${v}</span></div>`).join('');
+      return `<div class="${cls}" style="--h:${card.h}" data-card="${card.id}">
+        <button type="button" class="chead" aria-expanded="true" data-open="${card.id}" title="Close ${card.name}">
+          <span class="art" aria-hidden="true">${svg(card.icon, 16)}</span>
+          <span class="tt"><span class="title">${card.name}</span>${sum}</span>
+          <span class="up">${svg('chevronUp', 12)}</span>
+        </button>
+        <div class="cbody"><div><div class="rows">${rows}</div></div></div></div>`;
+    }
+
+    function appliedHTML() {
+      return `<div class="applied">${CARDS.filter((c) => !c.empty).map((c) => `<div class="agroup" style="--h:${c.h}">
+          <div class="ahead"><span class="ic">${svg(c.icon, 10)}</span>${c.name}</div>
+          ${c.rows.map(([p, v]) => `<div class="row"><span class="pn">${p}</span><span class="vf">${v}</span></div>`).join('')}
+        </div>`).join('')}</div>`;
+    }
+
+    function render() {
+      document.documentElement.dataset.variant = state.variant;
+      const n = state.open.size;
+      const pill = state.variant === 'C' && state.view === 'cards' && n >= 2
+        ? `<div class="stickpill" role="group" aria-label="Open cards"><span><b>${n}</b> cards open</span>
+            <button type="button" data-close-all title="Close every open card">${svg('foldAll', 12)}Close all</button></div>`
+        : '';
+      const view = state.view === 'cards'
+        ? `${pill}<div class="grid view">${CARDS.map(cardHTML).join('')}</div>`
+        : `<div class="view">${appliedHTML()}</div>`;
+      body.innerHTML = `
+        <div class="strip"><span class="chip">Base <i>11</i></span><span class="chip add">${svg('plus', 11)} State or size</span></div>
+        <div class="search">${svg('search', 13)} Search properties, values, selectors…<span class="add">${svg('plus', 12)}</span></div>
+        ${viewRowHTML()}
+        ${view}
+        <div class="sr" aria-live="polite" id="live">${state.toast}</div>
+        ${state.toast ? `<div class="toast" aria-hidden="true">${state.toast}</div>` : ''}`;
+      document.getElementById('notes').innerHTML = VARIANTS[state.variant].notes;
+      document.getElementById('proto-label').textContent = `${state.variant} — ${VARIANTS[state.variant].name}`;
+      document.getElementById('state').textContent =
+        `variant   ${state.variant}\nview      ${state.view}\nopen      ${[...state.open].join(', ') || '(none)'}\nreopen    ${state.undo ? state.undo.join(', ') : '-'}`;
+      playAnimation();
+    }
+
+    /* The animations run once, after the render that changed the view. */
+    function playAnimation() {
+      const anim = state.anim;
+      state.anim = null;
+      if (!anim) return;
+      const toggle = body.querySelector('.toggle');
+      const thumb = toggle?.querySelector('.thumb');
+      if (anim.type === 'flip' && toggle) {
+        // The thumb starts from where it was, so the transition plays from the old side.
+        const from = anim.to === 'applied' ? 'false' : 'true';
+        toggle.setAttribute('aria-checked', from);
+        void toggle.offsetWidth;
+        toggle.setAttribute('aria-checked', String(anim.to === 'applied'));
+        toggle.querySelector(`.opt[data-opt="${anim.to}"]`)?.classList.add('pop');
+        if (state.variant === 'A') thumb?.classList.add('squash');
+        if (state.variant === 'C') {
+          thumb?.classList.add('trail');
+          const ripple = document.createElement('span');
+          ripple.className = 'ripple';
+          ripple.style.left = `${anim.x}px`;
+          ripple.style.top = `${anim.y}px`;
+          toggle.append(ripple);
+          body.querySelector('.view')?.classList.add(anim.to === 'applied' ? 'from-right' : 'from-left');
+        }
+      }
+      if (anim.type === 'closed') {
+        for (const [index, id] of anim.ids.entries()) {
+          const el = body.querySelector(`[data-card="${id}"]`);
+          if (el) { el.style.animationDelay = `${index * 40}ms`; el.classList.add('arrive'); }
+        }
+        body.querySelector('.closeall .n')?.classList.add('bump');
+      }
+    }
+
+    function flip(to, event) {
+      if (to === state.view) return;
+      const box = body.querySelector('.toggle').getBoundingClientRect();
+      const x = event && event.clientX ? event.clientX - box.left : (to === 'applied' ? box.width * 0.75 : box.width * 0.25);
+      const y = event && event.clientY ? event.clientY - box.top : box.height / 2;
+      state.view = to;
+      state.anim = { type: 'flip', to, x, y };
+      render();
+      body.querySelector('.toggle')?.focus({ preventScroll: true });
+    }
+
+    /* Close every open card: one after the other, top first, then the tiles settle into the grid. */
+    function closeAll() {
+      const ids = CARDS.map((c) => c.id).filter((id) => state.open.has(id));
+      if (!ids.length) return;
+      ids.forEach((id, index) => {
+        const el = body.querySelector(`[data-card="${id}"]`);
+        setTimeout(() => el?.classList.add('closing'), index * 70);
+      });
+      setTimeout(() => {
+        state.open.clear();
+        state.anim = { type: 'closed', ids };
+        state.toast = `Closed ${ids.length} card${ids.length === 1 ? '' : 's'}`;
+        if (state.variant === 'B') {
+          state.undo = ids;
+          clearTimeout(state.undoTimer);
+          state.undoTimer = setTimeout(() => { state.undo = null; render(); }, 5000);
+        }
+        render();
+        // The focus stays on something that still exists: the toggle.
+        body.querySelector(state.variant === 'B' ? '[data-reopen]' : state.variant === 'A' ? '.closeall' : '.toggle')?.focus({ preventScroll: true });
+        setTimeout(() => { state.toast = ''; render(); }, 2200);
+      }, ids.length * 70 + 240);
+    }
+
+    body.addEventListener('click', (event) => {
+      const target = event.target.closest('button');
+      if (!target) return;
+      if (target.classList.contains('toggle')) {
+        flip(state.view === 'cards' ? 'applied' : 'cards', event);
+        return;
+      }
+      if (target.matches('[data-close-all]')) {
+        if (target.getAttribute('aria-disabled') === 'true') return;
+        closeAll();
+        return;
+      }
+      if (target.matches('[data-reopen]')) {
+        state.undo.forEach((id) => state.open.add(id));
+        state.undo = null;
+        clearTimeout(state.undoTimer);
+        render();
+        return;
+      }
+      const id = target.dataset.open;
+      if (id) {
+        state.undo = null;
+        if (state.open.has(id)) state.open.delete(id); else state.open.add(id);
+        render();
+        body.querySelector(`[data-open="${id}"]`)?.focus({ preventScroll: true });
+      }
+    });
+    body.addEventListener('keydown', (event) => {
+      if (!event.target.classList?.contains('toggle')) return;
+      if (event.key === 'ArrowLeft') { event.preventDefault(); flip('cards'); }
+      if (event.key === 'ArrowRight') { event.preventDefault(); flip('applied'); }
+    });
+
+    function go(step) {
+      const at = ORDER.indexOf(state.variant);
+      state.variant = ORDER[(at + step + ORDER.length) % ORDER.length];
+      state.undo = null;
+      const url = new URL(location.href);
+      url.searchParams.set('variant', state.variant);
+      history.replaceState(null, '', url);
+      render();
+    }
+    document.querySelectorAll('.proto-bar [data-step]').forEach((b) => b.addEventListener('click', () => go(Number(b.dataset.step))));
+    document.getElementById('theme').addEventListener('click', () => {
+      const root = document.documentElement;
+      root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    });
+    addEventListener('keydown', (event) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+      if (document.activeElement && document.activeElement !== document.body && !document.activeElement.closest('.proto-bar')) return;
+      go(event.key === 'ArrowLeft' ? -1 : 1);
+    });
+    render();
+  </script>
+</body>
+
+</html>
