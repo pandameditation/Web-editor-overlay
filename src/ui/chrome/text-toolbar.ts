@@ -389,7 +389,7 @@ export class HeoTextToolbar extends HeoElement {
         aria-haspopup="dialog"
         aria-expanded=${this.fxOpen ? 'true' : 'false'}
         @pointerdown=${(event: Event) => event.preventDefault()}
-        @click=${(event: MouseEvent) => this.#toggleEffects(event.detail === 0)}
+        @click=${() => this.#toggleEffects()}
       >
         ${icon('textFx', 14)}${icon('chevronDown', 9)}
       </button>
@@ -536,7 +536,7 @@ export class HeoTextToolbar extends HeoElement {
     if (this.fxOpen) this.requestUpdate();
   };
 
-  #toggleEffects(byKeyboard: boolean): void {
+  #toggleEffects(): void {
     if (this.fxOpen) {
       this.#closeEffects(true);
       return;
@@ -548,13 +548,15 @@ export class HeoTextToolbar extends HeoElement {
     this.fxTop = null;
     this.#fxEscape = pushEscapeLayer(() => this.#closeEffects(true));
     listen(document, 'selectionchange', this.#onSelection);
-    // Opened from the keyboard, the focus goes in, to the first tile; by the pointer, it stays in the text.
-    // Twice: the menu is drawn hidden, measured, then placed and shown, and a hidden tile takes no focus.
-    if (byKeyboard) {
-      void this.updateComplete
-        .then(() => this.updateComplete)
-        .then(() => this.renderRoot.querySelector<HTMLElement>('.fxmenu [data-fx-find]')?.focus());
-    }
+    /*
+     * The focus goes to the search however the menu was opened, as an autocomplete's does: typing
+     * filters straight away. The text's selection is kept for the edit (#rememberTextSelection), so
+     * the effect still goes on the words that were selected. Twice: the menu is drawn hidden,
+     * measured, then placed and shown, and a hidden field takes no focus.
+     */
+    void this.updateComplete
+      .then(() => this.updateComplete)
+      .then(() => this.renderRoot.querySelector<HTMLElement>('.fxmenu [data-fx-find]')?.focus({ preventScroll: true }));
   }
 
   #closeEffects(refocus: boolean): void {
@@ -597,7 +599,18 @@ export class HeoTextToolbar extends HeoElement {
         cap = Math.max(below, above);
         top = below >= above ? Math.max(bar.bottom, box.top + box.height) + 8 : 8;
       } else {
-        top = bar.bottom + 6;
+        // Under the bar, covering the text, but still within the window: it ran off the bottom of a
+        // short one (756 by 435), and the rows past the fold could not be reached with the pointer.
+        const underBar = innerHeight - 8 - (bar.bottom + 6);
+        const overBar = bar.top - 6 - 8;
+        if (underBar >= overBar) {
+          top = bar.bottom + 6;
+          cap = underBar;
+        } else {
+          cap = overBar;
+          top = Math.max(8, bar.top - 6 - Math.min(height, overBar));
+        }
+        if (cap >= height) cap = null;
       }
     }
     menu.style.maxHeight = cap === null ? '' : `${Math.floor(cap)}px`;
@@ -662,10 +675,9 @@ export class HeoTextToolbar extends HeoElement {
     const focusId = flat.some((one) => `${one.kind}:${one.id}` === this.fxActive)
       ? this.fxActive
       : (() => { const on = flat.find(isOn); return on ? `${on.kind}:${on.id}` : flat[0] ? `${flat[0].kind}:${flat[0].id}` : ''; })();
-    const selection = getSelection();
     const hint = current
       ? html`On <code>&lt;${current.el.tagName.toLowerCase()}&gt;</code>${styleName ? html` as <b>${styleName}</b>` : nothing}. Undo takes it back.`
-      : selection?.isCollapsed
+      : this.editor.textEditSelectionCollapsed()
         ? 'Nothing selected: what you type next gets it.'
         : 'Applies to the selected words.';
     const row = (one: FxChoice): TemplateResult => {
@@ -719,9 +731,9 @@ export class HeoTextToolbar extends HeoElement {
           spellcheck="false"
           .value=${this.fxQuery}
           @input=${(event: Event) => {
-            this.fxQuery = (event.target as HTMLInputElement).value;
-            this.fxActive = '';
-          }}
+        this.fxQuery = (event.target as HTMLInputElement).value;
+        this.fxActive = '';
+      }}
         />
       </label>
       <div class="colors" role="radiogroup" aria-label="Effect colour">
@@ -753,43 +765,43 @@ export class HeoTextToolbar extends HeoElement {
               .value=${this.fxName}
               @input=${(event: Event) => { this.fxName = (event.target as HTMLInputElement).value; }}
               @keydown=${(event: KeyboardEvent) => {
-                if (event.key !== 'Escape') return;
-                event.preventDefault();
-                event.stopPropagation();
-                this.fxSaving = false;
-              }}
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopPropagation();
+            this.fxSaving = false;
+          }}
             />
             <button class="btn sm primary" type="submit" ?disabled=${!this.fxName.trim()}>Save</button>
           </form>`
         : nothing}
       <div class="foot">
         ${current?.style
-          ? html`<button
+        ? html`<button
               class="btn sm"
               type="button"
               data-edit-style
               title=${`Edit ${styleName} in Tokens › Text styles: every word in it follows`}
               @click=${() => {
-                const name = current.style!;
-                this.#closeEffects(false);
-                this.editor.editTextStyle(name);
-              }}
+            const name = current.style!;
+            this.#closeEffects(false);
+            this.editor.editTextStyle(name);
+          }}
             >${icon('sliders', 11)} Edit ${styleName} in Tokens</button>`
-          : html`<button
+        : html`<button
               class="btn sm primary"
               type="button"
               data-save
               ?disabled=${!current}
               title=${current ? 'Turn this effect into a text style you can reuse' : 'Apply an effect first'}
               @click=${() => {
-                this.fxSaving = true;
-                this.fxName = effect ? `${effect.label} ${EFFECT_COLORS.find((one) => one.id === this.#color)?.label ?? ''}`.trim() : '';
-                void this.updateComplete.then(() => {
-                  const input = this.renderRoot.querySelector<HTMLInputElement>('.save input');
-                  input?.focus();
-                  input?.select();
-                });
-              }}
+            this.fxSaving = true;
+            this.fxName = effect ? `${effect.label} ${EFFECT_COLORS.find((one) => one.id === this.#color)?.label ?? ''}`.trim() : '';
+            void this.updateComplete.then(() => {
+              const input = this.renderRoot.querySelector<HTMLInputElement>('.save input');
+              input?.focus();
+              input?.select();
+            });
+          }}
             >${icon('plus', 11)} Save as text style</button>`}
       </div>
       <p class="fxhint">${hint}</p>

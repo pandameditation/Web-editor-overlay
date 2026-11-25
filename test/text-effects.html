@@ -353,6 +353,36 @@
       });
 
       /*
+       * Opened with the pointer, the focus goes to the search as well, so typing filters at once.
+       * The words selected before stay the ones the effect goes on: the focus left the text for the
+       * field, and the edit's kept selection is what the menu acts on.
+       */
+      await check('pointerOpen', async () => {
+        await edit(p);
+        await select(p, 0, 5);
+        await clickAt(root().querySelector('.fxbtn'));
+        await until(() => root().activeElement?.matches?.('[data-fx-find]'));
+        const inSearch = Boolean(root().activeElement?.matches?.('[data-fx-find]')) && getComputedStyle(menu()).visibility === 'visible';
+        // Placed and settled before a real press goes at a row, as openMenu waits.
+        await settle(60);
+        // In a short window (the suite's, 756 by 435) with no room clear of the text, the menu covers
+        // it but stays in the window, scrolling: it ran off the bottom, and its lower rows took no click.
+        const inTheWindow = menu().getBoundingClientRect().bottom <= innerHeight;
+        const saysSelected = /selected words/.test(menu().querySelector('.fxhint:last-child')?.textContent ?? '');
+        await clickAt(tile('gradient'));
+        const wrapped = p.querySelector('[data-text-effect="gradient"]');
+        const onTheWords = wrapped?.textContent === 'Wheel';
+        engine.endTextEdit(false);
+        await settle(60);
+        return {
+          thePointerOpensItInTheSearch: inSearch,
+          theMenuStaysInTheWindow: inTheWindow,
+          itStillSpeaksOfTheSelectedWords: saysSelected,
+          andPutsTheEffectOnThem: onTheWords,
+        };
+      });
+
+      /*
        * The page's own text styles, in the same menu: Heading 1 from the page's CSS goes on words
        * as its class, and "Edit … in Tokens" opens it there, in the editor that shows all it holds.
        */

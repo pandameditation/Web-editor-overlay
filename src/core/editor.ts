@@ -9429,6 +9429,18 @@ export class EditorEngine {
    * The effect the selection in the text edit sits in: its wrapper, which effect, and the text
    * style it wears if it was saved as one. Null outside an effect.
    */
+  /**
+   * Whether the text edit's selection is only a caret: the live one while it is in the text, else
+   * the one kept for it (the focus is in a menu's field, which has a selection of its own).
+   */
+  textEditSelectionCollapsed(): boolean {
+    const host = this.store.value.textEditing;
+    const selection = getSelection();
+    const current = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const range = host && current && host.contains(current.commonAncestorContainer) ? current : this.#textEditRange;
+    return range?.collapsed ?? true;
+  }
+
   textEffectAtSelection(): { el: HTMLElement; effect: string; style: string | null } | null {
     const host = this.store.value.textEditing;
     if (!host) return null;
